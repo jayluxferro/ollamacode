@@ -1,0 +1,26 @@
+# Extension E2E: runs on schedule and manual trigger (slow; not on every push).
+name: Extension E2E
+
+on:
+  schedule:
+    # Run nightly at 02:00 UTC
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  extension-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: editor/vscode-extension/package-lock.json
+      - name: Install and build extension
+        run: |
+          cd editor/vscode-extension
+          npm ci
+          npm run compile
+      - name: Extension E2E tests
+        run: cd editor/vscode-extension && npm run test:e2e
