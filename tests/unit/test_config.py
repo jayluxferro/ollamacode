@@ -59,12 +59,13 @@ def test_merge_config_empty_config_no_env_uses_default_servers():
     """When config has no mcp_servers and env has no MCP args, built-in servers are used."""
     out = merge_config_with_env({}, model_env=None, mcp_args_env=None, system_extra_env=None)
     assert out["mcp_servers"] == DEFAULT_MCP_SERVERS
-    assert len(out["mcp_servers"]) == 4
+    assert len(out["mcp_servers"]) == 5
     mods = [s["args"][1] for s in out["mcp_servers"] if s["args"]]
     assert "ollamacode.servers.fs_mcp" in mods
     assert "ollamacode.servers.terminal_mcp" in mods
     assert "ollamacode.servers.codebase_mcp" in mods
     assert "ollamacode.servers.git_mcp" in mods
+    assert "ollamacode.servers.tools_mcp" in mods
 
 
 def test_merge_config_explicit_empty_mcp_servers():

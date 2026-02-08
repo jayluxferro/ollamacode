@@ -1,0 +1,26 @@
+# Example: add semantic (meaning-based) codebase search via Ollama embeddings.
+# Copy to project root as ollamacode.yaml (or merge into existing config).
+# Requires: ollama pull nomic-embed-text (or set OLLAMACODE_EMBED_MODEL).
+# In chat, ask the agent to run index_codebase first, then use semantic_search_codebase.
+
+model: qwen2.5-coder:32b
+
+mcp_servers:
+  - type: stdio
+    command: python
+    args: ["-m", "ollamacode.servers.fs_mcp"]
+  - type: stdio
+    command: python
+    args: ["-m", "ollamacode.servers.terminal_mcp"]
+  - type: stdio
+    command: python
+    args: ["-m", "ollamacode.servers.codebase_mcp"]
+  - type: stdio
+    command: python
+    args: ["-m", "ollamacode.servers.git_mcp"]
+  - type: stdio
+    command: python
+    args: ["-m", "ollamacode.servers.tools_mcp"]
+  - type: stdio
+    command: python
+    args: ["-m", "ollamacode.servers.semantic_mcp"]

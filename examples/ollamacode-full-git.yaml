@@ -1,4 +1,4 @@
-# Example: full Git (add, commit, push) + built-in fs, terminal, codebase.
+# Example: full Git (add, commit, push) + built-in fs, terminal, codebase, tools.
 # Copy to project root as ollamacode.yaml to let the agent stage/commit/push.
 # Requires Node.js (npx) for the official Git MCP server.
 
@@ -14,6 +14,9 @@ mcp_servers:
   - type: stdio
     command: python
     args: ["-m", "ollamacode.servers.codebase_mcp"]
+  - type: stdio
+    command: python
+    args: ["-m", "ollamacode.servers.tools_mcp"]
   - type: stdio
     command: npx
     args: ["-y", "@modelcontextprotocol/server-git"]

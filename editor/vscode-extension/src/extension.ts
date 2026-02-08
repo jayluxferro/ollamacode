@@ -11,6 +11,21 @@ const VIEW_TYPE = "ollamacode.chatView";
 const COMPOSER_VIEW_TYPE = "ollamacode.composerView";
 const CHAT_PARTICIPANT_ID = "ollamacode.chatParticipant";
 
+const OLLAMA_BASE = "http://127.0.0.1:11434";
+
+/** Fetch model names from Ollama API (GET /api/tags). Returns [] if Ollama is unreachable. */
+async function fetchOllamaModels(): Promise<string[]> {
+  try {
+    const res = await fetch(`${OLLAMA_BASE}/api/tags`, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { models?: { name: string }[] };
+    const names = data.models?.map((m) => m.name) ?? [];
+    return names.length > 0 ? names : [];
+  } catch {
+    return [];
+  }
+}
+
 /** If injectCurrentFile is on and there is an active editor in the workspace, prepend current file context to the prompt. */
 function promptWithFileContext(prompt: string): string {
   const config = vscode.workspace.getConfiguration("ollamacode");
@@ -109,6 +124,29 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand("ollamacode.selectModel", async () => {
+      const models = await fetchOllamaModels();
+      if (models.length === 0) {
+        void vscode.window.showErrorMessage(
+          "OllamaCode: Could not fetch models. Is Ollama running? (http://127.0.0.1:11434)"
+        );
+        return;
+      }
+      const config = vscode.workspace.getConfiguration("ollamacode");
+      const current = config.get<string>("model", "qwen2.5-coder:32b");
+      const picked = await vscode.window.showQuickPick(models, {
+        title: "Select Ollama model",
+        placeHolder: `Current: ${current}`,
+        matchOnDescription: false,
+      });
+      if (picked) {
+        await config.update("model", picked, vscode.ConfigurationTarget.Global);
+        void vscode.window.showInformationMessage(`OllamaCode: Using model "${picked}"`);
+      }
+    })
+  );
+
   const chatProvider = new OllamaCodeChatProvider(context);
   context.subscriptions.push(
     vscode.commands.registerCommand("ollamacode.chatWithSelection", async () => {
@@ -204,9 +242,20 @@ class OllamaCodeChatProvider implements vscode.WebviewViewProvider {
     this.postMessage({ type: "loadHistory", messages: history });
 
     webviewView.webview.onDidReceiveMessage(
-      async (data: { type: string; query?: string }) => {
+      async (data: { type: string; query?: string; model?: string }) => {
         if (data.type === "send" && data.query) {
           await this.runQuery(data.query);
+        }
+        if (data.type === "getModels") {
+          const models = await fetchOllamaModels();
+          const config = vscode.workspace.getConfiguration("ollamacode");
+          const current = config.get<string>("model", "qwen2.5-coder:32b");
+          this.postMessage({ type: "models", models, current });
+        }
+        if (data.type === "setModel" && data.model) {
+          const config = vscode.workspace.getConfiguration("ollamacode");
+          await config.update("model", data.model, vscode.ConfigurationTarget.Global);
+          this.postMessage({ type: "modelSet", model: data.model });
         }
       }
     );

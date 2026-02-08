@@ -4,7 +4,7 @@
   "description": "Chat with local Ollama + MCP tools in VS Code (Cursor/Claude Code style)",
   "version": "0.1.0",
   "publisher": "ollamacode",
-  "engines": { "vscode": "^1.109.0" },
+  "engines": { "vscode": "^1.105.0" },
   "categories": ["Machine Learning", "Other"],
   "keywords": ["ollama", "mcp", "local", "ai", "chat"],
   "activationEvents": [],
@@ -18,6 +18,10 @@
       {
         "command": "ollamacode.chatWithSelection",
         "title": "OllamaCode: Chat with Selection"
+      },
+      {
+        "command": "ollamacode.selectModel",
+        "title": "OllamaCode: Select Ollama Model"
       }
     ],
     "menus": {

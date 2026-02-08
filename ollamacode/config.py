@@ -12,12 +12,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# Default MCP servers when no config and no env: built-in fs, terminal, codebase, git (read-only)
+# Default MCP servers when no config and no env: built-in fs, terminal, codebase, git (read-only), tools (linter/tests)
 DEFAULT_MCP_SERVERS: list[dict[str, Any]] = [
     {"type": "stdio", "command": sys.executable, "args": ["-m", "ollamacode.servers.fs_mcp"]},
     {"type": "stdio", "command": sys.executable, "args": ["-m", "ollamacode.servers.terminal_mcp"]},
     {"type": "stdio", "command": sys.executable, "args": ["-m", "ollamacode.servers.codebase_mcp"]},
     {"type": "stdio", "command": sys.executable, "args": ["-m", "ollamacode.servers.git_mcp"]},
+    {"type": "stdio", "command": sys.executable, "args": ["-m", "ollamacode.servers.tools_mcp"]},
 ]
 
 try:

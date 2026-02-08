@@ -10,4 +10,5 @@ site/
 .docs/
 .cursor/
 .vscode-test/
+.ollamacode/embeddings.json
 git-push

@@ -21,7 +21,9 @@ A coding assistant powered by **local models** (Ollama) and **MCP** (Model Conte
 
 ```bash
 pip install ollamacode
-# or with pipx (isolated env, CLI on PATH):
+# or with uv (isolated env, CLI on PATH):
+uv tool install ollamacode
+# or with pipx:
 pipx install ollamacode
 ```
 
@@ -33,7 +35,7 @@ uv sync
 # or: pip install -e .
 ```
 
-Ensure the `ollamacode` CLI is on your PATH (e.g. `uv run ollamacode` or `ollamacode` after install).
+Ensure the `ollamacode` CLI is on your PATH (e.g. `uv run ollamacode` from source, or `ollamacode` after `uv tool install` / pipx).
 
 ## Usage
 
@@ -100,12 +102,13 @@ When multiple servers are configured, tool names are prefixed with the server na
 
 ### Built-in MCP (default)
 
-When you run OllamaCode **without** a config file and **without** `OLLAMACODE_MCP_ARGS`, it automatically starts four built-in MCP servers so the agent can work efficiently out of the box:
+When you run OllamaCode **without** a config file and **without** `OLLAMACODE_MCP_ARGS`, it automatically starts five built-in MCP servers so the agent can work efficiently out of the box:
 
 - **ollamacode-fs** – `read_file`, `write_file`, `list_dir` (workspace root: `OLLAMACODE_FS_ROOT` or cwd).
 - **ollamacode-terminal** – `run_command` (run shell commands, cwd, env, timeout).
 - **ollamacode-codebase** – `search_codebase` (keyword search), `get_relevant_files` (path match).
 - **ollamacode-git** – read-only Git: `git_status`, `git_diff_unstaged`, `git_diff_staged`, `git_log`, `git_show`, `git_branch` (understand repo state; no commit/push).
+- **ollamacode-tools** – `run_linter` (e.g. ruff, eslint), `run_tests` (e.g. pytest, npm test); returns stdout/stderr/return code.
 
 They are shipped inside the package (`ollamacode.servers`) and run as subprocesses. To disable MCP entirely, use a config file with `mcp_servers: []`. To add or replace servers, use `ollamacode.yaml` or `OLLAMACODE_MCP_ARGS`.
 
@@ -133,6 +136,25 @@ mcp_servers:
 ```
 
 Requires Node.js for `npx`. The agent will then have `git_add`, `git_commit`, `git_checkout`, etc. Use only in repos you’re comfortable having the agent modify. A copy-paste example config is in [examples/ollamacode-full-git.yaml](examples/ollamacode-full-git.yaml).
+
+### Opt-in: semantic codebase search
+
+The built-in **codebase** server does keyword/substring search. For **meaning-based** (semantic) search, add the optional **ollamacode-semantic** server. It uses Ollama embeddings (e.g. `nomic-embed-text`) and caches them under `.ollamacode/embeddings.json`.
+
+1. Pull an embedding model: `ollama pull nomic-embed-text` (or set `OLLAMACODE_EMBED_MODEL` to another model).
+2. Add the semantic server to your config (it is **not** in the default list):
+
+```yaml
+mcp_servers:
+  # ... your other servers (or built-ins) ...
+  - type: stdio
+    command: python
+    args: ["-m", "ollamacode.servers.semantic_mcp"]
+```
+
+3. In chat, ask the agent to **index the codebase** first (e.g. “Run index_codebase for this project”). Then you can ask “Where do we handle auth?” or “Find code that loads config” and the agent can use **semantic_search_codebase** for meaning-based results.
+
+Tools: **index_codebase**(file_pattern) – index workspace (or glob); **semantic_search_codebase**(query, max_results) – search by meaning. Cache is stored in the workspace `.ollamacode/` directory. Example config: [examples/ollamacode-semantic.yaml](examples/ollamacode-semantic.yaml).
 
 ### External MCP servers
 
