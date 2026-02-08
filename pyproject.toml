@@ -1,0 +1,84 @@
+[project]
+name = "ollamacode"
+version = "0.1.0"
+description = "Cursor Code / Claude Code–style coding assistant using local Ollama models and MCP tools"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.2.0",
+    "ollama>=0.4.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-org/ollamacode"
+Repository = "https://github.com/your-org/ollamacode"
+Documentation = "https://github.com/your-org/ollamacode#readme"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "mkdocs>=1.5.0",
+    "mkdocstrings[python]>=0.24.0",
+    "ruff>=0.8.0",
+    "pyright>=1.1.0",
+]
+tui = [
+    "rich>=13.0.0",
+]
+server = [
+    "uvicorn[standard]>=0.30.0",
+    "starlette>=0.38.0",
+]
+
+[project.scripts]
+ollamacode = "ollamacode.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ollamacode"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "mkdocs>=1.5.0",
+    "mkdocstrings[python]>=0.24.0",
+    "ruff>=0.8.0",
+    "pyright>=1.1.0",
+]
+
+[tool.ruff]
+line-length = 128
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+reportMissingImports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: marks tests that require Ollama and/or MCP (deselect with '-m \"not integration\"')",
+    "e2e: marks end-to-end tests (full CLI or extension flow; often same as integration)",
+]

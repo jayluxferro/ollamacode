@@ -1,0 +1,117 @@
+{
+  "name": "ollamacode",
+  "displayName": "OllamaCode",
+  "description": "Chat with local Ollama + MCP tools in VS Code (Cursor/Claude Code style)",
+  "version": "0.1.0",
+  "publisher": "ollamacode",
+  "engines": { "vscode": "^1.109.0" },
+  "categories": ["Machine Learning", "Other"],
+  "keywords": ["ollama", "mcp", "local", "ai", "chat"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "ollamacode.openPanel",
+        "title": "OllamaCode: Open Chat Panel"
+      },
+      {
+        "command": "ollamacode.chatWithSelection",
+        "title": "OllamaCode: Chat with Selection"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "ollamacode.chatWithSelection",
+          "when": "editorHasSelection",
+          "group": "ollamacode"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ollamacode",
+          "title": "OllamaCode",
+          "icon": "$(comment-discussion)"
+        }
+      ]
+    },
+    "views": {
+      "ollamacode": [
+        {
+          "type": "webview",
+          "id": "ollamacode.chatView",
+          "name": "Chat"
+        },
+        {
+          "type": "webview",
+          "id": "ollamacode.composerView",
+          "name": "Composer"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "OllamaCode",
+      "properties": {
+        "ollamacode.cliPath": {
+          "type": "string",
+          "default": "ollamacode",
+          "description": "Path to ollamacode CLI (e.g. 'ollamacode' or 'uv run ollamacode'). Use full path if not on PATH."
+        },
+        "ollamacode.model": {
+          "type": "string",
+          "default": "qwen2.5-coder:32b",
+          "description": "Ollama model name."
+        },
+        "ollamacode.mcpArgs": {
+          "type": "string",
+          "default": "",
+          "description": "Space-separated MCP server args (e.g. python path/to/server.py). Passed as OLLAMACODE_MCP_ARGS when running the CLI."
+        },
+        "ollamacode.reviewEditsBeforeApply": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, show Apply all / Reject (and optional Show diff) before applying edits from the model."
+        },
+        "ollamacode.streamResponse": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, stream response tokens to the chat/panel as they arrive (requires CLI --stream)."
+        },
+        "ollamacode.injectCurrentFile": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, prepend current file path to the prompt (e.g. 'Current file: src/main.py') so the model has file context."
+        }
+      }
+    },
+    "chatParticipants": [
+      {
+        "id": "ollamacode.chatParticipant",
+        "name": "ollamacode",
+        "fullName": "OllamaCode",
+        "description": "Chat with local Ollama + MCP. Edits can be applied in the workspace.",
+        "isSticky": false
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "vitest run",
+    "test:e2e": "npm run compile && node out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.0",
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "@vscode/test-electron": "^2.0.0",
+    "glob": "^11.0.0",
+    "mocha": "^10.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^2.0.0"
+  }
+}

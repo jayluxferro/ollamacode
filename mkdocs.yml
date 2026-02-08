@@ -1,0 +1,21 @@
+site_name: OllamaCode
+site_description: Coding assistant using local Ollama and MCP tools
+repo_url: https://github.com/jayluxferro/ollamacode
+edit_uri: edit/main/docs/
+
+theme:
+  name: mkdocs
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            docstring_style: google
+            show_source: true
+
+nav:
+  - Home: index.md
+  - API: api.md
