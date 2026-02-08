@@ -7,6 +7,21 @@ const ollamacodeRunner_1 = require("./ollamacodeRunner");
 const VIEW_TYPE = "ollamacode.chatView";
 const COMPOSER_VIEW_TYPE = "ollamacode.composerView";
 const CHAT_PARTICIPANT_ID = "ollamacode.chatParticipant";
+const OLLAMA_BASE = "http://127.0.0.1:11434";
+/** Fetch model names from Ollama API (GET /api/tags). Returns [] if Ollama is unreachable. */
+async function fetchOllamaModels() {
+    try {
+        const res = await fetch(`${OLLAMA_BASE}/api/tags`, { signal: AbortSignal.timeout(5000) });
+        if (!res.ok)
+            return [];
+        const data = (await res.json());
+        const names = data.models?.map((m) => m.name) ?? [];
+        return names.length > 0 ? names : [];
+    }
+    catch {
+        return [];
+    }
+}
 /** If injectCurrentFile is on and there is an active editor in the workspace, prepend current file context to the prompt. */
 function promptWithFileContext(prompt) {
     const config = vscode.workspace.getConfiguration("ollamacode");
@@ -95,6 +110,24 @@ function activate(context) {
     context.subscriptions.push(vscode.commands.registerCommand("ollamacode.openPanel", () => {
         vscode.commands.executeCommand("workbench.view.extension.ollamacode");
     }));
+    context.subscriptions.push(vscode.commands.registerCommand("ollamacode.selectModel", async () => {
+        const models = await fetchOllamaModels();
+        if (models.length === 0) {
+            void vscode.window.showErrorMessage("OllamaCode: Could not fetch models. Is Ollama running? (http://127.0.0.1:11434)");
+            return;
+        }
+        const config = vscode.workspace.getConfiguration("ollamacode");
+        const current = config.get("model", "qwen2.5-coder:32b");
+        const picked = await vscode.window.showQuickPick(models, {
+            title: "Select Ollama model",
+            placeHolder: `Current: ${current}`,
+            matchOnDescription: false,
+        });
+        if (picked) {
+            await config.update("model", picked, vscode.ConfigurationTarget.Global);
+            void vscode.window.showInformationMessage(`OllamaCode: Using model "${picked}"`);
+        }
+    }));
     const chatProvider = new OllamaCodeChatProvider(context);
     context.subscriptions.push(vscode.commands.registerCommand("ollamacode.chatWithSelection", async () => {
         const editor = vscode.window.activeTextEditor;
@@ -161,6 +194,17 @@ class OllamaCodeChatProvider {
         webviewView.webview.onDidReceiveMessage(async (data) => {
             if (data.type === "send" && data.query) {
                 await this.runQuery(data.query);
+            }
+            if (data.type === "getModels") {
+                const models = await fetchOllamaModels();
+                const config = vscode.workspace.getConfiguration("ollamacode");
+                const current = config.get("model", "qwen2.5-coder:32b");
+                this.postMessage({ type: "models", models, current });
+            }
+            if (data.type === "setModel" && data.model) {
+                const config = vscode.workspace.getConfiguration("ollamacode");
+                await config.update("model", data.model, vscode.ConfigurationTarget.Global);
+                this.postMessage({ type: "modelSet", model: data.model });
             }
         });
     }
@@ -329,6 +373,9 @@ function getChatHtml(webview) {
     .msg.user { background: var(--vscode-input-background); }
     .msg.assistant { background: var(--vscode-editor-inactiveSelectionBackground); }
     #status { font-size: 0.9em; color: var(--vscode-descriptionForeground); margin-bottom: 6px; }
+    #model-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+    #model-row label { font-size: 0.9em; color: var(--vscode-descriptionForeground); }
+    #model-select { flex: 1; min-width: 120px; padding: 4px 8px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; }
     form { display: flex; gap: 6px; }
     input { flex: 1; padding: 6px 8px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; }
     button { padding: 6px 12px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer; }
@@ -337,6 +384,12 @@ function getChatHtml(webview) {
 </head>
 <body>
   <div id="status"></div>
+  <div id="model-row">
+    <label for="model-select">Model:</label>
+    <select id="model-select" title="Ollama model (from Ollama API). Select to set as default.">
+      <option value="">Loading…</option>
+    </select>
+  </div>
   <div id="messages"></div>
   <form id="form">
     <input type="text" id="input" placeholder="Ask OllamaCode…" />
@@ -348,6 +401,14 @@ function getChatHtml(webview) {
     const messagesEl = document.getElementById('messages');
     const formEl = document.getElementById('form');
     const inputEl = document.getElementById('input');
+    const modelSelect = document.getElementById('model-select');
+
+    vscode.postMessage({ type: 'getModels' });
+
+    modelSelect.addEventListener('change', () => {
+      const v = modelSelect.value;
+      if (v) vscode.postMessage({ type: 'setModel', model: v });
+    });
 
     let streamTarget = null;
     window.addEventListener('message', e => {
@@ -387,6 +448,36 @@ function getChatHtml(webview) {
           messagesEl.appendChild(div);
         });
         messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+      if (msg.type === 'models') {
+        const list = msg.models || [];
+        const current = msg.current || '';
+        modelSelect.innerHTML = '';
+        if (list.length === 0) {
+          const opt = document.createElement('option');
+          opt.value = '';
+          opt.textContent = 'Ollama not available';
+          modelSelect.appendChild(opt);
+        } else {
+          list.forEach(name => {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            if (name === current) opt.selected = true;
+            modelSelect.appendChild(opt);
+          });
+          if (current && !list.includes(current)) {
+            const opt = document.createElement('option');
+            opt.value = current;
+            opt.textContent = current + ' (current)';
+            opt.selected = true;
+            modelSelect.insertBefore(opt, modelSelect.firstChild);
+          }
+        }
+      }
+      if (msg.type === 'modelSet') {
+        statusEl.textContent = 'Model set to ' + (msg.model || '');
+        setTimeout(() => { statusEl.textContent = ''; }, 2000);
       }
     });
 

@@ -442,6 +442,9 @@ function getChatHtml(webview: vscode.Webview): string {
     .msg.user { background: var(--vscode-input-background); }
     .msg.assistant { background: var(--vscode-editor-inactiveSelectionBackground); }
     #status { font-size: 0.9em; color: var(--vscode-descriptionForeground); margin-bottom: 6px; }
+    #model-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+    #model-row label { font-size: 0.9em; color: var(--vscode-descriptionForeground); }
+    #model-select { flex: 1; min-width: 120px; padding: 4px 8px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; }
     form { display: flex; gap: 6px; }
     input { flex: 1; padding: 6px 8px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; }
     button { padding: 6px 12px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer; }
@@ -450,6 +453,12 @@ function getChatHtml(webview: vscode.Webview): string {
 </head>
 <body>
   <div id="status"></div>
+  <div id="model-row">
+    <label for="model-select">Model:</label>
+    <select id="model-select" title="Ollama model (from Ollama API). Select to set as default.">
+      <option value="">Loading…</option>
+    </select>
+  </div>
   <div id="messages"></div>
   <form id="form">
     <input type="text" id="input" placeholder="Ask OllamaCode…" />
@@ -461,6 +470,14 @@ function getChatHtml(webview: vscode.Webview): string {
     const messagesEl = document.getElementById('messages');
     const formEl = document.getElementById('form');
     const inputEl = document.getElementById('input');
+    const modelSelect = document.getElementById('model-select');
+
+    vscode.postMessage({ type: 'getModels' });
+
+    modelSelect.addEventListener('change', () => {
+      const v = modelSelect.value;
+      if (v) vscode.postMessage({ type: 'setModel', model: v });
+    });
 
     let streamTarget = null;
     window.addEventListener('message', e => {
@@ -500,6 +517,36 @@ function getChatHtml(webview: vscode.Webview): string {
           messagesEl.appendChild(div);
         });
         messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+      if (msg.type === 'models') {
+        const list = msg.models || [];
+        const current = msg.current || '';
+        modelSelect.innerHTML = '';
+        if (list.length === 0) {
+          const opt = document.createElement('option');
+          opt.value = '';
+          opt.textContent = 'Ollama not available';
+          modelSelect.appendChild(opt);
+        } else {
+          list.forEach(name => {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            if (name === current) opt.selected = true;
+            modelSelect.appendChild(opt);
+          });
+          if (current && !list.includes(current)) {
+            const opt = document.createElement('option');
+            opt.value = current;
+            opt.textContent = current + ' (current)';
+            opt.selected = true;
+            modelSelect.insertBefore(opt, modelSelect.firstChild);
+          }
+        }
+      }
+      if (msg.type === 'modelSet') {
+        statusEl.textContent = 'Model set to ' + (msg.model || '');
+        setTimeout(() => { statusEl.textContent = ''; }, 2000);
       }
     });
 
