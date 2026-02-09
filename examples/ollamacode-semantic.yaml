@@ -17,9 +17,6 @@ mcp_servers:
     args: ["-m", "ollamacode.servers.codebase_mcp"]
   - type: stdio
     command: python
-    args: ["-m", "ollamacode.servers.git_mcp"]
-  - type: stdio
-    command: python
     args: ["-m", "ollamacode.servers.tools_mcp"]
   - type: stdio
     command: python

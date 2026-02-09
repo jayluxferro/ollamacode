@@ -1,0 +1,29 @@
+mcp_servers:
+- type: stdio
+  command: uv
+  args:
+  - --directory
+  - /Users/jay/dev/ml/mcp/burp-mcp
+  - run
+  - main.py
+  name: BURP_REST_API
+- type: stdio
+  command: uv
+  args:
+  - run
+  - /Users/jay/dev/ml/mcp/ghidraMCP/GhidraMCP/bridge_mcp_ghidra.py
+  - --mcp-host
+  - 127.0.0.1
+  - --mcp-port
+  - '13009'
+  - --ghidra-server
+  - http://127.0.0.1:13100/
+  name: ghidra
+- type: stdio
+  command: uv
+  args:
+  - --directory
+  - /Volumes/Lux/dev/ml/mcp/ollama-mcp
+  - run
+  - server.py
+  name: ollama

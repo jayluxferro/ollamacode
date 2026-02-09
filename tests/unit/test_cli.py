@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from ollamacode.cli import _parse_args, _run
+from ollamacode.cli import _parse_args, _resolve_mcp_servers, _run
 
 
 def test_parse_args_defaults():
@@ -110,3 +110,23 @@ async def test_run_uses_mcp_args_from_env(monkeypatch):
     call_args = connect.call_args[0]
     assert call_args[0] == "python"
     assert call_args[1] == ["examples/demo_server.py"]
+
+
+def test_resolve_mcp_servers_returns_using_builtin(tmp_path):
+    """_resolve_mcp_servers returns (servers, use_mcp, using_builtin)."""
+    # No config file (missing path), no env -> using_builtin True
+    servers, use_mcp, using_builtin = _resolve_mcp_servers(
+        str(tmp_path / "missing.yaml"), "python", []
+    )
+    assert use_mcp is True
+    assert using_builtin is True
+    assert len(servers) == 5
+    # With config file -> built-in servers prepended by default (include_builtin_servers True)
+    cfg = tmp_path / "ollamacode.yaml"
+    cfg.write_text("mcp_servers:\n  - type: stdio\n    command: npx\n    args: [mcp]\n")
+    servers2, use_mcp2, using_builtin2 = _resolve_mcp_servers(str(cfg), "python", [])
+    assert use_mcp2 is True
+    assert using_builtin2 is False
+    # Default: built-in (5) + custom (1) = 6; custom server is last
+    assert len(servers2) == 6
+    assert servers2[-1]["command"] == "npx"

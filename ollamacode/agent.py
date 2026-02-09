@@ -9,12 +9,13 @@ import json
 import queue
 import sys
 import threading
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
 import ollama
 
-from .bridge import add_tool_aliases_for_ollama, mcp_tools_to_ollama
+from .bridge import add_tool_aliases_for_ollama, mcp_tools_to_ollama, use_short_names_for_builtin_tools
 from .mcp_client import (
     TOOL_NAME_ALIASES,
     McpConnection,
@@ -87,15 +88,18 @@ async def run_agent_loop(
     max_tool_rounds: int = 20,
     max_messages: int = 0,
     message_history: list[dict[str, Any]] | None = None,
+    quiet: bool = False,
+    timing: bool = False,
 ) -> str:
     """
     Run one user turn: send message to Ollama with MCP tools; on tool_calls,
     execute via MCP and re-call Ollama until the model returns text only.
     message_history: optional prior turns for multi-turn conversation.
     """
-    # 1. Get MCP tools and convert to Ollama format (include alias tools so Ollama has mapping)
+    # 1. Get MCP tools and convert to Ollama format; use short names for built-in tools so the model sees read_file, run_command, etc.
     list_result = await list_tools(session)
     ollama_tools = mcp_tools_to_ollama(list_result.tools)
+    ollama_tools = use_short_names_for_builtin_tools(ollama_tools)
     ollama_tools = add_tool_aliases_for_ollama(ollama_tools, TOOL_NAME_ALIASES)
     if not ollama_tools:
         ollama_tools = []  # Ollama may require None for no tools; check docs
@@ -107,19 +111,28 @@ async def run_agent_loop(
         messages.extend(message_history)
     messages.append({"role": "user", "content": user_message})
 
+    turn_start = time.perf_counter() if timing else None
     for round_num in range(max_tool_rounds):
         # 2. Call Ollama (sync in thread); truncate if over max_messages
-        print(
-            f"[OllamaCode] Sending to model (turn {round_num + 1})...",
-            file=sys.stderr,
-            flush=True,
-        )
+        if not quiet:
+            print(
+                f"[OllamaCode] Sending to model (turn {round_num + 1})...",
+                file=sys.stderr,
+                flush=True,
+            )
         to_send = _truncate_messages(messages, max_messages) if max_messages > 0 else messages
         loop = asyncio.get_event_loop()
+        t0 = time.perf_counter() if timing else None
         response = await loop.run_in_executor(
             None,
             lambda m=model, msgs=to_send, t=ollama_tools: _ollama_chat_sync(m, msgs, t),
         )
+        if timing and t0 is not None:
+            print(
+                f"[OllamaCode] Ollama call: {time.perf_counter() - t0:.2f}s",
+                file=sys.stderr,
+                flush=True,
+            )
 
         msg = response.get("message") if isinstance(response, dict) else getattr(response, "message", None)
         if msg is None:
@@ -135,6 +148,12 @@ async def run_agent_loop(
         messages.append(assistant_msg)
 
         if not tool_calls:
+            if timing and turn_start is not None:
+                print(
+                    f"[OllamaCode] Turn total: {time.perf_counter() - turn_start:.2f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
             return (content or "").strip()
 
         # 3. Execute each tool call via MCP
@@ -145,7 +164,7 @@ async def run_agent_loop(
                 n = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
                 if n:
                     names.append(n)
-        if names:
+        if names and not quiet:
             print(
                 f"[OllamaCode] Model requested {len(names)} tool(s): {', '.join(names)}",
                 file=sys.stderr,
@@ -168,10 +187,19 @@ async def run_agent_loop(
             else:
                 arguments = raw_args or {}
 
-            _log_tool_call(name, arguments)
+            if not quiet:
+                _log_tool_call(name, arguments)
+            t0 = time.perf_counter() if timing else None
             result = await call_tool(session, name, arguments)
+            if timing and t0 is not None:
+                print(
+                    f"[OllamaCode] {name}: {time.perf_counter() - t0:.2f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
             content = tool_result_to_content(result)
-            _log_tool_result(name, content, is_error=getattr(result, "isError", False))
+            if not quiet:
+                _log_tool_result(name, content, is_error=getattr(result, "isError", False))
             messages.append(
                 {
                     "role": "tool",
@@ -180,6 +208,12 @@ async def run_agent_loop(
                 }
             )
 
+    if timing and turn_start is not None:
+        print(
+            f"[OllamaCode] Turn total: {time.perf_counter() - turn_start:.2f}s",
+            file=sys.stderr,
+            flush=True,
+        )
     return "(Max tool rounds reached; stopping.)"
 
 
@@ -210,6 +244,8 @@ async def run_agent_loop_stream(
     max_tool_rounds: int = 20,
     max_messages: int = 0,
     message_history: list[dict[str, Any]] | None = None,
+    quiet: bool = False,
+    timing: bool = False,
 ) -> AsyncIterator[str]:
     """
     Like run_agent_loop but streams content tokens as they arrive.
@@ -217,7 +253,8 @@ async def run_agent_loop_stream(
     message_history: optional prior turns [{"role":"user","content":...},{"role":"assistant","content":...}, ...].
     """
     list_result = await list_tools(session)
-    ollama_tools = add_tool_aliases_for_ollama(mcp_tools_to_ollama(list_result.tools), TOOL_NAME_ALIASES) or []
+    ollama_tools = use_short_names_for_builtin_tools(mcp_tools_to_ollama(list_result.tools))
+    ollama_tools = add_tool_aliases_for_ollama(ollama_tools, TOOL_NAME_ALIASES) or []
 
     messages: list[dict[str, Any]] = []
     if system_prompt:
@@ -227,14 +264,17 @@ async def run_agent_loop_stream(
     messages.append({"role": "user", "content": user_message})
 
     loop = asyncio.get_event_loop()
+    turn_start = time.perf_counter() if timing else None
     for round_num in range(max_tool_rounds):
-        print(
-            f"[OllamaCode] Sending to model (turn {round_num + 1})...",
-            file=sys.stderr,
-            flush=True,
-        )
+        if not quiet:
+            print(
+                f"[OllamaCode] Sending to model (turn {round_num + 1})...",
+                file=sys.stderr,
+                flush=True,
+            )
         q: queue.Queue = queue.Queue()
         to_send = _truncate_messages(messages, max_messages) if max_messages > 0 else messages
+        t0 = time.perf_counter() if timing else None
         thread = threading.Thread(
             target=_stream_into_queue,
             args=(q, model, to_send, ollama_tools),
@@ -251,6 +291,12 @@ async def run_agent_loop_stream(
                 yield content_frag
             last_msg = msg
         thread.join()
+        if timing and t0 is not None:
+            print(
+                f"[OllamaCode] Ollama call: {time.perf_counter() - t0:.2f}s",
+                file=sys.stderr,
+                flush=True,
+            )
 
         if last_msg is None:
             return
@@ -262,6 +308,12 @@ async def run_agent_loop_stream(
         messages.append(assistant_msg)
 
         if not tool_calls:
+            if timing and turn_start is not None:
+                print(
+                    f"[OllamaCode] Turn total: {time.perf_counter() - turn_start:.2f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
             return
 
         names = []
@@ -271,7 +323,7 @@ async def run_agent_loop_stream(
                 n = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
                 if n:
                     names.append(n)
-        if names:
+        if names and not quiet:
             print(
                 f"[OllamaCode] Model requested {len(names)} tool(s): {', '.join(names)}",
                 file=sys.stderr,
@@ -293,10 +345,19 @@ async def run_agent_loop_stream(
                     arguments = {}
             else:
                 arguments = raw_args or {}
-            _log_tool_call(name, arguments)
+            if not quiet:
+                _log_tool_call(name, arguments)
+            t0 = time.perf_counter() if timing else None
             result = await call_tool(session, name, arguments)
+            if timing and t0 is not None:
+                print(
+                    f"[OllamaCode] {name}: {time.perf_counter() - t0:.2f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
             content = tool_result_to_content(result)
-            _log_tool_result(name, content, is_error=getattr(result, "isError", False))
+            if not quiet:
+                _log_tool_result(name, content, is_error=getattr(result, "isError", False))
             messages.append({"role": "tool", "tool_name": name, "content": content})
 
 

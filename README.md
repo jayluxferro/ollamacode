@@ -71,49 +71,66 @@ Use `OLLAMACODE_MCP_ARGS` to pass MCP server args without flags (e.g. `export OL
 | `--stream`, `-s` | (flag) | Stream response tokens to stdout |
 | `--tui` | (flag) | Interactive terminal UI (Rich). Requires: `pip install ollamacode[tui]` |
 | `--max-messages` | config `max_messages` / 0 | Cap message history sent to Ollama (0 = no limit). For long chats. |
+| `--max-tool-rounds` | config `max_tool_rounds` / 20 | Max tool-call rounds per turn. |
+| `--timing` | config `timing` / false | Log per-step durations (Ollama call, each tool call, turn total) to stderr. |
 | `--history-file` | (path) | Append each interactive turn (user + assistant) to this file. |
+| `--quiet`, `-q` | (flag) | Suppress [OllamaCode] progress lines (e.g. for scripts). |
 | `--port` | 8000 | Port for `serve` command. |
 | `--mcp-command` | `OLLAMACODE_MCP_COMMAND` / `python` | Command for legacy single-stdio MCP |
 | `--mcp-args` | `OLLAMACODE_MCP_ARGS` (space-separated) | Args for legacy single-stdio MCP (overrides config when set) |
+| `--output`, `-o` | (path) | For **convert-mcp**: output YAML file; stdout if omitted. |
 
 **Stopping:** Press **Ctrl+C** to interrupt the agent (single query, TUI, or interactive chat).
 
 ### Config file
 
-Optional YAML config (`ollamacode.yaml` or `.ollamacode/config.yaml` in the current directory, or `--config path`):
+Optional YAML config (`ollamacode.yaml` or `.ollamacode/config.yaml` in the current directory, or `--config path`). In a monorepo, set **`OLLAMACODE_CONFIG_LOOKUP_PARENT=1`** to also search parent directories for a config file.
 
 ```yaml
 model: gpt-oss:20b
 system_prompt_extra: "Optional extra system instructions."
+rules_file: .ollamacode/rules.md   # optional: load and append to system prompt (path relative to cwd)
 max_messages: 0   # 0 = no limit; cap message history sent to Ollama (e.g. 50 for long chats)
+max_tool_rounds: 20   # max tool-call rounds per turn
+timing: false         # set true to log per-step durations to stderr
+linter_command: "ruff check ."   # used by /fix slash command (CLI and TUI)
+test_command: "pytest"          # used by /test slash command (CLI and TUI)
+semantic_codebase_hint: true   # one-time tip to add semantic MCP server (set false to disable)
+branch_context: false         # inject git diff vs base into system prompt
+branch_context_base: "main"    # base branch for branch_context
+pr_description_file: null     # optional path to PR/change description (e.g. .git/PR_DESCRIPTION)
+include_builtin_servers: true # when true (default), add fs/terminal/codebase/tools/git so the model can list files, run commands; set false to use only mcp_servers
 
 mcp_servers:
-  - type: stdio
+  - name: demo
+    type: stdio
     command: python
     args: [examples/demo_server.py]
-  - type: stdio
+  - name: fs
+    type: stdio
     command: python
     args: [examples/fs_mcp.py]
-  # HTTP/SSE (if your MCP server supports it):
-  # - type: sse
+  # Optional name: label each server (e.g. name: git). HTTP/SSE:
+  # - name: remote
+  #   type: sse
   #   url: http://localhost:8000/sse
   # - type: streamable_http
   #   url: http://localhost:8000/mcp
 ```
 
-When multiple servers are configured, tool names are prefixed with the server name (e.g. `OllamaCode Demo_add`, `ollamacode-fs_read_file`) so the agent can call the right server.
+You can add an optional **`name`** to each server (e.g. `name: git`, `name: burp`) to label it in the config. When multiple servers are configured, tool names are prefixed with the server name (e.g. `OllamaCode Demo_add`, `ollamacode-fs_read_file`) so the agent can call the right server.
 
 ### Built-in MCP (default)
 
 When you run OllamaCode **without** a config file and **without** `OLLAMACODE_MCP_ARGS`, it automatically starts five built-in MCP servers so the agent can work efficiently out of the box:
 
 - **ollamacode-fs** – `read_file`, `write_file`, `list_dir` (workspace root: `OLLAMACODE_FS_ROOT` or cwd).
-- **ollamacode-terminal** – `run_command` (run shell commands, cwd, env, timeout).
+- **ollamacode-terminal** – `run_command` (run shell commands, cwd, env, timeout). Set **`OLLAMACODE_BLOCK_DANGEROUS_COMMANDS=1`** to block dangerous patterns (e.g. `rm -rf /`, `curl | bash`).
 - **ollamacode-codebase** – `search_codebase` (keyword search), `get_relevant_files` (path match).
-- **ollamacode-git** – read-only Git: `git_status`, `git_diff_unstaged`, `git_diff_staged`, `git_log`, `git_show`, `git_branch` (understand repo state; no commit/push).
 - **ollamacode-tools** – `run_linter` (e.g. ruff, eslint), `run_tests` (e.g. pytest, npm test); returns stdout/stderr/return code.
+- **ollamacode-git** – Git: `git_status`, `git_diff_unstaged`, `git_diff_staged`, `git_log`, `git_show`, `git_branch`, `git_add`, `git_commit` (no push or checkout).
 
-They are shipped inside the package (`ollamacode.servers`) and run as subprocesses. To disable MCP entirely, use a config file with `mcp_servers: []`. To add or replace servers, use `ollamacode.yaml` or `OLLAMACODE_MCP_ARGS`.
+They are shipped inside the package (`ollamacode.servers`) and run as subprocesses. For **full Git** (commit, push), see [Opt-in: full Git (commit, push)](#opt-in-full-git-commit-push). To disable MCP entirely, use a config file with `mcp_servers: []`. To add or replace servers, use `ollamacode.yaml` or `OLLAMACODE_MCP_ARGS`.
 
 ### Opt-in: full Git (commit, push)
 
@@ -184,6 +201,46 @@ In `examples/` you can run alternate or extra servers and add them via config:
 
 Run any of them with stdio and add to config or `OLLAMACODE_MCP_ARGS` (e.g. `python examples/demo_server.py`).
 
+### @-style context (file / folder)
+
+In your message you can use **@path** to inject file or folder context so the model gets it without extra tool calls:
+
+- **@path/to/file** – Injects the file contents (relative to workspace root).
+- **@path/to/folder/** – Injects a list of file names in that folder (up to 100 entries).
+
+Example: `refactor @src/main.py to use async` — the model receives the file contents plus your instruction. Paths are resolved from the directory from which you run OllamaCode (workspace root).
+
+### Chat with selection (--file / --lines)
+
+Use **`--file PATH`** to prepend a file’s contents to your prompt (e.g. “explain this”). Use **`--lines START-END`** to include only a line range (1-based, inclusive):
+
+```bash
+ollamacode --file src/main.py "explain this"
+ollamacode --file src/main.py --lines 10-30 "refactor this block"
+```
+
+Paths are relative to the current directory (workspace root).
+
+### Structured apply-edits (--apply-edits)
+
+Use **`--apply-edits`** so the model is instructed to output file changes in a parseable format. After the response, OllamaCode looks for a `<<EDITS>>` … `<<END>>` block containing a JSON array of `{ "path": "file", "oldText": "optional", "newText": "new content" }`. It shows a diff and prompts **Apply these edits? [y/N]**; if you answer **y**, the edits are applied to the workspace.
+
+### Write scope
+
+All file writes are scoped to the workspace root (the directory from which you run OllamaCode). The built-in **fs_mcp** server rejects paths outside `OLLAMACODE_FS_ROOT`; **--apply-edits** skips any edit whose path would resolve outside the workspace. This keeps model-driven edits from touching files outside your project.
+
+### Semantic codebase
+
+The built-in **codebase** MCP does keyword search. For semantic “where is X?” search, add a semantic MCP server to your config (see **docs/MCP_SERVERS.md**). When you start interactive mode without a semantic server, OllamaCode can show a one-line tip; set **`semantic_codebase_hint: false`** to disable it.
+
+### Session summary
+
+In interactive mode (CLI or TUI), use **`/summary [N]`** to summarize the last N turns (default 5) and replace them with one summary message. This frees context for long chats.
+
+### Branch/PR context
+
+Set **`branch_context: true`** (and optionally **`branch_context_base: "main"`**) to inject the current **git diff vs the base branch** into the system prompt so the model knows what you’re working on. Optionally set **`pr_description_file`** (e.g. `.git/PR_DESCRIPTION`) to also inject a PR or change description from a file.
+
 ### File and path context
 
 Mention paths in your prompt (e.g. "in `src/main.py`"); if you use the **fs_mcp** server (e.g. from config), the model can call `read_file` / `list_dir` to read workspace files.
@@ -226,11 +283,34 @@ So: **OllamaCode = MCP client + Ollama (tool calling) + agent loop**. No cloud; 
 
 ### Local HTTP API (other editors)
 
-Run **`ollamacode serve`** (or `ollamacode serve --port 9000`) to start a local API. Requires: `pip install ollamacode[server]`. **POST /chat** with JSON `{"message": "..."}` returns `{"content": "..."}`. Use this from Zed, Sublime, Neovim, or scripts instead of spawning the CLI. See [.docs/OTHER_EDITORS.md](.docs/OTHER_EDITORS.md) for integration ideas.
+Run **`ollamacode serve`** (or `ollamacode serve --port 9000`) to start a local API. Requires: `pip install ollamacode[server]`. **POST /chat** with JSON `{"message": "..."}` returns `{"content": "..."}`. Use this from Zed, Sublime, Neovim, or scripts instead of spawning the CLI. See [docs/OTHER_EDITORS.md](docs/OTHER_EDITORS.md) for integration ideas.
 
 ### Conversation history
 
-Use **`--history-file PATH`** in interactive mode to append each turn (user + assistant) to a file.
+Use **`--history-file PATH`** in interactive mode to append each turn (user + assistant) to a file. Format: one block per turn, `---` then `user: <content>` and `assistant: <content>` (one line each, content may be multi-line in YAML style). Example:
+
+```
+---
+user: What is 2+3?
+assistant: 5
+---
+user: Explain recursion
+assistant: Recursion is...
+```
+
+### Adding MCP servers (Cursor / Claude style)
+
+To use the same MCP servers as Cursor or Claude, put them in **`ollamacode.yaml`** under `mcp_servers`. See [docs/MCP_SERVERS.md](docs/MCP_SERVERS.md) for the config format and how to translate Cursor/Claude JSON config into OllamaCode YAML.
+
+**Convert existing config:** Use **`convert-mcp`** to turn Cursor or Claude JSON into OllamaCode YAML:
+```bash
+ollamacode convert-mcp cursor-mcp.json --output ollamacode.yaml
+cat claude_mcp.json | ollamacode convert-mcp -o .ollamacode/config.yaml
+```
+
+## Roadmap
+
+Ideas to make OllamaCode the best local coding assistant—UX, reliability, safety, and features—are in [.docs/ROADMAP.md](.docs/ROADMAP.md) (for contributors).
 
 ## References
 

@@ -2,7 +2,12 @@
 
 from unittest.mock import patch
 
-from ollamacode.config import DEFAULT_MCP_SERVERS, load_config, merge_config_with_env
+from ollamacode.config import (
+    DEFAULT_MCP_SERVERS,
+    find_config_file,
+    load_config,
+    merge_config_with_env,
+)
 
 
 def test_load_config_no_file():
@@ -41,13 +46,26 @@ def test_merge_config_with_env_empty():
 
 
 def test_merge_config_with_env_config_wins_when_env_empty():
-    """merge_config_with_env uses config when env not set."""
+    """merge_config_with_env uses config when env not set; custom mcp_servers get built-in prepended by default."""
     config = {
         "model": "from-config",
         "mcp_servers": [{"type": "stdio", "command": "npx", "args": ["mcp"]}],
     }
     out = merge_config_with_env(config, model_env=None, mcp_args_env=None, system_extra_env=None)
     assert out["model"] == "from-config"
+    # By default include_builtin_servers is True: built-in (fs, terminal, codebase, tools, git) + custom
+    assert len(out["mcp_servers"]) == len(DEFAULT_MCP_SERVERS) + 1
+    assert out["mcp_servers"][: len(DEFAULT_MCP_SERVERS)] == DEFAULT_MCP_SERVERS
+    assert out["mcp_servers"][-1] == {"type": "stdio", "command": "npx", "args": ["mcp"]}
+
+
+def test_merge_config_include_builtin_servers_false():
+    """When include_builtin_servers: false, only config mcp_servers are used (no built-in)."""
+    config = {
+        "mcp_servers": [{"type": "stdio", "command": "npx", "args": ["mcp"]}],
+        "include_builtin_servers": False,
+    }
+    out = merge_config_with_env(config, model_env=None, mcp_args_env=None, system_extra_env=None)
     assert out["mcp_servers"] == [{"type": "stdio", "command": "npx", "args": ["mcp"]}]
 
 
@@ -62,15 +80,37 @@ def test_merge_config_empty_config_no_env_uses_default_servers():
     """When config has no mcp_servers and env has no MCP args, built-in servers are used."""
     out = merge_config_with_env({}, model_env=None, mcp_args_env=None, system_extra_env=None)
     assert out["mcp_servers"] == DEFAULT_MCP_SERVERS
-    assert len(out["mcp_servers"]) == 4
+    assert len(out["mcp_servers"]) == 5
     mods = [s["args"][1] for s in out["mcp_servers"] if s["args"]]
     assert "ollamacode.servers.fs_mcp" in mods
     assert "ollamacode.servers.terminal_mcp" in mods
     assert "ollamacode.servers.codebase_mcp" in mods
     assert "ollamacode.servers.tools_mcp" in mods
+    assert "ollamacode.servers.git_mcp" in mods
 
 
 def test_merge_config_explicit_empty_mcp_servers():
     """When config has mcp_servers: [], no default servers; MCP disabled."""
     out = merge_config_with_env({"mcp_servers": []}, mcp_args_env=None)
     assert out["mcp_servers"] == []
+
+
+def test_merge_config_max_tool_rounds():
+    """merge_config_with_env returns max_tool_rounds from config or default 20."""
+    out = merge_config_with_env({}, model_env=None, mcp_args_env=None, system_extra_env=None)
+    assert out["max_tool_rounds"] == 20
+    out2 = merge_config_with_env({"max_tool_rounds": 10}, mcp_args_env=None)
+    assert out2["max_tool_rounds"] == 10
+
+
+def test_find_config_file_lookup_parent_dirs(tmp_path):
+    """find_config_file with lookup_parent_dirs=True finds config in parent dir."""
+    subdir = tmp_path / "sub" / "deep"
+    subdir.mkdir(parents=True)
+    config_in_parent = tmp_path / "ollamacode.yaml"
+    config_in_parent.write_text("model: from-parent\n")
+    found = find_config_file(None, cwd=subdir, lookup_parent_dirs=True)
+    assert found is not None
+    assert found == config_in_parent.resolve()
+    found_none = find_config_file(None, cwd=subdir, lookup_parent_dirs=False)
+    assert found_none is None

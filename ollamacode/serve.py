@@ -1,7 +1,7 @@
 """
 Optional local HTTP API for OllamaCode. Run: ollamacode serve --port 8000
 Requires: pip install ollamacode[server]
-Endpoints: POST /chat with JSON {"message": "..."} returns {"content": "..."}.
+Endpoints: POST /chat with JSON {"message": "...", "file"?,"lines"?} returns {"content": "...", "edits"?}.
 """
 
 from __future__ import annotations
@@ -11,6 +11,8 @@ import os
 
 from .agent import run_agent_loop, run_agent_loop_no_mcp
 from .config import load_config, merge_config_with_env
+from .context import prepend_file_context
+from .edits import parse_edits
 from .mcp_client import McpConnection, connect_mcp_servers, connect_mcp_stdio
 
 
@@ -20,13 +22,22 @@ async def _handle_chat(
     system_extra: str,
     body: dict,
     max_messages: int,
+    workspace_root: str,
 ) -> dict:
     message = (body.get("message") or "").strip()
     if not message:
         return {"content": "", "error": "message required"}
+    file_path = body.get("file")
+    lines_spec = body.get("lines")
+    if file_path:
+        message = prepend_file_context(message, str(file_path), workspace_root, lines_spec)
     model_override = body.get("model")
     use_model = model_override or model
-    system = "You are a helpful coding assistant. Use the available tools when they would help."
+    system = (
+        "You are a coding assistant with full access to the workspace. You are given a list of available tools with their names "
+        "and descriptions—use whichever tools fit the task. When the user asks you to run something, check something, or change "
+        "something, use the appropriate tool and report the result."
+    )
     if system_extra:
         system = system + "\n\n" + system_extra
     try:
@@ -40,7 +51,11 @@ async def _handle_chat(
             )
         else:
             out = await run_agent_loop_no_mcp(use_model, message, system_prompt=system)
-        return {"content": out}
+        result = {"content": out}
+        edits = parse_edits(out)
+        if edits:
+            result["edits"] = edits
+        return result
     except Exception as e:
         return {"content": "", "error": str(e)}
 
@@ -50,8 +65,10 @@ def create_app(
     mcp_servers: list[dict],
     system_extra: str,
     max_messages: int = 0,
+    workspace_root: str | None = None,
 ):
     """Create ASGI app (Starlette) with MCP session in lifespan."""
+    root = workspace_root or os.getcwd()
     try:
         from starlette.applications import Starlette
         from starlette.requests import Request
@@ -86,7 +103,7 @@ def create_app(
         except Exception:
             return JSONResponse({"error": "invalid json"}, status_code=400)
         session: McpConnection | None = getattr(request.app.state, "session", None)
-        result = await _handle_chat(session, model, system_extra, body, max_messages)
+        result = await _handle_chat(session, model, system_extra, body, max_messages, root)
         return JSONResponse(result)
 
     app = Starlette(
@@ -114,6 +131,7 @@ def run_serve(port: int = 8000, config_path: str | None = None) -> None:
     system_extra = (merged.get("system_prompt_extra") or "").strip()
     mcp_servers = merged.get("mcp_servers") or []
     max_messages = merged.get("max_messages", 0)
+    workspace_root = os.getcwd()
 
-    app = create_app(model, mcp_servers, system_extra, max_messages)
+    app = create_app(model, mcp_servers, system_extra, max_messages, workspace_root)
     uvicorn.run(app, host="127.0.0.1", port=port)
