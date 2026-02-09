@@ -45,7 +45,11 @@ def _conversation_to_markdown(
     If limit_exchanges is set, only the last N user+assistant pairs are shown so
     the panel stays small and tool output remains visible in the terminal.
     """
-    if limit_exchanges is not None and limit_exchanges > 0 and len(history) > limit_exchanges * 2:
+    if (
+        limit_exchanges is not None
+        and limit_exchanges > 0
+        and len(history) > limit_exchanges * 2
+    ):
         history = history[-(limit_exchanges * 2) :]
         prefix = "*(scroll up for earlier messages)*\n\n"
     else:
