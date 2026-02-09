@@ -181,6 +181,15 @@ async def _run(
 ) -> None:
     use_mcp = bool(mcp_servers)
 
+    # Inject workspace root so MCP servers (fs, terminal, codebase) run in the directory from which the CLI was started
+    workspace_root = os.getcwd()
+    mcp_servers = [
+        {**entry, "env": {**(entry.get("env") or {}), "OLLAMACODE_FS_ROOT": workspace_root}}
+        if (entry.get("type") or "stdio").lower() == "stdio"
+        else entry
+        for entry in mcp_servers
+    ]
+
     if tui and not query:
         try:
             from .tui import run_tui
@@ -195,7 +204,8 @@ async def _run(
                 if len(mcp_servers) == 1 and mcp_servers[0].get("type") == "stdio":
                     cmd = mcp_servers[0].get("command", "python")
                     args = mcp_servers[0].get("args") or []
-                    session_ctx = connect_mcp_stdio(cmd, args)
+                    env = mcp_servers[0].get("env")
+                    session_ctx = connect_mcp_stdio(cmd, args, env=env)
                 else:
                     session_ctx = connect_mcp_servers(mcp_servers)
                 async with session_ctx as session:
@@ -312,7 +322,8 @@ async def _run(
     if len(mcp_servers) == 1 and mcp_servers[0].get("type") == "stdio":
         cmd = mcp_servers[0].get("command", "python")
         args = mcp_servers[0].get("args") or []
-        session_ctx = connect_mcp_stdio(cmd, args)
+        env = mcp_servers[0].get("env")
+        session_ctx = connect_mcp_stdio(cmd, args, env=env)
     else:
         session_ctx = connect_mcp_servers(mcp_servers)
 
