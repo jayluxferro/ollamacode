@@ -123,6 +123,47 @@ def _log_tool_result(name: str, content: str, is_error: bool = False) -> None:
         print(f"  [{name}] {label}: (empty)", file=sys.stderr, flush=True)
 
 
+def _tool_call_one_line(name: str, arguments: dict[str, Any]) -> str:
+    """One-line summary for tool call (reduces flicker when streaming)."""
+    if name in ("read_file", "write_file") and isinstance(arguments.get("path"), str):
+        return f"{name}({arguments.get('path', '')})"
+    if name == "run_command" and isinstance(arguments.get("command"), str):
+        cmd = arguments["command"].strip()
+        return f"run_command({cmd[:50] + '...' if len(cmd) > 50 else cmd})"
+    if name == "list_dir" and isinstance(arguments.get("path"), str):
+        return f"list_dir({arguments.get('path', '')})"
+    if arguments:
+        # First key or a short repr
+        first = next(iter(arguments.items()))
+        return f"{name}({first[0]}={str(first[1])[:30]}...)" if len(str(first[1])) > 30 else f"{name}({first[0]}={first[1]})"
+    return name
+
+
+def _tool_result_one_line(name: str, content: str, is_error: bool) -> str:
+    """One-line summary for tool result (Cursor-style: compact and readable)."""
+    if is_error:
+        first_line = (content.splitlines() or [""])[0][:60]
+        return f"→ error: {first_line}{'...' if len((content.splitlines() or [''])[0]) > 60 else ''}"
+    # run_command often returns JSON {stdout, stderr, return_code}
+    if name == "run_command" and content.strip().startswith("{"):
+        try:
+            data = json.loads(content)
+            code = data.get("return_code", "?")
+            stdout = (data.get("stdout") or "").strip()
+            stderr = (data.get("stderr") or "").strip()
+            if code == 0:
+                summary = (stdout.splitlines()[0][:50] + "…") if stdout and len(stdout.splitlines()[0]) > 50 else (stdout or "ok")
+                return f"→ return_code={code} {summary}"
+            err_preview = (stderr.splitlines()[0][:45] + "…") if stderr else "failed"
+            return f"→ return_code={code} {err_preview}"
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass
+    n = len(content)
+    if n == 0:
+        return "→ (empty)"
+    return f"→ {n} char(s)"
+
+
 def _truncate_messages(
     messages: list[dict[str, Any]], max_messages: int
 ) -> list[dict[str, Any]]:
@@ -170,11 +211,13 @@ async def run_agent_loop(
     message_history: list[dict[str, Any]] | None = None,
     quiet: bool = False,
     timing: bool = False,
+    tool_progress_brief: bool = False,
 ) -> str:
     """
     Run one user turn: send message to Ollama with MCP tools; on tool_calls,
     execute via MCP and re-call Ollama until the model returns text only.
     message_history: optional prior turns for multi-turn conversation.
+    tool_progress_brief: when True, print one line per tool to reduce terminal flicker (e.g. when streaming).
     """
     # 1. Get MCP tools and convert to Ollama format; use short names for built-in tools so the model sees read_file, run_command, etc.
     list_result = await list_tools(session)
@@ -194,7 +237,7 @@ async def run_agent_loop(
     turn_start = time.perf_counter() if timing else None
     for round_num in range(max_tool_rounds):
         # 2. Call Ollama (sync in thread); truncate if over max_messages
-        if not quiet:
+        if not quiet and not tool_progress_brief:
             print(
                 f"[OllamaCode] Sending to model (turn {round_num + 1})...",
                 file=sys.stderr,
@@ -266,12 +309,20 @@ async def run_agent_loop(
             items.append((name, arguments))
 
         if items and not quiet:
-            names = [x[0] for x in items]
-            print(
-                f"[OllamaCode] Model requested {len(names)} tool(s): {', '.join(names)}",
-                file=sys.stderr,
-                flush=True,
-            )
+            if tool_progress_brief:
+                names = [x[0] for x in items]
+                print(
+                    f"[OllamaCode] Running {len(names)} tool(s): {', '.join(names)}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                names = [x[0] for x in items]
+                print(
+                    f"[OllamaCode] Model requested {len(names)} tool(s): {', '.join(names)}",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
         if items:
             t0_parallel = time.perf_counter() if timing else None
@@ -281,17 +332,30 @@ async def run_agent_loop(
             )
             for (name, arguments), result in zip(items, results):
                 if not quiet:
-                    _log_tool_call(name, arguments)
+                    if tool_progress_brief:
+                        print(
+                            f"  [OllamaCode] {_tool_call_one_line(name, arguments)}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    else:
+                        _log_tool_call(name, arguments)
                 if isinstance(result, BaseException):
                     content = f"Tool error: {result}"
-                    if not quiet:
+                    is_error = True
+                    if not quiet and not tool_progress_brief:
                         _log_tool_result(name, content, is_error=True)
                 else:
                     content = tool_result_to_content(result)
-                    if not quiet:
-                        _log_tool_result(
-                            name, content, is_error=getattr(result, "isError", False)
-                        )
+                    is_error = getattr(result, "isError", False)
+                    if not quiet and not tool_progress_brief:
+                        _log_tool_result(name, content, is_error=is_error)
+                if not quiet and tool_progress_brief:
+                    print(
+                        f"  [OllamaCode] {name} {_tool_result_one_line(name, content, is_error)}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                 content = _truncate_tool_result(content, max_tool_result_chars)
                 messages.append(
                     {"role": "tool", "tool_name": name, "content": content}
@@ -371,11 +435,13 @@ async def run_agent_loop_stream(
     message_history: list[dict[str, Any]] | None = None,
     quiet: bool = False,
     timing: bool = False,
+    tool_progress_brief: bool = False,
 ) -> AsyncIterator[str]:
     """
     Like run_agent_loop but streams content tokens as they arrive.
     Yields content fragments (str). When tool_calls occur, runs them and continues streaming the next turn.
     message_history: optional prior turns [{"role":"user","content":...},{"role":"assistant","content":...}, ...].
+    tool_progress_brief: when True, print one line per tool to reduce terminal flicker during streaming.
     """
     list_result = await list_tools(session)
     ollama_tools = use_short_names_for_builtin_tools(
@@ -393,7 +459,7 @@ async def run_agent_loop_stream(
     loop = asyncio.get_event_loop()
     turn_start = time.perf_counter() if timing else None
     for round_num in range(max_tool_rounds):
-        if not quiet:
+        if not quiet and not tool_progress_brief:
             print(
                 f"[OllamaCode] Sending to model (turn {round_num + 1})...",
                 file=sys.stderr,
@@ -469,12 +535,20 @@ async def run_agent_loop_stream(
             arguments = _parse_tool_args(raw_args)
             items_stream.append((name, arguments))
         if items_stream and not quiet:
-            names = [x[0] for x in items_stream]
-            print(
-                f"[OllamaCode] Model requested {len(names)} tool(s): {', '.join(names)}",
-                file=sys.stderr,
-                flush=True,
-            )
+            if tool_progress_brief:
+                names = [x[0] for x in items_stream]
+                print(
+                    f"[OllamaCode] Running {len(names)} tool(s): {', '.join(names)}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                names = [x[0] for x in items_stream]
+                print(
+                    f"[OllamaCode] Model requested {len(names)} tool(s): {', '.join(names)}",
+                    file=sys.stderr,
+                    flush=True,
+                )
         if items_stream:
             results_stream = await asyncio.gather(
                 *[
@@ -485,17 +559,30 @@ async def run_agent_loop_stream(
             )
             for (name, arguments), result in zip(items_stream, results_stream):
                 if not quiet:
-                    _log_tool_call(name, arguments)
+                    if tool_progress_brief:
+                        print(
+                            f"  [OllamaCode] {_tool_call_one_line(name, arguments)}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    else:
+                        _log_tool_call(name, arguments)
                 if isinstance(result, BaseException):
                     content = f"Tool error: {result}"
-                    if not quiet:
+                    is_error = True
+                    if not quiet and not tool_progress_brief:
                         _log_tool_result(name, content, is_error=True)
                 else:
                     content = tool_result_to_content(result)
-                    if not quiet:
-                        _log_tool_result(
-                            name, content, is_error=getattr(result, "isError", False)
-                        )
+                    is_error = getattr(result, "isError", False)
+                    if not quiet and not tool_progress_brief:
+                        _log_tool_result(name, content, is_error=is_error)
+                if not quiet and tool_progress_brief:
+                    print(
+                        f"  [OllamaCode] {name} {_tool_result_one_line(name, content, is_error)}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                 content = _truncate_tool_result(content, max_tool_result_chars)
                 messages.append(
                     {"role": "tool", "tool_name": name, "content": content}

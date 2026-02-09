@@ -527,6 +527,7 @@ async def _run(
                 message_history=message_history if message_history else None,
                 quiet=quiet,
                 timing=timing,
+                tool_progress_brief=True,
             ):
                 print(frag, end="", flush=True)
                 buf.append(frag)

@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
-from ollamacode.agent import _parse_tool_args, run_agent_loop, run_agent_loop_no_mcp
+from ollamacode.agent import (
+    _parse_tool_args,
+    _tool_call_one_line,
+    run_agent_loop,
+    run_agent_loop_no_mcp,
+)
 
 
 def test_parse_tool_args_tolerates_extra_brace():
@@ -21,6 +26,16 @@ def test_parse_tool_args_tolerates_extra_bracket_and_newlines():
     """_parse_tool_args fixes extra ']' before '}' and unescaped newlines in strings."""
     assert _parse_tool_args('{"key": "val"]}') == {"key": "val"}
     assert _parse_tool_args('{"a": "line1\n line2"}') == {"a": "line1  line2"}
+
+
+def test_tool_call_one_line():
+    """_tool_call_one_line produces one-line summaries for brief progress."""
+    assert _tool_call_one_line("read_file", {"path": "src/foo.py"}) == "read_file(src/foo.py)"
+    assert _tool_call_one_line("run_command", {"command": "pytest"}) == "run_command(pytest)"
+    assert _tool_call_one_line("run_command", {"command": "x" * 60}) == "run_command(" + "x" * 50 + "...)"
+    assert _tool_call_one_line("list_dir", {"path": "/tmp"}) == "list_dir(/tmp)"
+    assert _tool_call_one_line("unknown_tool", {}) == "unknown_tool"
+    assert "bar" in _tool_call_one_line("other", {"bar": "baz"})
 
 
 def _make_message(content: str, tool_calls: list | None = None) -> dict:

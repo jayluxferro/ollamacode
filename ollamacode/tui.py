@@ -298,6 +298,7 @@ async def run_tui(
                 message_history=msg_history,
                 quiet=quiet,
                 timing=timing,
+                tool_progress_brief=True,
             )
         else:
             stream = run_agent_loop_no_mcp_stream(
