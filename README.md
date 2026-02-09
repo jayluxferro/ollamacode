@@ -7,7 +7,6 @@ A coding assistant powered by **local models** (Ollama) and **MCP** (Model Conte
 - **Local-only**: Ollama for all reasoning and code generation; no cloud API required.
 - **MCP tools**: Connect any MCP server (filesystem, browser, custom tools) and use them from the agent.
 - **CLI**: One-off queries or interactive chat from the terminal.
-- **VS Code**: Sidebar chat panel and `@ollamacode` in VS Code Chat; optional workspace edit application.
 
 ## Prerequisites
 
@@ -69,7 +68,7 @@ Use `OLLAMACODE_MCP_ARGS` to pass MCP server args without flags (e.g. `export OL
 |--------|----------------|-------------|
 | `--config`, `-c` | (none) | Path to config file (default: `ollamacode.yaml` or `.ollamacode/config.yaml` in cwd) |
 | `--model`, `-m` | `OLLAMACODE_MODEL` / `gpt-oss:20b` | Ollama model name |
-| `--stream`, `-s` | (flag) | Stream response tokens to stdout (for extension or live display) |
+| `--stream`, `-s` | (flag) | Stream response tokens to stdout |
 | `--tui` | (flag) | Interactive terminal UI (Rich). Requires: `pip install ollamacode[tui]` |
 | `--max-messages` | config `max_messages` / 0 | Cap message history sent to Ollama (0 = no limit). For long chats. |
 | `--history-file` | (path) | Append each interactive turn (user + assistant) to this file. |
@@ -185,20 +184,9 @@ In `examples/` you can run alternate or extra servers and add them via config:
 
 Run any of them with stdio and add to config or `OLLAMACODE_MCP_ARGS` (e.g. `python examples/demo_server.py`).
 
-### VS Code extension
-
-1. Open `editor/vscode-extension` in VS Code.
-2. Run `npm install` and `npm run compile`, then press **F5** to launch the Extension Development Host.
-3. In the new window:
-   - Open **OllamaCode** from the Activity Bar: **Chat** (quick Q&A) or **Composer** (multi-file task → list of proposed changes → Preview / Apply / Reject per file or all), or
-   - In Chat, type **@ollamacode** and your prompt.
-
-**Extension settings:** `ollamacode.cliPath`, `ollamacode.model`, `ollamacode.mcpArgs`, `ollamacode.reviewEditsBeforeApply`, `ollamacode.streamResponse` (stream tokens as they arrive), `ollamacode.injectCurrentFile` (prepend current file path to the prompt). When the model outputs edits in the `<<OLLAMACODE_EDITS>>` … `<<END>>` protocol, the extension applies them in the workspace (optionally after showing Apply all / Reject / Show diff). **Chat history** is persisted in workspace state (last 20 messages). **Inline chat:** right-click selected code → **OllamaCode: Chat with Selection** to open the chat panel with the selection as context. Full settings, edit protocol, and how to add MCP: **[editor/vscode-extension/README.md](editor/vscode-extension/README.md)**.
-
 ### File and path context
 
-- **CLI**: Mention paths in your prompt (e.g. “in `src/main.py`”); if you use the **fs_mcp** server (e.g. from config), the model can call `read_file` / `list_dir` to read workspace files.
-- **Extension**: With **`ollamacode.injectCurrentFile`** (default: on), the extension prepends the current editor file path to your prompt (e.g. “Current file: src/main.py”) so the model knows which file you’re in. You can still refer to other paths in the prompt; the fs_mcp server can read them if configured.
+Mention paths in your prompt (e.g. "in `src/main.py`"); if you use the **fs_mcp** server (e.g. from config), the model can call `read_file` / `list_dir` to read workspace files.
 
 ### Context window and long conversations
 
@@ -222,8 +210,6 @@ OllamaCode/
 │   ├── terminal_mcp.py   # Terminal MCP (run_command)
 │   └── codebase_mcp.py   # Codebase search (search_codebase, get_relevant_files)
 ├── tests/                # Pytest tests
-├── editor/
-│   └── vscode-extension/ # VS Code extension
 ├── pyproject.toml
 └── README.md
 ```
@@ -244,8 +230,7 @@ Run **`ollamacode serve`** (or `ollamacode serve --port 9000`) to start a local 
 
 ### Conversation history
 
-- **CLI:** Use **`--history-file PATH`** in interactive mode to append each turn (user + assistant) to a file.
-- **Extension:** Chat history (last 20 messages) is stored in workspace state and restored when you reopen the panel.
+Use **`--history-file PATH`** in interactive mode to append each turn (user + assistant) to a file.
 
 ## References
 
