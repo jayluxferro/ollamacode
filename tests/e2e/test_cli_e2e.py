@@ -46,6 +46,4 @@ def test_cli_demo_mcp_full_flow():
         timeout=150,
     )
     assert result.returncode == 0, f"CLI failed: stderr={result.stderr!r}"
-    assert (
-        "5" in result.stdout
-    ), f"Expected '5' in response. out={result.stdout!r} err={result.stderr!r}"
+    assert "5" in result.stdout, f"Expected '5' in response. out={result.stdout!r} err={result.stderr!r}"

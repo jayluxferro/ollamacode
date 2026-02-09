@@ -96,9 +96,7 @@ async def run_tui(
         from rich.markdown import Markdown
         from rich.panel import Panel
     except ImportError as e:
-        raise ImportError(
-            "TUI requires rich. Install with: pip install ollamacode[tui]"
-        ) from e
+        raise ImportError("TUI requires rich. Install with: pip install ollamacode[tui]") from e
 
     # Suppress MCP SDK INFO logs (e.g. "Processing request of type ListToolsRequest") so TUI stays clean
     for _name in ("mcp", "mcp.client", "mcp.server"):

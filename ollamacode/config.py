@@ -107,9 +107,7 @@ def merge_config_with_env(
     """
     out: dict[str, Any] = {}
     out["model"] = model_env or config.get("model")
-    out["system_prompt_extra"] = (system_extra_env or "").strip() or (
-        config.get("system_prompt_extra") or ""
-    ).strip()
+    out["system_prompt_extra"] = (system_extra_env or "").strip() or (config.get("system_prompt_extra") or "").strip()
     out["max_messages"] = config.get("max_messages", 0)
 
     if mcp_args_env:

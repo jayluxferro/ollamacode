@@ -51,6 +51,4 @@ def test_cli_with_config_two_mcp_servers(tmp_path):
         timeout=150,
     )
     assert result.returncode == 0, f"CLI failed: stderr={result.stderr!r}"
-    assert (
-        "5" in result.stdout
-    ), f"Expected '5' in response. out={result.stdout!r} err={result.stderr!r}"
+    assert "5" in result.stdout, f"Expected '5' in response. out={result.stdout!r} err={result.stderr!r}"

@@ -23,9 +23,7 @@ from mcp.types import CallToolResult, Implementation, ListToolsResult, TextConte
 McpConnection = ClientSession | ClientSessionGroup
 
 
-def _server_params_from_config(
-    entry: Dict[str, Any]
-) -> StdioServerParameters | SseServerParameters | StreamableHttpParameters:
+def _server_params_from_config(entry: Dict[str, Any]) -> StdioServerParameters | SseServerParameters | StreamableHttpParameters:
     """Build MCP ServerParameters from a config dict (type, command/args or url)."""
     kind = (entry.get("type") or "stdio").lower()
     if kind == "stdio":
@@ -47,12 +45,8 @@ def _server_params_from_config(
         return StreamableHttpParameters(
             url=entry["url"],
             headers=entry.get("headers"),
-            timeout=timedelta(
-                seconds=timeout if isinstance(timeout, (int, float)) else 30
-            ),
-            sse_read_timeout=timedelta(
-                seconds=sse_read if isinstance(sse_read, (int, float)) else 60 * 5
-            ),
+            timeout=timedelta(seconds=timeout if isinstance(timeout, (int, float)) else 30),
+            sse_read_timeout=timedelta(seconds=sse_read if isinstance(sse_read, (int, float)) else 60 * 5),
             terminate_on_close=entry.get("terminate_on_close", True),
         )
     raise ValueError(f"Unknown MCP server type: {kind}")
