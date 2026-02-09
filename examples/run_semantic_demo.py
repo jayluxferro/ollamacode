@@ -12,7 +12,11 @@ from pathlib import Path
 repo_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(repo_root))
 
-from ollamacode.servers.semantic_mcp import index_codebase, semantic_search_codebase
+# Import after path manipulation; ignore E402 for this file
+from ollamacode.servers.semantic_mcp import (
+    index_codebase,
+    semantic_search_codebase,
+)  # noqa: E402
 
 
 def main():

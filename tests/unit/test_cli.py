@@ -27,7 +27,10 @@ def test_parse_args_query_and_model():
 
 def test_parse_args_mcp_args():
     """_parse_args accepts --mcp-args; use -- to separate from query."""
-    with patch("sys.argv", ["ollamacode", "--mcp-args", "python", "server.py", "--", "what is 2+2"]):
+    with patch(
+        "sys.argv",
+        ["ollamacode", "--mcp-args", "python", "server.py", "--", "what is 2+2"],
+    ):
         args = _parse_args()
     assert args.mcp_args == ["python", "server.py"]
     assert args.query == "what is 2+2"
@@ -69,7 +72,11 @@ def test_parse_args_env_model(monkeypatch):
 async def test_run_no_mcp_single_query(capsys):
     """_run with query and no MCP prints agent output."""
     with (
-        patch("ollamacode.cli.run_agent_loop_no_mcp", new_callable=AsyncMock, return_value="Hi back"),
+        patch(
+            "ollamacode.cli.run_agent_loop_no_mcp",
+            new_callable=AsyncMock,
+            return_value="Hi back",
+        ),
     ):
         await _run("test-model", [], "", "hello", False, False, 0, None)
     out = capsys.readouterr().out
@@ -81,7 +88,9 @@ async def test_run_respects_system_extra(monkeypatch):
     """_run appends system_extra to system prompt when set."""
     with patch("ollamacode.cli.run_agent_loop_no_mcp", new_callable=AsyncMock) as m:
         m.return_value = "ok"
-        await _run("test-model", [], "Extra instruction.", "hello", False, False, 0, None)
+        await _run(
+            "test-model", [], "Extra instruction.", "hello", False, False, 0, None
+        )
     m.assert_awaited_once()
     call_kw = m.call_args[1]
     assert "system_prompt" in call_kw
@@ -91,10 +100,14 @@ async def test_run_respects_system_extra(monkeypatch):
 @pytest.mark.asyncio
 async def test_run_uses_mcp_args_from_env(monkeypatch):
     """_run with single stdio MCP server config uses connect_mcp_stdio."""
-    mcp_servers = [{"type": "stdio", "command": "python", "args": ["examples/demo_server.py"]}]
+    mcp_servers = [
+        {"type": "stdio", "command": "python", "args": ["examples/demo_server.py"]}
+    ]
     with (
         patch("ollamacode.cli.connect_mcp_stdio") as connect,
-        patch("ollamacode.cli.run_agent_loop", new_callable=AsyncMock, return_value="5"),
+        patch(
+            "ollamacode.cli.run_agent_loop", new_callable=AsyncMock, return_value="5"
+        ),
     ):
         connect.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
         connect.return_value.__aexit__ = AsyncMock(return_value=None)

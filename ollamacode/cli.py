@@ -107,7 +107,9 @@ def _resolve_mcp_servers(
     )
     servers = merged.get("mcp_servers") or []
     # CLI legacy: --mcp-args (or env) overrides config when non-empty
-    cli_args = mcp_args if mcp_args else (os.environ.get("OLLAMACODE_MCP_ARGS") or "").split()
+    cli_args = (
+        mcp_args if mcp_args else (os.environ.get("OLLAMACODE_MCP_ARGS") or "").split()
+    )
     if cli_args:
         servers = [{"type": "stdio", "command": mcp_command, "args": cli_args}]
     return servers, bool(servers)
@@ -183,7 +185,10 @@ async def _run(
         try:
             from .tui import run_tui
         except ImportError as e:
-            print("TUI requires rich. Install with: pip install ollamacode[tui]", file=sys.stderr)
+            print(
+                "TUI requires rich. Install with: pip install ollamacode[tui]",
+                file=sys.stderr,
+            )
             raise SystemExit(1) from e
         try:
             if use_mcp:
@@ -198,7 +203,10 @@ async def _run(
             else:
                 await run_tui(None, model, system_extra)
         except ImportError as e:
-            print("TUI requires rich. Install with: pip install ollamacode[tui]", file=sys.stderr)
+            print(
+                "TUI requires rich. Install with: pip install ollamacode[tui]",
+                file=sys.stderr,
+            )
             raise SystemExit(1) from e
         return
     _SYSTEM = "You are a helpful coding assistant. Use the available tools when they would help."
@@ -269,7 +277,9 @@ async def _run(
             else:
                 print(await _do_chat(None, query, model, []))
         else:
-            print("OllamaCode (Ollama only, no MCP tools). /help for commands. Empty line or Ctrl+C to exit.")
+            print(
+                "OllamaCode (Ollama only, no MCP tools). /help for commands. Empty line or Ctrl+C to exit."
+            )
             message_history: list[dict] = []
             model_ref = [model]
             while True:
@@ -285,7 +295,9 @@ async def _run(
                 if result is not None:
                     continue
                 if stream:
-                    out = await _do_chat_stream(None, line, model_ref[0], message_history)
+                    out = await _do_chat_stream(
+                        None, line, model_ref[0], message_history
+                    )
                     message_history.append({"role": "user", "content": line})
                     message_history.append({"role": "assistant", "content": out})
                     if history_file:
@@ -311,7 +323,9 @@ async def _run(
             else:
                 print(await _do_chat(session, query, model, []))
             return
-        print("OllamaCode (local model + MCP tools). /help for commands. Empty line or Ctrl+C to exit.")
+        print(
+            "OllamaCode (local model + MCP tools). /help for commands. Empty line or Ctrl+C to exit."
+        )
         message_history_mcp: list[dict] = []
         model_ref = [model]
         while True:
@@ -327,7 +341,9 @@ async def _run(
             if result is not None:
                 continue
             if stream:
-                out = await _do_chat_stream(session, line, model_ref[0], message_history_mcp)
+                out = await _do_chat_stream(
+                    session, line, model_ref[0], message_history_mcp
+                )
                 message_history_mcp.append({"role": "user", "content": line})
                 message_history_mcp.append({"role": "assistant", "content": out})
                 if history_file:
@@ -347,7 +363,10 @@ def main() -> None:
         try:
             from .serve import run_serve
         except ImportError as e:
-            print("Serve requires uvicorn and starlette. Install with: pip install ollamacode[server]", file=sys.stderr)
+            print(
+                "Serve requires uvicorn and starlette. Install with: pip install ollamacode[server]",
+                file=sys.stderr,
+            )
             raise SystemExit(1) from e
         port = getattr(args, "port", 8000)
         run_serve(port=port, config_path=args.config)
@@ -360,11 +379,30 @@ def main() -> None:
         mcp_args_env=os.environ.get("OLLAMACODE_MCP_ARGS"),
         system_extra_env=os.environ.get("OLLAMACODE_SYSTEM_EXTRA"),
     )
-    model = args.model or merged.get("model") or os.environ.get("OLLAMACODE_MODEL", "gpt-oss:20b")
+    model = (
+        args.model
+        or merged.get("model")
+        or os.environ.get("OLLAMACODE_MODEL", "gpt-oss:20b")
+    )
     system_extra = (merged.get("system_prompt_extra") or "").strip()
-    max_messages = args.max_messages if args.max_messages is not None else merged.get("max_messages", 0)
+    max_messages = (
+        args.max_messages
+        if args.max_messages is not None
+        else merged.get("max_messages", 0)
+    )
     try:
-        asyncio.run(_run(model, mcp_servers, system_extra, args.query, args.stream, args.tui, max_messages, args.history_file))
+        asyncio.run(
+            _run(
+                model,
+                mcp_servers,
+                system_extra,
+                args.query,
+                args.stream,
+                args.tui,
+                max_messages,
+                args.history_file,
+            )
+        )
     except KeyboardInterrupt:
         sys.exit(130)
 

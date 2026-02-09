@@ -31,7 +31,13 @@ async def _handle_chat(
         system = system + "\n\n" + system_extra
     try:
         if session is not None:
-            out = await run_agent_loop(session, use_model, message, system_prompt=system, max_messages=max_messages)
+            out = await run_agent_loop(
+                session,
+                use_model,
+                message,
+                system_prompt=system,
+                max_messages=max_messages,
+            )
         else:
             out = await run_agent_loop_no_mcp(use_model, message, system_prompt=system)
         return {"content": out}
@@ -52,7 +58,9 @@ def create_app(
         from starlette.responses import JSONResponse
         from starlette.routing import Route
     except ImportError as e:
-        raise ImportError("Server requires starlette. Install with: pip install ollamacode[server]") from e
+        raise ImportError(
+            "Server requires starlette. Install with: pip install ollamacode[server]"
+        ) from e
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
@@ -95,7 +103,9 @@ def run_serve(port: int = 8000, config_path: str | None = None) -> None:
     try:
         import uvicorn
     except ImportError as e:
-        raise SystemExit("Server requires uvicorn. Install with: pip install ollamacode[server]") from e
+        raise SystemExit(
+            "Server requires uvicorn. Install with: pip install ollamacode[server]"
+        ) from e
 
     config = load_config(config_path)
     merged = merge_config_with_env(

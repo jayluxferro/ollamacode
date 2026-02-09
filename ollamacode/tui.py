@@ -7,6 +7,7 @@ Slash commands, Rich Markdown, multi-line input, conversation history.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 from .agent import run_agent_loop_no_mcp_stream, run_agent_loop_stream
@@ -95,7 +96,13 @@ async def run_tui(
         from rich.markdown import Markdown
         from rich.panel import Panel
     except ImportError as e:
-        raise ImportError("TUI requires rich. Install with: pip install ollamacode[tui]") from e
+        raise ImportError(
+            "TUI requires rich. Install with: pip install ollamacode[tui]"
+        ) from e
+
+    # Suppress MCP SDK INFO logs (e.g. "Processing request of type ListToolsRequest") so TUI stays clean
+    for _name in ("mcp", "mcp.client", "mcp.server"):
+        logging.getLogger(_name).setLevel(logging.WARNING)
 
     console = Console()
     _SYSTEM = "You are a helpful coding assistant. Use the available tools when they would help."
@@ -108,20 +115,8 @@ async def run_tui(
     loop = asyncio.get_event_loop()
 
     def get_input() -> str:
-        """Read single line or multi-line (end with '.' on its own line)."""
-        first = input("You: ").strip()
-        if not first or first == ".":
-            return first
-        lines = [first]
-        while True:
-            try:
-                line = input("... ").strip()
-            except EOFError:
-                break
-            if line == ".":
-                break
-            lines.append(line)
-        return "\n".join(lines).strip()
+        """Read a single line; Enter sends."""
+        return input("You: ").strip()
 
     console.print(
         Panel(
@@ -149,7 +144,7 @@ async def run_tui(
 
         def make_update(accumulated: str) -> None:
             md = _conversation_to_markdown(history, accumulated)
-            live.update(Panel(Markdown(md), title="Chat", border_style="blue", height=24))
+            live.update(Panel(Markdown(md), title="Chat", border_style="blue"))
 
         msg_history = [{"role": r, "content": c} for r, c in history[:-1]]
         if session is not None:
@@ -173,10 +168,10 @@ async def run_tui(
                 Markdown(_conversation_to_markdown(history, "")),
                 title="Chat",
                 border_style="blue",
-                height=24,
             ),
             console=console,
             refresh_per_second=8,
+            vertical_overflow="visible",
         ) as live:
             final = await _stream_into_live(stream, make_update)
 

@@ -26,7 +26,9 @@ async def test_run_agent_loop_no_mcp_returns_content():
     fake_response.message = {"content": "Hello, world!"}
 
     with patch("ollamacode.agent._ollama_chat_sync", return_value=fake_response):
-        out = await run_agent_loop_no_mcp("test-model", "Hi", system_prompt="You are helpful.")
+        out = await run_agent_loop_no_mcp(
+            "test-model", "Hi", system_prompt="You are helpful."
+        )
     assert out == "Hello, world!"
 
 
@@ -72,7 +74,11 @@ async def test_run_agent_loop_tool_call_then_text():
     add_tool = Tool(
         name="add",
         description="Add two numbers",
-        inputSchema={"type": "object", "required": ["a", "b"], "properties": {"a": {}, "b": {}}},
+        inputSchema={
+            "type": "object",
+            "required": ["a", "b"],
+            "properties": {"a": {}, "b": {}},
+        },
     )
     session = MagicMock()
     session.list_tools = AsyncMock(return_value=ListToolsResult(tools=[add_tool]))
@@ -92,8 +98,13 @@ async def test_run_agent_loop_tool_call_then_text():
     response_final = MagicMock()
     response_final.message = _make_message("The result is 5.")
 
-    with patch("ollamacode.agent._ollama_chat_sync", side_effect=[response_with_tool, response_final]):
-        out = await run_agent_loop(session, "test-model", "What is 2+3?", max_tool_rounds=5)
+    with patch(
+        "ollamacode.agent._ollama_chat_sync",
+        side_effect=[response_with_tool, response_final],
+    ):
+        out = await run_agent_loop(
+            session, "test-model", "What is 2+3?", max_tool_rounds=5
+        )
     assert out == "The result is 5."
     session.call_tool.assert_awaited_once()
     call_args = session.call_tool.call_args
@@ -133,6 +144,8 @@ async def test_run_agent_loop_max_rounds_reached():
     )
 
     with patch("ollamacode.agent._ollama_chat_sync", return_value=response_always_tool):
-        out = await run_agent_loop(session, "test-model", "Add forever", max_tool_rounds=3)
+        out = await run_agent_loop(
+            session, "test-model", "Add forever", max_tool_rounds=3
+        )
     assert out == "(Max tool rounds reached; stopping.)"
     assert session.call_tool.await_count == 3  # type: ignore[attr-defined]

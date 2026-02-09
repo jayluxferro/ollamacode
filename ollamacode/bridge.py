@@ -47,7 +47,8 @@ def add_tool_aliases_for_ollama(
                         "type": "function",
                         "function": {
                             "name": alias_name,
-                            "description": (fn.get("description") or "") + f" (Alias for {target_name}.)",
+                            "description": (fn.get("description") or "")
+                            + f" (Alias for {target_name}.)",
                             "parameters": fn.get("parameters") or {},
                         },
                     }

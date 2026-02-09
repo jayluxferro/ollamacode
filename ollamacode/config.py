@@ -14,10 +14,26 @@ from typing import Any
 
 # Default MCP servers when no config and no env: built-in fs, terminal, codebase, tools (linter/tests)
 DEFAULT_MCP_SERVERS: list[dict[str, Any]] = [
-    {"type": "stdio", "command": sys.executable, "args": ["-m", "ollamacode.servers.fs_mcp"]},
-    {"type": "stdio", "command": sys.executable, "args": ["-m", "ollamacode.servers.terminal_mcp"]},
-    {"type": "stdio", "command": sys.executable, "args": ["-m", "ollamacode.servers.codebase_mcp"]},
-    {"type": "stdio", "command": sys.executable, "args": ["-m", "ollamacode.servers.tools_mcp"]},
+    {
+        "type": "stdio",
+        "command": sys.executable,
+        "args": ["-m", "ollamacode.servers.fs_mcp"],
+    },
+    {
+        "type": "stdio",
+        "command": sys.executable,
+        "args": ["-m", "ollamacode.servers.terminal_mcp"],
+    },
+    {
+        "type": "stdio",
+        "command": sys.executable,
+        "args": ["-m", "ollamacode.servers.codebase_mcp"],
+    },
+    {
+        "type": "stdio",
+        "command": sys.executable,
+        "args": ["-m", "ollamacode.servers.tools_mcp"],
+    },
 ]
 
 try:
@@ -91,13 +107,21 @@ def merge_config_with_env(
     """
     out: dict[str, Any] = {}
     out["model"] = model_env or config.get("model")
-    out["system_prompt_extra"] = (system_extra_env or "").strip() or (config.get("system_prompt_extra") or "").strip()
+    out["system_prompt_extra"] = (system_extra_env or "").strip() or (
+        config.get("system_prompt_extra") or ""
+    ).strip()
     out["max_messages"] = config.get("max_messages", 0)
 
     if mcp_args_env:
         # Legacy: single stdio server from OLLAMACODE_MCP_ARGS "command arg1 arg2" (overrides config)
         parts = mcp_args_env.split()
-        out["mcp_servers"] = [{"type": "stdio", "command": parts[0], "args": parts[1:] if len(parts) > 1 else []}]
+        out["mcp_servers"] = [
+            {
+                "type": "stdio",
+                "command": parts[0],
+                "args": parts[1:] if len(parts) > 1 else [],
+            }
+        ]
     elif config.get("mcp_servers") is not None:
         out["mcp_servers"] = config["mcp_servers"]
     else:

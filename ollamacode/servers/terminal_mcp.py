@@ -47,7 +47,11 @@ def run_command(
             "return_code": result.returncode,
         }
     except subprocess.TimeoutExpired:
-        return {"stdout": "", "stderr": f"Command timed out after {timeout_seconds}s", "return_code": -1}
+        return {
+            "stdout": "",
+            "stderr": f"Command timed out after {timeout_seconds}s",
+            "return_code": -1,
+        }
     except Exception as e:
         return {"stdout": "", "stderr": str(e), "return_code": -1}
 
