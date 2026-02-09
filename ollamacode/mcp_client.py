@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Dict, List
 
 from mcp import ClientSession, ClientSessionGroup, StdioServerParameters
 from mcp.client.session_group import (
@@ -23,7 +23,7 @@ from mcp.types import CallToolResult, Implementation, ListToolsResult, TextConte
 McpConnection = ClientSession | ClientSessionGroup
 
 
-def _server_params_from_config(entry: dict[str, Any]) -> StdioServerParameters | SseServerParameters | StreamableHttpParameters:
+def _server_params_from_config(entry: Dict[str, Any]) -> StdioServerParameters | SseServerParameters | StreamableHttpParameters:
     """Build MCP ServerParameters from a config dict (type, command/args or url)."""
     kind = (entry.get("type") or "stdio").lower()
     if kind == "stdio":
@@ -60,8 +60,8 @@ def _component_name_hook(name: str, server_info: Implementation) -> str:
 @asynccontextmanager
 async def connect_mcp_stdio(
     command: str,
-    args: list[str] | None = None,
-    env: dict[str, str] | None = None,
+    args: List[str] | None = None,
+    env: Dict[str, str] | None = None,
 ) -> AsyncIterator[ClientSession]:
     """Connect to an MCP server over stdio. Yields a ClientSession."""
     params = StdioServerParameters(
@@ -77,10 +77,9 @@ async def connect_mcp_stdio(
 
 @asynccontextmanager
 async def connect_mcp_servers(
-    server_configs: list[dict[str, Any]],
+    server_configs: List[Dict[str, Any]],
 ) -> AsyncIterator[ClientSessionGroup]:
-    """
-    Connect to multiple MCP servers (stdio, sse, or streamable_http) and yield a ClientSessionGroup.
+    """Connect to multiple MCP servers (stdio, sse, or streamable_http) and yield a ClientSessionGroup.
 
     Tool names are prefixed with the server's name (from initialize) to avoid collisions.
     """
@@ -101,15 +100,51 @@ async def list_tools(connection: McpConnection) -> ListToolsResult:
     return await connection.list_tools()
 
 
+# Model name -> our tool name. Add aliases so Ollama's harmony parser has a mapping (avoids "no reverse mapping" warning).
+TOOL_NAME_ALIASES: Dict[str, str] = {
+    "open_file": "read_file",
+    "container.exec": "run_command",
+}
+
+
+def _resolve_tool_name(group: ClientSessionGroup, name: str) -> str:
+    """Resolve tool name: use as-is if present, else try alias, else match by suffix (model may return unprefixed name)."""
+    if name in group.tools:
+        return name
+    lookup = TOOL_NAME_ALIASES.get(name, name)
+    candidates = [k for k in group.tools if k == lookup or k.endswith("_" + lookup)]
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        return candidates[0]
+    raise KeyError(f"Unknown tool: {name!r}. Available: {list(group.tools.keys())}")
+
+
+def _unknown_tool_result(name: str, available: List[str]) -> CallToolResult:
+    """Return a CallToolResult for an unknown tool so the model can retry with a valid tool."""
+    short = ["_".join(k.split("_", 1)[1:]) if "_" in k else k for k in available]
+    hint = (
+        "Use read_file and write_file to read and modify files (no apply_patch)."
+        if "apply_patch" in name or "patch" in name.lower()
+        else ""
+    )
+    msg = f"Tool {name!r} is not available. Available tools: {', '.join(sorted(set(short)))}. {hint}".strip()
+    return CallToolResult(content=[TextContent(type="text", text=msg)], isError=True)
+
+
 async def call_tool(
     connection: McpConnection,
     name: str,
-    arguments: dict[str, Any] | None = None,
+    arguments: Dict[str, Any] | None = None,
 ) -> CallToolResult:
     """Call a tool by name with optional arguments."""
-    args = arguments if arguments is not None else {}
+    args = arguments or {}
     if isinstance(connection, ClientSessionGroup):
-        return await connection.call_tool(name, args)
+        try:
+            resolved = _resolve_tool_name(connection, name)
+        except KeyError:
+            return _unknown_tool_result(name, list(connection.tools.keys()))
+        return await connection.call_tool(resolved, args)
     return await connection.call_tool(name, args)
 
 
@@ -117,7 +152,7 @@ def tool_result_to_content(result: CallToolResult) -> str:
     """Extract a single string from CallToolResult for Ollama tool message."""
     if result.isError or not result.content:
         return str(result.content) if result.content else "Error: no content"
-    parts = []
+    parts: List[str] = []
     for block in result.content:
         if isinstance(block, TextContent):
             parts.append(block.text)

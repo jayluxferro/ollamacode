@@ -1,4 +1,4 @@
-"""Integration test: CLI + demo MCP. Requires Ollama + tool-capable model (e.g. qwen2.5-coder:32b). Can be slow (1–2 min)."""
+"""Integration test: CLI + demo MCP. Requires Ollama + tool-capable model (e.g. gpt-oss:20b). Can be slow (1–2 min)."""
 
 import subprocess
 import sys
@@ -18,7 +18,7 @@ def _run_cli_with_demo_mcp(query: str, timeout: int = 150) -> tuple[str, str, in
         "-m",
         "ollamacode",
         "--model",
-        "qwen2.5-coder:32b",
+        "gpt-oss:20b",
         "--mcp-command",
         sys.executable,
         "--mcp-args",

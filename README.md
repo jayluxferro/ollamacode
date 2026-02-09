@@ -1,6 +1,6 @@
 # OllamaCode
 
-A coding assistant powered by **local models** (Ollama) and **MCP** (Model Context Protocol), similar in spirit to Cursor Code and Claude Code—all on your machine.
+A coding assistant powered by **local models** (Ollama) and **MCP** (Model Context Protocol)—all on your machine.
 
 ## Features
 
@@ -13,7 +13,7 @@ A coding assistant powered by **local models** (Ollama) and **MCP** (Model Conte
 
 - **Python 3.11+**
 - **[Ollama](https://ollama.com)** installed and running
-- A model pulled in Ollama (default: `qwen2.5-coder:32b`). For tool calling, use a tool-capable model (e.g. `qwen2.5-coder:32b`, `qwen3:32b`, `qwen3-vl:32b`).
+- A model pulled in Ollama (default: `gpt-oss:20b`). For tool calling, use a tool-capable model (e.g. `gpt-oss:20b`, `qwen2.5-coder:32b`, `qwen3:32b`).
 
 ## Installation
 
@@ -32,6 +32,8 @@ pipx install ollamacode
 ```bash
 cd OllamaCode
 uv sync
+# or install CLI on PATH from this repo:
+uv tool install .
 # or: pip install -e .
 ```
 
@@ -66,7 +68,7 @@ Use `OLLAMACODE_MCP_ARGS` to pass MCP server args without flags (e.g. `export OL
 | Option | Env / default | Description |
 |--------|----------------|-------------|
 | `--config`, `-c` | (none) | Path to config file (default: `ollamacode.yaml` or `.ollamacode/config.yaml` in cwd) |
-| `--model`, `-m` | `OLLAMACODE_MODEL` / `qwen2.5-coder:32b` | Ollama model name |
+| `--model`, `-m` | `OLLAMACODE_MODEL` / `gpt-oss:20b` | Ollama model name |
 | `--stream`, `-s` | (flag) | Stream response tokens to stdout (for extension or live display) |
 | `--tui` | (flag) | Interactive terminal UI (Rich). Requires: `pip install ollamacode[tui]` |
 | `--max-messages` | config `max_messages` / 0 | Cap message history sent to Ollama (0 = no limit). For long chats. |
@@ -75,12 +77,14 @@ Use `OLLAMACODE_MCP_ARGS` to pass MCP server args without flags (e.g. `export OL
 | `--mcp-command` | `OLLAMACODE_MCP_COMMAND` / `python` | Command for legacy single-stdio MCP |
 | `--mcp-args` | `OLLAMACODE_MCP_ARGS` (space-separated) | Args for legacy single-stdio MCP (overrides config when set) |
 
+**Stopping:** Press **Ctrl+C** to interrupt the agent (single query, TUI, or interactive chat).
+
 ### Config file
 
 Optional YAML config (`ollamacode.yaml` or `.ollamacode/config.yaml` in the current directory, or `--config path`):
 
 ```yaml
-model: qwen2.5-coder:32b
+model: gpt-oss:20b
 system_prompt_extra: "Optional extra system instructions."
 max_messages: 0   # 0 = no limit; cap message history sent to Ollama (e.g. 50 for long chats)
 
@@ -118,7 +122,7 @@ The built-in Git MCP is read-only. To let the agent **stage, commit, and push**,
 
 ```yaml
 # ollamacode.yaml — full Git (add, commit, push) + built-in fs, terminal, codebase
-model: qwen2.5-coder:32b
+model: gpt-oss:20b
 
 mcp_servers:
   - type: stdio

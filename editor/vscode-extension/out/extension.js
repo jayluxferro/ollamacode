@@ -2,25 +2,60 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
+const http = require("http");
 const vscode = require("vscode");
 const ollamacodeRunner_1 = require("./ollamacodeRunner");
 const VIEW_TYPE = "ollamacode.chatView";
 const COMPOSER_VIEW_TYPE = "ollamacode.composerView";
 const CHAT_PARTICIPANT_ID = "ollamacode.chatParticipant";
-const OLLAMA_BASE = "http://127.0.0.1:11434";
-/** Fetch model names from Ollama API (GET /api/tags). Returns [] if Ollama is unreachable. */
-async function fetchOllamaModels() {
-    try {
-        const res = await fetch(`${OLLAMA_BASE}/api/tags`, { signal: AbortSignal.timeout(5000) });
-        if (!res.ok)
-            return [];
-        const data = (await res.json());
-        const names = data.models?.map((m) => m.name) ?? [];
-        return names.length > 0 ? names : [];
+const OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags";
+let _logChannel;
+function log(msg) {
+    if (!_logChannel)
+        _logChannel = vscode.window.createOutputChannel("OllamaCode");
+    _logChannel.appendLine(`[${new Date().toISOString().slice(11, 23)}] ${msg}`);
+}
+function getNonce() {
+    let text = "";
+    const possible = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    for (let i = 0; i < 32; i++) {
+        text += possible.charAt(Math.floor(Math.random() * possible.length));
     }
-    catch {
-        return [];
-    }
+    return text;
+}
+/** Fetch model names from Ollama API (GET /api/tags). Returns [] if Ollama is unreachable. Uses Node http so it works in all VS Code/Node versions. */
+function fetchOllamaModels() {
+    log(`Fetching models from ${OLLAMA_TAGS_URL}`);
+    return new Promise((resolve) => {
+        let settled = false;
+        const finish = (names) => {
+            if (settled)
+                return;
+            settled = true;
+            log(names.length > 0 ? `Ollama models: ${names.length} (${names.slice(0, 3).join(", ")}${names.length > 3 ? "…" : ""})` : "Ollama unreachable or no models");
+            resolve(names);
+        };
+        const req = http.get(OLLAMA_TAGS_URL, { timeout: 5000 }, (res) => {
+            let body = "";
+            res.on("data", (chunk) => { body += chunk.toString(); });
+            res.on("end", () => {
+                try {
+                    const data = JSON.parse(body);
+                    const names = data.models?.map((m) => m.name) ?? [];
+                    finish(names.length > 0 ? names : []);
+                }
+                catch {
+                    log("Ollama /api/tags response parse error");
+                    finish([]);
+                }
+            });
+        });
+        req.on("error", (err) => {
+            log(`Ollama request error: ${err.message}`);
+            finish([]);
+        });
+        req.on("timeout", () => { req.destroy(); finish([]); });
+    });
 }
 /** If injectCurrentFile is on and there is an active editor in the workspace, prepend current file context to the prompt. */
 function promptWithFileContext(prompt) {
@@ -117,7 +152,7 @@ function activate(context) {
             return;
         }
         const config = vscode.workspace.getConfiguration("ollamacode");
-        const current = config.get("model", "qwen2.5-coder:32b");
+        const current = config.get("model", "gpt-oss:20b");
         const picked = await vscode.window.showQuickPick(models, {
             title: "Select Ollama model",
             placeHolder: `Current: ${current}`,
@@ -179,38 +214,118 @@ const chatRequestHandler = async (request, context, stream, token) => {
 class OllamaCodeChatProvider {
     _context;
     _view;
+    _refreshChatView;
+    _abortController;
     constructor(_context) {
         this._context = _context;
     }
     resolveWebviewView(webviewView, _context, _token) {
+        log("Chat panel: resolveWebviewView");
         this._view = webviewView;
         webviewView.webview.options = {
             enableScripts: true,
             localResourceRoots: [],
         };
-        webviewView.webview.html = getChatHtml(webviewView.webview);
         const history = this._context.workspaceState.get("ollamacode.chatHistory") ?? [];
-        this.postMessage({ type: "loadHistory", messages: history });
+        let initialContentSent = false;
+        const setHtml = (models, current, messages) => {
+            webviewView.webview.html = getChatHtml(webviewView.webview, getNonce(), models, current, messages);
+        };
+        const setHtmlWithModels = async () => {
+            let models = [];
+            try {
+                models = await fetchOllamaModels();
+            }
+            catch {
+                models = [];
+            }
+            const config = vscode.workspace.getConfiguration("ollamacode");
+            const current = config.get("model", "gpt-oss:20b");
+            const messages = this._context.workspaceState.get("ollamacode.chatHistory") ?? [];
+            log(`Chat panel: setting HTML with ${models.length} models, ${messages.length} messages`);
+            setHtml(models, current, messages);
+        };
+        this._refreshChatView = setHtmlWithModels;
+        const sendInitialContent = () => {
+            if (initialContentSent)
+                return;
+            initialContentSent = true;
+            log("Chat panel: sendInitialContent (loadHistory + pushModels)");
+            this.postMessage({ type: "loadHistory", messages: history });
+            void this.pushModelsToWebview();
+        };
+        void setHtmlWithModels();
+        webviewView.onDidChangeVisibility(() => {
+            if (webviewView.visible) {
+                initialContentSent = false;
+                void setHtmlWithModels();
+                setTimeout(sendInitialContent, 600);
+            }
+        });
         webviewView.webview.onDidReceiveMessage(async (data) => {
-            if (data.type === "send" && data.query) {
-                await this.runQuery(data.query);
+            if (data.type === "webviewReady") {
+                log("Chat panel: webviewReady received");
+                sendInitialContent();
+                // Always (re)send so webview gets models once its listener is ready (800ms may have fired before script ran).
+                this.postMessage({ type: "loadHistory", messages: history });
+                void this.pushModelsToWebview();
+                return;
             }
             if (data.type === "getModels") {
-                const models = await fetchOllamaModels();
+                log("Chat panel: getModels received");
+                let models = [];
+                try {
+                    models = await fetchOllamaModels();
+                }
+                catch {
+                    models = [];
+                }
                 const config = vscode.workspace.getConfiguration("ollamacode");
-                const current = config.get("model", "qwen2.5-coder:32b");
+                const current = config.get("model", "gpt-oss:20b");
                 this.postMessage({ type: "models", models, current });
+            }
+            if (data.type === "send" && data.query) {
+                log(`Chat: received send query (${data.query.length} chars)`);
+                this.postMessage({ type: "status", text: "Sending…" });
+                try {
+                    await this.runQuery(data.query);
+                    log("Chat: runQuery completed");
+                }
+                catch (e) {
+                    const err = e;
+                    log(`Chat: runQuery error: ${err.message}`);
+                    this.postMessage({ type: "append", role: "assistant", text: `Error: ${err.message}` });
+                    void vscode.window.showErrorMessage(`OllamaCode: ${err.message}`);
+                }
             }
             if (data.type === "setModel" && data.model) {
                 const config = vscode.workspace.getConfiguration("ollamacode");
                 await config.update("model", data.model, vscode.ConfigurationTarget.Global);
                 this.postMessage({ type: "modelSet", model: data.model });
             }
+            if (data.type === "stop") {
+                log("Chat: stop requested");
+                this._abortController?.abort();
+            }
+            if (data.type === "newChat") {
+                log("Chat: new chat requested");
+                await this._context.workspaceState.update("ollamacode.chatHistory", []);
+                this.postMessage({ type: "loadHistory", messages: [] });
+                void this._refreshChatView?.();
+            }
         });
+        const sendLoadHistoryAndModels = () => {
+            this.postMessage({ type: "loadHistory", messages: history });
+            void this.pushModelsToWebview();
+        };
+        setTimeout(sendInitialContent, 800);
+        setTimeout(sendLoadHistoryAndModels, 1500);
+        setTimeout(sendLoadHistoryAndModels, 3000);
     }
     async runQuery(query) {
+        log("Chat: runQuery start");
+        this._abortController = new AbortController();
         this.postMessage({ type: "status", text: "Running OllamaCode…" });
-        this.postMessage({ type: "append", role: "user", text: query });
         const config = vscode.workspace.getConfiguration("ollamacode");
         const useStream = config.get("streamResponse", true);
         const fullPrompt = promptWithFileContext(query);
@@ -221,11 +336,18 @@ class OllamaCodeChatProvider {
             onStreamChunk: useStream
                 ? (chunk) => this.postMessage({ type: "streamChunk", text: chunk })
                 : undefined,
+            signal: this._abortController.signal,
         });
+        this._abortController = undefined;
         this.postMessage({ type: "streamEnd" });
         this.postMessage({ type: "status", text: "" });
         let assistantText = "";
-        if (result.code !== 0 && result.stderr) {
+        if (result.code === 143) {
+            assistantText = (result.text || "").trim() || "(stopped)";
+            if (!result.text?.trim())
+                this.postMessage({ type: "append", role: "assistant", text: "(stopped)" });
+        }
+        else if (result.code !== 0 && result.stderr) {
             assistantText = `Error (exit ${result.code}):\n${result.stderr}`;
             this.postMessage({ type: "append", role: "assistant", text: assistantText });
         }
@@ -258,9 +380,28 @@ class OllamaCodeChatProvider {
         const prev = this._context.workspaceState.get("ollamacode.chatHistory") ?? [];
         const next = [...prev, { role: "user", content: query }, { role: "assistant", content: assistantText }].slice(-maxHistory * 2);
         this._context.workspaceState.update("ollamacode.chatHistory", next);
+        if (assistantText) {
+            log("--- Chat response ---");
+            log(assistantText.slice(0, 2000) + (assistantText.length > 2000 ? "\n…" : ""));
+        }
+        void this._refreshChatView?.();
     }
     postMessage(msg) {
         this._view?.webview.postMessage(msg);
+    }
+    async pushModelsToWebview() {
+        let models = [];
+        try {
+            models = await fetchOllamaModels();
+        }
+        catch (e) {
+            log(`pushModelsToWebview fetch error: ${e.message}`);
+            models = [];
+        }
+        const config = vscode.workspace.getConfiguration("ollamacode");
+        const current = config.get("model", "gpt-oss:20b");
+        log(`Pushing ${models.length} models to webview, current: ${current}`);
+        this.postMessage({ type: "models", models, current });
     }
 }
 /** Composer: multi-file task → proposed changes list → Preview / Apply / Reject per file or all. */
@@ -275,7 +416,8 @@ class OllamaCodeComposerProvider {
     resolveWebviewView(webviewView, _context, _token) {
         this._view = webviewView;
         webviewView.webview.options = { enableScripts: true, localResourceRoots: [] };
-        webviewView.webview.html = getComposerHtml(webviewView.webview);
+        const nonce = getNonce();
+        webviewView.webview.html = getComposerHtml(webviewView.webview, nonce);
         webviewView.webview.onDidReceiveMessage(async (data) => {
             if (data.type === "run" && data.prompt) {
                 await this.runComposer(data.prompt);
@@ -359,51 +501,176 @@ class OllamaCodeComposerProvider {
         this._view?.webview.postMessage(msg);
     }
 }
-function getChatHtml(webview) {
+function escapeHtml(s) {
+    return s
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+}
+/** Minimal markdown: code blocks (with copy), inline code, bold, italic, links. Safe for HTML when input is plain text. */
+function renderMarkdownToHtml(text) {
+    const codeBlocks = [];
+    let s = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, _lang, code) => {
+        codeBlocks.push(code);
+        return `\x00CB${codeBlocks.length - 1}\x00`;
+    });
+    s = escapeHtml(s)
+        .replace(/\n/g, "<br>")
+        .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+        .replace(/\*(.+?)\*/g, "<em>$1</em>")
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    s = s.replace(/\x00CB(\d+)\x00/g, (_, i) => {
+        const code = escapeHtml(codeBlocks[Number(i)] ?? "");
+        const attr = code.replace(/"/g, "&quot;").replace(/\n/g, "&#10;");
+        return `<div class="code-block"><button class="copy-btn" data-code="${attr}" title="Copy">Copy</button><pre><code>${code}</code></pre></div>`;
+    });
+    return `<div class="msg-content">${s}</div>`;
+}
+function getChatHtml(webview, nonce, initialModels, initialCurrent, initialMessages) {
+    const csp = `default-src 'none'; style-src 'nonce-${nonce}' 'unsafe-inline' ${webview.cspSource}; script-src 'nonce-${nonce}' ${webview.cspSource};`;
+    const hasInitialModels = Array.isArray(initialModels) && initialModels.length > 0;
+    const current = initialCurrent || "";
+    let selectOptionsHtml;
+    if (hasInitialModels) {
+        const opts = initialModels.map((name) => `<option value="${escapeHtml(name)}"${name === current ? " selected" : ""}>${escapeHtml(name)}</option>`);
+        if (current && !initialModels.includes(current)) {
+            opts.unshift(`<option value="${escapeHtml(current)}" selected>${escapeHtml(current)} (current)</option>`);
+        }
+        selectOptionsHtml = opts.join("");
+    }
+    else {
+        selectOptionsHtml = '<option value="">Loading…</option>';
+    }
+    const messagesHtml = Array.isArray(initialMessages) && initialMessages.length > 0
+        ? initialMessages
+            .map((m) => {
+            const role = m.role || "assistant";
+            const raw = m.content || "";
+            const body = role === "assistant"
+                ? renderMarkdownToHtml(raw)
+                : escapeHtml(raw).replace(/\n/g, "<br>");
+            return `<div class="msg ${escapeHtml(role)}">${body}</div>`;
+        })
+            .join("")
+        : "";
     return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
+  <meta http-equiv="Content-Security-Policy" content="${csp.replace(/"/g, "&quot;")}">
+  <style nonce="${nonce}">
     * { box-sizing: border-box; }
-    body { margin: 0; padding: 8px; font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); }
+    body { margin: 0; padding: 8px; min-height: 200px; font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: var(--vscode-editor-background, #1e1e1e); }
     #messages { min-height: 120px; max-height: 60vh; overflow-y: auto; margin-bottom: 8px; }
-    .msg { margin: 6px 0; padding: 6px 8px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; }
-    .msg.user { background: var(--vscode-input-background); }
+    .msg { margin: 6px 0; padding: 8px 10px; border-radius: 6px; word-break: break-word; }
+    .msg.user { background: var(--vscode-input-background); white-space: pre-wrap; }
     .msg.assistant { background: var(--vscode-editor-inactiveSelectionBackground); }
-    #status { font-size: 0.9em; color: var(--vscode-descriptionForeground); margin-bottom: 6px; }
-    #model-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+    .msg.assistant .msg-content { line-height: 1.5; }
+    .msg.assistant .msg-content p { margin: 0.5em 0; }
+    .msg.assistant .msg-content pre { margin: 8px 0; overflow-x: auto; }
+    .msg.assistant .msg-content code { font-family: var(--vscode-editor-font-family); background: var(--vscode-textCodeBlock-background); padding: 2px 4px; border-radius: 4px; font-size: 0.9em; }
+    .msg.assistant .msg-content pre code { padding: 8px; display: block; }
+    .code-block { position: relative; margin: 8px 0; }
+    .code-block .copy-btn { position: absolute; top: 4px; right: 4px; padding: 4px 8px; font-size: 0.75em; }
+    #status { font-size: 0.9em; color: var(--vscode-descriptionForeground); margin-bottom: 6px; min-height: 1.2em; }
+    #toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+    #model-row { display: flex; align-items: center; gap: 8px; }
     #model-row label { font-size: 0.9em; color: var(--vscode-descriptionForeground); }
     #model-select { flex: 1; min-width: 120px; padding: 4px 8px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; }
-    form { display: flex; gap: 6px; }
-    input { flex: 1; padding: 6px 8px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; }
-    button { padding: 6px 12px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer; }
+    #input-row { display: flex; flex-direction: column; gap: 6px; }
+    #input-wrap { display: flex; gap: 6px; align-items: flex-end; }
+    textarea#input { flex: 1; min-height: 44px; max-height: 120px; padding: 8px 10px; resize: none; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 4px; font-family: inherit; font-size: inherit; }
+    button { padding: 6px 12px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 4px; cursor: pointer; white-space: nowrap; }
     button:hover { background: var(--vscode-button-hoverBackground); }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+    button.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
   </style>
 </head>
 <body>
   <div id="status"></div>
-  <div id="model-row">
-    <label for="model-select">Model:</label>
-    <select id="model-select" title="Ollama model (from Ollama API). Select to set as default.">
-      <option value="">Loading…</option>
-    </select>
+  <div id="toolbar">
+    <div id="model-row">
+      <label for="model-select">Model:</label>
+      <select id="model-select" title="Ollama model. Select to set as default.">
+        ${selectOptionsHtml}
+      </select>
+    </div>
+    <button type="button" id="new-chat-btn" class="secondary" title="Start new chat">New Chat</button>
+    <button type="button" id="stop-btn" class="secondary" title="Stop generation" disabled>Stop</button>
   </div>
-  <div id="messages"></div>
+  <div id="messages">${messagesHtml}</div>
   <form id="form">
-    <input type="text" id="input" placeholder="Ask OllamaCode…" />
-    <button type="submit">Send</button>
+    <div id="input-row">
+      <div id="input-wrap">
+        <textarea id="input" placeholder="Ask OllamaCode… (Enter to send, Shift+Enter for new line)" rows="1"></textarea>
+        <button type="submit" id="send-btn">Send</button>
+      </div>
+    </div>
   </form>
-  <script>
+  <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const statusEl = document.getElementById('status');
     const messagesEl = document.getElementById('messages');
     const formEl = document.getElementById('form');
     const inputEl = document.getElementById('input');
+    const sendBtn = document.getElementById('send-btn');
     const modelSelect = document.getElementById('model-select');
+    const newChatBtn = document.getElementById('new-chat-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    let modelsReceived = ${hasInitialModels ? "true" : "false"};
 
-    vscode.postMessage({ type: 'getModels' });
+    function escapeHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+    function renderMarkdown(text) {
+      const codeBlocks = [];
+      const re = /\`\`\`(\\w*)\\n?([\\s\\S]*?)\`\`\`/g;
+      let s = text.replace(re, function(_, lang, code) {
+        codeBlocks.push(code);
+        return '\u200B@' + (codeBlocks.length - 1) + '@\u200B';
+      });
+      s = escapeHtml(s).replace(/\\n/g, '<br>')
+        .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')
+        .replace(/\\*([^*]+)\\*/g, '<em>$1</em>')
+        .replace(/\`([^\`]+)\`/g, '<code>$1</code>')
+        .replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+      s = s.replace(/\u200B@(\\d+)@\u200B/g, function(_, i) {
+        const code = escapeHtml(codeBlocks[Number(i)] || '');
+        const attr = code.replace(/"/g, '&quot;').replace(/\n/g, '&#10;');
+        return '<div class="code-block"><button class="copy-btn" data-code="' + attr + '" title="Copy">Copy</button><pre><code>' + code + '</code></pre></div>';
+      });
+      return '<div class="msg-content">' + s + '</div>';
+    }
+    function attachCopyButtons(container) {
+      if (!container) return;
+      container.querySelectorAll('.copy-btn').forEach(function(btn) {
+        if (btn.dataset.copied) return;
+        btn.dataset.copied = '1';
+        btn.addEventListener('click', function() {
+          let code = btn.getAttribute('data-code') || '';
+          code = code.replace(/&#10;/g, '\n').replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+          navigator.clipboard.writeText(code).then(function() {
+            const t = btn.textContent;
+            btn.textContent = 'Copied!';
+            setTimeout(function() { btn.textContent = t; }, 1500);
+          });
+        });
+      });
+    }
+
+    setTimeout(() => {
+      if (!modelsReceived && modelSelect.options.length <= 1 && modelSelect.options[0]?.value === '') {
+        modelSelect.innerHTML = '';
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'No models — see Output → OllamaCode';
+        modelSelect.appendChild(opt);
+      }
+    }, 5000);
 
     modelSelect.addEventListener('change', () => {
       const v = modelSelect.value;
@@ -413,12 +680,21 @@ function getChatHtml(webview) {
     let streamTarget = null;
     window.addEventListener('message', e => {
       const msg = e.data;
-      if (msg.type === 'status') { statusEl.textContent = msg.text || ''; return; }
+      if (msg.type === 'status') {
+        statusEl.textContent = msg.text || '';
+        if (!msg.text) {
+          inputEl.disabled = false;
+          sendBtn.disabled = false;
+          stopBtn.disabled = true;
+        }
+        return;
+      }
       if (msg.type === 'streamStart') {
         const div = document.createElement('div');
         div.className = 'msg assistant';
         messagesEl.appendChild(div);
         streamTarget = div;
+        stopBtn.disabled = false;
         messagesEl.scrollTop = messagesEl.scrollHeight;
         return;
       }
@@ -427,29 +703,70 @@ function getChatHtml(webview) {
         messagesEl.scrollTop = messagesEl.scrollHeight;
         return;
       }
-      if (msg.type === 'streamEnd') { streamTarget = null; return; }
-      if (msg.type === 'streamResult' && streamTarget) {
-        if (msg.editsCount > 0) streamTarget.textContent += '\n\n[Applied ' + msg.editsCount + ' edit(s) to the workspace.]';
+      if (msg.type === 'streamEnd') {
+        if (streamTarget) {
+          const raw = streamTarget.textContent || '';
+          streamTarget.innerHTML = renderMarkdown(raw);
+          attachCopyButtons(streamTarget);
+        }
         streamTarget = null;
+        inputEl.disabled = false;
+        sendBtn.disabled = false;
+        stopBtn.disabled = true;
+        return;
+      }
+      if (msg.type === 'streamResult') {
+        if (msg.editsCount > 0) {
+          const last = messagesEl.querySelector('.msg.assistant:last-child');
+          if (last) {
+            const p = document.createElement('p');
+            p.textContent = '[Applied ' + msg.editsCount + ' edit(s) to the workspace.]';
+            p.style.marginTop = '8px';
+            last.appendChild(p);
+          }
+        }
+        streamTarget = null;
+        inputEl.disabled = false;
+        sendBtn.disabled = false;
+        stopBtn.disabled = true;
         return;
       }
       if (msg.type === 'append') {
         const div = document.createElement('div');
         div.className = 'msg ' + msg.role;
-        div.textContent = msg.text;
+        if (msg.role === 'assistant') {
+          div.innerHTML = renderMarkdown(msg.text || '');
+          attachCopyButtons(div);
+        } else {
+          div.style.whiteSpace = 'pre-wrap';
+          div.textContent = msg.text || '';
+        }
         messagesEl.appendChild(div);
         messagesEl.scrollTop = messagesEl.scrollHeight;
+        if (msg.role === 'assistant') {
+          inputEl.disabled = false;
+          sendBtn.disabled = false;
+          stopBtn.disabled = true;
+        }
       }
       if (msg.type === 'loadHistory' && Array.isArray(msg.messages)) {
-        msg.messages.forEach(m => {
+        messagesEl.innerHTML = '';
+        msg.messages.forEach(function(m) {
           const div = document.createElement('div');
           div.className = 'msg ' + (m.role || 'assistant');
-          div.textContent = m.content || '';
+          if (m.role === 'assistant') {
+            div.innerHTML = renderMarkdown(m.content || '');
+            attachCopyButtons(div);
+          } else {
+            div.style.whiteSpace = 'pre-wrap';
+            div.textContent = m.content || '';
+          }
           messagesEl.appendChild(div);
         });
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
       if (msg.type === 'models') {
+        modelsReceived = true;
         const list = msg.models || [];
         const current = msg.current || '';
         modelSelect.innerHTML = '';
@@ -481,24 +798,57 @@ function getChatHtml(webview) {
       }
     });
 
-    formEl.addEventListener('submit', e => {
+    inputEl.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        formEl.requestSubmit();
+      }
+    });
+
+    formEl.addEventListener('submit', function(e) {
       e.preventDefault();
       const q = inputEl.value.trim();
       if (!q) return;
-      vscode.postMessage({ type: 'send', query: q });
+      const userDiv = document.createElement('div');
+      userDiv.className = 'msg user';
+      userDiv.style.whiteSpace = 'pre-wrap';
+      userDiv.textContent = q;
+      messagesEl.appendChild(userDiv);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+      statusEl.textContent = 'Sending…';
       inputEl.value = '';
+      inputEl.disabled = true;
+      sendBtn.disabled = true;
+      stopBtn.disabled = false;
+      vscode.postMessage({ type: 'send', query: q });
     });
+
+    newChatBtn.addEventListener('click', function() {
+      vscode.postMessage({ type: 'newChat' });
+    });
+
+    stopBtn.addEventListener('click', function() {
+      vscode.postMessage({ type: 'stop' });
+    });
+
+    attachCopyButtons(messagesEl);
+
+    vscode.postMessage({ type: 'webviewReady' });
+    setTimeout(() => vscode.postMessage({ type: 'getModels' }), 1000);
+    setTimeout(() => vscode.postMessage({ type: 'getModels' }), 2500);
   </script>
 </body>
 </html>`;
 }
-function getComposerHtml(webview) {
+function getComposerHtml(webview, nonce) {
+    const csp = `default-src 'none'; style-src 'nonce-${nonce}' 'unsafe-inline' ${webview.cspSource}; script-src 'nonce-${nonce}' ${webview.cspSource};`;
     return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
+  <meta http-equiv="Content-Security-Policy" content="${csp.replace(/"/g, "&quot;")}">
+  <style nonce="${nonce}">
     * { box-sizing: border-box; }
     body { margin: 0; padding: 8px; font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); }
     #status { font-size: 0.9em; color: var(--vscode-descriptionForeground); margin-bottom: 6px; }
@@ -539,7 +889,7 @@ function getComposerHtml(webview) {
       </div>
     </div>
   </div>
-  <script>
+  <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const statusEl = document.getElementById('status');
     const promptEl = document.getElementById('prompt');

@@ -2,7 +2,7 @@
 # Copy to project root as ollamacode.yaml to let the agent stage/commit/push.
 # Requires Node.js (npx) for the official Git MCP server.
 
-model: qwen2.5-coder:32b
+model: gpt-oss:20b
 
 mcp_servers:
   - type: stdio

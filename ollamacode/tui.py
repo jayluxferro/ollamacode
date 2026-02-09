@@ -1,12 +1,13 @@
 """
 Optional TUI (terminal UI) for OllamaCode chat using Rich.
 Install with: pip install ollamacode[tui]
+Slash commands, Rich Markdown, multi-line input, conversation history.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, AsyncIterator, Callable
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 from .agent import run_agent_loop_no_mcp_stream, run_agent_loop_stream
 
@@ -14,15 +15,56 @@ if TYPE_CHECKING:
     from .mcp_client import McpConnection
 
 
-def _render_conversation(history: list[tuple[str, str]], current: str) -> str:
-    """Build text for conversation panel: history + current reply."""
+def _conversation_to_markdown(history: list[tuple[str, str]], current: str) -> str:
+    """Build markdown string for conversation panel (Rich Markdown renderable)."""
     parts = []
     for role, text in history:
-        label = "You" if role == "user" else "Assistant"
-        parts.append(f"[bold blue]{label}:[/]\n{text}")
+        label = "**You**" if role == "user" else "**Assistant**"
+        parts.append(f"{label}\n\n{text}")
     if current:
-        parts.append(f"[bold green]Assistant:[/]\n{current}")
-    return "\n\n".join(parts) if parts else " (no messages yet)"
+        parts.append("**Assistant** *(streaming)*\n\n" + current)
+    return "\n\n---\n\n".join(parts) if parts else "*(no messages yet)*"
+
+
+def _handle_tui_slash(
+    line: str,
+    model_ref: list[str],
+    history: list[tuple[str, str]],
+    message_history: list[dict[str, Any]],
+    console: Any,
+) -> str | None:
+    """Handle slash command in TUI. Returns 'quit', 'cleared', 'help', or None."""
+    line = line.strip()
+    if not line.startswith("/"):
+        return None
+    parts = line.split(maxsplit=1)
+    cmd = (parts[0] or "").lower()
+    rest = (parts[1] or "").strip() if len(parts) > 1 else ""
+    if cmd in ("/clear", "/new"):
+        history.clear()
+        message_history.clear()
+        console.print("[dim]Conversation cleared.[/]")
+        return "cleared"
+    if cmd == "/help":
+        from rich.panel import Panel as RichPanel
+        help_text = """[bold]Slash commands:[/]
+  /clear, /new   Clear conversation and start fresh
+  /help         Show this help
+  /model [name] Show or set Ollama model
+  /quit, /exit  Exit (or Ctrl+C)"""
+        console.print(RichPanel(help_text, title="Commands", border_style="dim"))
+        return "help"
+    if cmd == "/model":
+        if rest:
+            model_ref[0] = rest
+            console.print(f"[dim]Model set to: {rest}[/]")
+            return "help"
+        console.print(f"[dim]Current model: {model_ref[0]}[/]")
+        return "help"
+    if cmd in ("/quit", "/exit"):
+        return "quit"
+    console.print(f"[dim]Unknown command: {cmd}. Use /help[/]")
+    return "help"
 
 
 async def _stream_into_live(
@@ -43,12 +85,13 @@ async def run_tui(
     system_extra: str,
 ) -> None:
     """
-    Run interactive TUI chat: Rich panels for history and streaming reply, prompt for input.
+    Run interactive TUI chat: Rich panels with Markdown, slash commands, multi-line input.
     Requires rich: pip install ollamacode[tui]
     """
     try:
         from rich.console import Console
         from rich.live import Live
+        from rich.markdown import Markdown
         from rich.panel import Panel
     except ImportError as e:
         raise ImportError(
@@ -61,14 +104,29 @@ async def run_tui(
         _SYSTEM = _SYSTEM + "\n\n" + system_extra
 
     history: list[tuple[str, str]] = []
+    message_history: list[dict[str, Any]] = []
+    model_ref = [model]
     loop = asyncio.get_event_loop()
 
     def get_input() -> str:
-        return input("You: ").strip()
+        """Read single line or multi-line (end with '.' on its own line)."""
+        first = input("You: ").strip()
+        if not first or first == ".":
+            return first
+        lines = [first]
+        while True:
+            try:
+                line = input("... ").strip()
+            except EOFError:
+                break
+            if line == ".":
+                break
+            lines.append(line)
+        return "\n".join(lines).strip()
 
     console.print(
         Panel(
-            "[bold]OllamaCode TUI[/] – local model + MCP. Empty line or Ctrl+C to exit.",
+            "[bold]OllamaCode TUI[/] – [dim]/help[/] for commands. Empty or Ctrl+C to exit.",
             title="OllamaCode",
             border_style="green",
         )
@@ -77,32 +135,46 @@ async def run_tui(
     while True:
         try:
             line = await loop.run_in_executor(None, get_input)
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
             break
         if not line:
+            continue
+
+        result = _handle_tui_slash(line, model_ref, history, message_history, console)
+        if result == "quit":
+            break
+        if result is not None:
             continue
 
         history.append(("user", line))
 
         def make_update(accumulated: str) -> None:
-            text = _render_conversation(history, accumulated)
-            live.update(Panel(text, title="Chat", border_style="blue", height=20))
+            md = _conversation_to_markdown(history, accumulated)
+            live.update(Panel(Markdown(md), title="Chat", border_style="blue", height=24))
 
+        msg_history = [{"role": r, "content": c} for r, c in history[:-1]]
         if session is not None:
             stream = run_agent_loop_stream(
-                session, model, line, system_prompt=_SYSTEM
+                session,
+                model_ref[0],
+                line,
+                system_prompt=_SYSTEM,
+                message_history=msg_history,
             )
         else:
             stream = run_agent_loop_no_mcp_stream(
-                model, line, system_prompt=_SYSTEM
+                model_ref[0],
+                line,
+                system_prompt=_SYSTEM,
+                message_history=msg_history,
             )
 
         with Live(
             Panel(
-                _render_conversation(history, ""),
+                Markdown(_conversation_to_markdown(history, "")),
                 title="Chat",
                 border_style="blue",
-                height=20,
+                height=24,
             ),
             console=console,
             refresh_per_second=8,
@@ -110,3 +182,5 @@ async def run_tui(
             final = await _stream_into_live(stream, make_update)
 
         history.append(("assistant", final))
+        message_history.append({"role": "user", "content": line})
+        message_history.append({"role": "assistant", "content": final})

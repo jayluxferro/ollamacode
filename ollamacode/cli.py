@@ -32,7 +32,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--model",
         "-m",
-        default=os.environ.get("OLLAMACODE_MODEL", "qwen2.5-coder:32b"),
+        default=os.environ.get("OLLAMACODE_MODEL", "gpt-oss:20b"),
         help="Ollama model name (overrides config and OLLAMACODE_MODEL)",
     )
     p.add_argument(
@@ -50,7 +50,13 @@ def _parse_args() -> argparse.Namespace:
         "--stream",
         "-s",
         action="store_true",
-        help="Stream response tokens to stdout (for extension or live display).",
+        default=True,
+        help="Stream response tokens to stdout (default).",
+    )
+    p.add_argument(
+        "--no-stream",
+        action="store_true",
+        help="Disable streaming; print full response when done.",
     )
     p.add_argument(
         "--tui",
@@ -116,6 +122,51 @@ def _append_history(path: str, user: str, assistant: str) -> None:
         pass
 
 
+def _slash_help() -> str:
+    """Help text for slash commands."""
+    return """Slash commands:
+  /clear, /new   Clear conversation history and start fresh
+  /help          Show this help
+  /model [name]  Show or set Ollama model (e.g. /model llama3.2)
+  /quit, /exit   Exit (or use Ctrl+C, empty line)
+"""
+
+
+def _handle_slash(
+    line: str,
+    model_ref: list[str],
+    message_history: list[dict],
+) -> str | None:
+    """
+    Handle slash command. model_ref is [current_model]; message_history is the conversation list to clear.
+    Returns new model if /model was used, "cleared" if /clear or /new, "help" if /help, "quit" if /quit, else None.
+    """
+    line = line.strip()
+    if not line.startswith("/"):
+        return None
+    parts = line.split(maxsplit=1)
+    cmd = (parts[0] or "").lower()
+    rest = (parts[1] or "").strip() if len(parts) > 1 else ""
+    if cmd in ("/clear", "/new"):
+        message_history.clear()
+        print("[OllamaCode] Conversation cleared.", flush=True)
+        return "cleared"
+    if cmd == "/help":
+        print(_slash_help(), flush=True)
+        return "help"
+    if cmd == "/model":
+        if rest:
+            model_ref[0] = rest
+            print(f"[OllamaCode] Model set to: {rest}", flush=True)
+            return rest
+        print(f"[OllamaCode] Current model: {model_ref[0]}", flush=True)
+        return "help"
+    if cmd in ("/quit", "/exit"):
+        return "quit"
+    print(f"[OllamaCode] Unknown command: {cmd}. Use /help for commands.", flush=True)
+    return "help"
+
+
 async def _run(
     model: str,
     mcp_servers: list[dict],
@@ -154,39 +205,73 @@ async def _run(
     if system_extra:
         _SYSTEM = _SYSTEM + "\n\n" + system_extra
 
-    async def _do_chat(conn: McpConnection | None, q: str) -> str:
+    async def _do_chat(
+        conn: McpConnection | None,
+        q: str,
+        current_model: str,
+        message_history: list[dict],
+    ) -> str:
         if conn is not None:
             out = await run_agent_loop(
-                conn, model, q, system_prompt=_SYSTEM, max_messages=max_messages
+                conn,
+                current_model,
+                q,
+                system_prompt=_SYSTEM,
+                max_messages=max_messages,
+                message_history=message_history if message_history else None,
             )
         else:
-            out = await run_agent_loop_no_mcp(model, q, system_prompt=_SYSTEM)
+            out = await run_agent_loop_no_mcp(
+                current_model,
+                q,
+                system_prompt=_SYSTEM,
+                message_history=message_history if message_history else None,
+            )
         if history_file:
             _append_history(history_file, q, out)
         return out
 
-    async def _do_chat_stream(conn: McpConnection | None, q: str) -> None:
+    async def _do_chat_stream(
+        conn: McpConnection | None,
+        q: str,
+        current_model: str,
+        message_history: list[dict],
+    ) -> str:
+        buf: list[str] = []
         if conn is not None:
             async for frag in run_agent_loop_stream(
-                conn, model, q, system_prompt=_SYSTEM, max_messages=max_messages
+                conn,
+                current_model,
+                q,
+                system_prompt=_SYSTEM,
+                max_messages=max_messages,
+                message_history=message_history if message_history else None,
             ):
                 print(frag, end="", flush=True)
+                buf.append(frag)
             print(flush=True)
         else:
             async for frag in run_agent_loop_no_mcp_stream(
-                model, q, system_prompt=_SYSTEM
+                current_model,
+                q,
+                system_prompt=_SYSTEM,
+                message_history=message_history if message_history else None,
             ):
                 print(frag, end="", flush=True)
+                buf.append(frag)
             print(flush=True)
+        return "".join(buf)
 
     if not use_mcp:
         if query:
             if stream:
-                await _do_chat_stream(None, query)
+                await _do_chat_stream(None, query, model, [])
             else:
-                print(await _do_chat(None, query))
+                print(await _do_chat(None, query, model, []))
         else:
-            print("OllamaCode (Ollama only, no MCP tools). Empty line or Ctrl+C to exit.")
+            print("OllamaCode (Ollama only, no MCP tools). /help for commands. Empty line or Ctrl+C to exit.")
+            message_history: list[dict] = []
+            model_ref = [model]
             while True:
                 try:
                     line = input("You: ").strip()
@@ -194,21 +279,22 @@ async def _run(
                     break
                 if not line:
                     continue
+                result = _handle_slash(line, model_ref, message_history)
+                if result == "quit":
+                    break
+                if result is not None:
+                    continue
                 if stream:
-                    async def _stream_and_capture() -> str:
-                        buf: list[str] = []
-                        async for frag in run_agent_loop_no_mcp_stream(
-                            model, line, system_prompt=_SYSTEM
-                        ):
-                            print(frag, end="", flush=True)
-                            buf.append(frag)
-                        print(flush=True)
-                        return "".join(buf)
-                    out = await _stream_and_capture()
+                    out = await _do_chat_stream(None, line, model_ref[0], message_history)
+                    message_history.append({"role": "user", "content": line})
+                    message_history.append({"role": "assistant", "content": out})
                     if history_file:
                         _append_history(history_file, line, out)
                 else:
-                    print("Assistant:", await _do_chat(None, line), sep="\n")
+                    out = await _do_chat(None, line, model_ref[0], message_history)
+                    message_history.append({"role": "user", "content": line})
+                    message_history.append({"role": "assistant", "content": out})
+                    print("Assistant:", out, sep="\n")
         return
 
     if len(mcp_servers) == 1 and mcp_servers[0].get("type") == "stdio":
@@ -221,11 +307,13 @@ async def _run(
     async with session_ctx as session:
         if query:
             if stream:
-                await _do_chat_stream(session, query)
+                await _do_chat_stream(session, query, model, [])
             else:
-                print(await _do_chat(session, query))
+                print(await _do_chat(session, query, model, []))
             return
-        print("OllamaCode (local model + MCP tools). Empty line or Ctrl+C to exit.")
+        print("OllamaCode (local model + MCP tools). /help for commands. Empty line or Ctrl+C to exit.")
+        message_history_mcp: list[dict] = []
+        model_ref = [model]
         while True:
             try:
                 line = input("You: ").strip()
@@ -233,22 +321,32 @@ async def _run(
                 break
             if not line:
                 continue
+            result = _handle_slash(line, model_ref, message_history_mcp)
+            if result == "quit":
+                break
+            if result is not None:
+                continue
             if stream:
-                buf: list[str] = []
-                async for frag in run_agent_loop_stream(
-                    session, model, line, system_prompt=_SYSTEM, max_messages=max_messages
-                ):
-                    print(frag, end="", flush=True)
-                    buf.append(frag)
-                print(flush=True)
+                out = await _do_chat_stream(
+                    session, line, model_ref[0], message_history_mcp
+                )
+                message_history_mcp.append({"role": "user", "content": line})
+                message_history_mcp.append({"role": "assistant", "content": out})
                 if history_file:
-                    _append_history(history_file, line, "".join(buf))
+                    _append_history(history_file, line, out)
             else:
-                print("Assistant:", await _do_chat(session, line), sep="\n")
+                out = await _do_chat(
+                    session, line, model_ref[0], message_history_mcp
+                )
+                message_history_mcp.append({"role": "user", "content": line})
+                message_history_mcp.append({"role": "assistant", "content": out})
+                print("Assistant:", out, sep="\n")
 
 
 def main() -> None:
     args = _parse_args()
+    if getattr(args, "no_stream", False):
+        args.stream = False
     if args.query == "serve":
         try:
             from .serve import run_serve
@@ -266,10 +364,13 @@ def main() -> None:
         mcp_args_env=os.environ.get("OLLAMACODE_MCP_ARGS"),
         system_extra_env=os.environ.get("OLLAMACODE_SYSTEM_EXTRA"),
     )
-    model = args.model or merged.get("model") or os.environ.get("OLLAMACODE_MODEL", "qwen2.5-coder:32b")
+    model = args.model or merged.get("model") or os.environ.get("OLLAMACODE_MODEL", "gpt-oss:20b")
     system_extra = (merged.get("system_prompt_extra") or "").strip()
     max_messages = args.max_messages if args.max_messages is not None else merged.get("max_messages", 0)
-    asyncio.run(_run(model, mcp_servers, system_extra, args.query, args.stream, args.tui, max_messages, args.history_file))
+    try:
+        asyncio.run(_run(model, mcp_servers, system_extra, args.query, args.stream, args.tui, max_messages, args.history_file))
+    except KeyboardInterrupt:
+        sys.exit(130)
 
 
 if __name__ == "__main__":

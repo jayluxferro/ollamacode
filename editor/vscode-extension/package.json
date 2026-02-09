@@ -1,7 +1,7 @@
 {
   "name": "ollamacode",
   "displayName": "OllamaCode",
-  "description": "Chat with local Ollama + MCP tools in VS Code (Cursor/Claude Code style)",
+  "description": "Chat with local Ollama + MCP tools in VS Code",
   "version": "0.1.0",
   "publisher": "ollamacode",
   "engines": { "vscode": "^1.105.0" },
@@ -66,7 +66,7 @@
         },
         "ollamacode.model": {
           "type": "string",
-          "default": "qwen2.5-coder:32b",
+          "default": "gpt-oss:20b",
           "description": "Ollama model name."
         },
         "ollamacode.mcpArgs": {

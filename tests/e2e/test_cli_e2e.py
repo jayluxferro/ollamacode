@@ -29,7 +29,7 @@ def test_cli_demo_mcp_full_flow():
         "-m",
         "ollamacode",
         "--model",
-        "qwen2.5-coder:32b",
+        "gpt-oss:20b",
         "--mcp-command",
         sys.executable,
         "--mcp-args",

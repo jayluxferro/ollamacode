@@ -1,6 +1,6 @@
 # OllamaCode VS Code Extension
 
-Chat with **OllamaCode** (local Ollama + MCP tools) inside VS Code, similar to Cursor or Claude Code.
+Chat with **OllamaCode** (local Ollama + MCP tools) inside VS Code.
 
 ## What it does
 
@@ -13,7 +13,7 @@ No cloud: everything runs locally (Ollama + your MCP servers).
 
 ## Prerequisites
 
-1. **Ollama** installed and a model pulled (e.g. `ollama pull qwen2.5-coder:32b`).
+1. **Ollama** installed and a model pulled (e.g. `ollama pull gpt-oss:20b`).
 2. **OllamaCode** CLI on your PATH (or set `ollamacode.cliPath`):
    - From this repo: `cd OllamaCode && uv sync` then set CLI path to `uv run ollamacode`, or
    - Install the package so `ollamacode` is on PATH.
@@ -32,7 +32,7 @@ No cloud: everything runs locally (Ollama + your MCP servers).
 | Setting | Default | Description |
 |--------|---------|-------------|
 | **`ollamacode.cliPath`** | `ollamacode` | Command to run. Use `uv run ollamacode` if you run from repo with uv. |
-| **`ollamacode.model`** | `qwen2.5-coder:32b` | Ollama model name. You can pick from a dropdown in the **Chat** panel (models are loaded from the Ollama API) or run **OllamaCode: Select Ollama Model** from the Command Palette. |
+| **`ollamacode.model`** | `gpt-oss:20b` | Ollama model name. You can pick from a dropdown in the **Chat** panel (models are loaded from the Ollama API) or run **OllamaCode: Select Ollama Model** from the Command Palette. |
 | **`ollamacode.mcpArgs`** | (empty) | Space-separated MCP server args (e.g. `python path/to/server.py`). Passed as `OLLAMACODE_MCP_ARGS` when running the CLI. |
 | **`ollamacode.reviewEditsBeforeApply`** | `false` | When **true**, before applying edits the extension shows: **Apply all**, **Reject**, or **Show diff first**. If you choose Show diff, it opens a diff view for each edited file, then asks Apply all or Reject. |
 | **`ollamacode.streamResponse`** | `true` | When **true**, stream response tokens to the chat/panel as they arrive (CLI is run with `--stream`). |

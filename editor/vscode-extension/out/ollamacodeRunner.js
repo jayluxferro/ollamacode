@@ -23,7 +23,7 @@ function getConfig() {
     const config = vscode.workspace.getConfiguration("ollamacode");
     return {
         cliPath: config.get("cliPath", "ollamacode"),
-        model: config.get("model", "qwen2.5-coder:32b"),
+        model: config.get("model", "gpt-oss:20b"),
         mcpArgs: config.get("mcpArgs", ""),
     };
 }
@@ -50,6 +50,22 @@ function runCli(query, options) {
         const proc = (0, child_process_1.spawn)(cmd, args, { cwd, shell: true, env });
         let stdout = "";
         let stderr = "";
+        let settled = false;
+        const finish = (result) => {
+            if (settled)
+                return;
+            settled = true;
+            resolve(result);
+        };
+        if (options.signal?.aborted) {
+            proc.kill("SIGTERM");
+            finish({ stdout, stderr, code: 143, text: "", edits: [] });
+            return;
+        }
+        options.signal?.addEventListener("abort", () => {
+            proc.kill("SIGTERM");
+            finish({ stdout, stderr, code: 143, text: "", edits: [] });
+        });
         proc.stdout?.on("data", (chunk) => {
             const s = chunk.toString();
             stdout += s;
@@ -58,9 +74,12 @@ function runCli(query, options) {
         proc.stderr?.on("data", (chunk) => {
             stderr += chunk.toString();
         });
+        proc.on("error", (err) => {
+            finish({ stdout, stderr: stderr || err.message, code: 1, text: "", edits: [] });
+        });
         proc.on("close", (code) => {
             const { text, edits } = parseEditsFromOutput(stdout);
-            resolve({ stdout, stderr, code: code ?? 0, text, edits });
+            finish({ stdout, stderr, code: code ?? 0, text, edits });
         });
     });
 }

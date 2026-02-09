@@ -7,20 +7,43 @@ from __future__ import annotations
 import asyncio
 import json
 import queue
+import sys
 import threading
 from collections.abc import AsyncIterator
 from typing import Any
 
 import ollama
 
-from .bridge import mcp_tools_to_ollama
-from .mcp_client import McpConnection, call_tool, list_tools, tool_result_to_content
+from .bridge import add_tool_aliases_for_ollama, mcp_tools_to_ollama
+from .mcp_client import TOOL_NAME_ALIASES, McpConnection, call_tool, list_tools, tool_result_to_content
 
 
 def _get(o: Any, key: str, default: Any = None) -> Any:
     if isinstance(o, dict):
         return o.get(key, default)
     return getattr(o, key, default)
+
+
+def _log_tool_call(name: str, arguments: dict[str, Any]) -> None:
+    """Print tool name and full args to stderr."""
+    args_str = json.dumps(arguments, indent=2) if arguments else "{}"
+    if len(args_str) > 400:
+        args_str = args_str[:400] + "\n  ..."
+    print(f"[OllamaCode] Calling {name}:", file=sys.stderr, flush=True)
+    for line in args_str.splitlines():
+        print(f"  {line}", file=sys.stderr, flush=True)
+
+
+def _log_tool_result(name: str, content: str, is_error: bool = False) -> None:
+    """Print tool result to stderr (truncated)."""
+    label = "Error" if is_error else "Result"
+    max_len = 1200
+    if len(content) > max_len:
+        content = content[:max_len] + "\n  ... (truncated)"
+    for line in content.splitlines():
+        print(f"  [{name}] {label}: {line}", file=sys.stderr, flush=True)
+    if not content.strip():
+        print(f"  [{name}] {label}: (empty)", file=sys.stderr, flush=True)
 
 
 def _truncate_messages(messages: list[dict[str, Any]], max_messages: int) -> list[dict[str, Any]]:
@@ -57,24 +80,30 @@ async def run_agent_loop(
     system_prompt: str | None = None,
     max_tool_rounds: int = 20,
     max_messages: int = 0,
+    message_history: list[dict[str, Any]] | None = None,
 ) -> str:
     """
     Run one user turn: send message to Ollama with MCP tools; on tool_calls,
     execute via MCP and re-call Ollama until the model returns text only.
+    message_history: optional prior turns for multi-turn conversation.
     """
-    # 1. Get MCP tools and convert to Ollama format
+    # 1. Get MCP tools and convert to Ollama format (include alias tools so Ollama has mapping)
     list_result = await list_tools(session)
     ollama_tools = mcp_tools_to_ollama(list_result.tools)
+    ollama_tools = add_tool_aliases_for_ollama(ollama_tools, TOOL_NAME_ALIASES)
     if not ollama_tools:
         ollama_tools = []  # Ollama may require None for no tools; check docs
 
     messages: list[dict[str, Any]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
+    if message_history:
+        messages.extend(message_history)
     messages.append({"role": "user", "content": user_message})
 
-    for _ in range(max_tool_rounds):
+    for round_num in range(max_tool_rounds):
         # 2. Call Ollama (sync in thread); truncate if over max_messages
+        print(f"[OllamaCode] Sending to model (turn {round_num + 1})...", file=sys.stderr, flush=True)
         to_send = _truncate_messages(messages, max_messages) if max_messages > 0 else messages
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(
@@ -99,6 +128,16 @@ async def run_agent_loop(
             return (content or "").strip()
 
         # 3. Execute each tool call via MCP
+        names = []
+        for tc in tool_calls:
+            fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
+            if fn is not None:
+                n = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
+                if n:
+                    names.append(n)
+        if names:
+            print(f"[OllamaCode] Model requested {len(names)} tool(s): {', '.join(names)}", file=sys.stderr, flush=True)
+
         for tc in tool_calls:
             fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
             if fn is None:
@@ -115,8 +154,10 @@ async def run_agent_loop(
             else:
                 arguments = raw_args or {}
 
+            _log_tool_call(name, arguments)
             result = await call_tool(session, name, arguments)
             content = tool_result_to_content(result)
+            _log_tool_result(name, content, is_error=getattr(result, "isError", False))
             messages.append({
                 "role": "tool",
                 "tool_name": name,
@@ -152,21 +193,26 @@ async def run_agent_loop_stream(
     system_prompt: str | None = None,
     max_tool_rounds: int = 20,
     max_messages: int = 0,
+    message_history: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[str]:
     """
     Like run_agent_loop but streams content tokens as they arrive.
     Yields content fragments (str). When tool_calls occur, runs them and continues streaming the next turn.
+    message_history: optional prior turns [{"role":"user","content":...},{"role":"assistant","content":...}, ...].
     """
     list_result = await list_tools(session)
-    ollama_tools = mcp_tools_to_ollama(list_result.tools) or []
+    ollama_tools = add_tool_aliases_for_ollama(mcp_tools_to_ollama(list_result.tools), TOOL_NAME_ALIASES) or []
 
     messages: list[dict[str, Any]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
+    if message_history:
+        messages.extend(message_history)
     messages.append({"role": "user", "content": user_message})
 
     loop = asyncio.get_event_loop()
-    for _ in range(max_tool_rounds):
+    for round_num in range(max_tool_rounds):
+        print(f"[OllamaCode] Sending to model (turn {round_num + 1})...", file=sys.stderr, flush=True)
         q: queue.Queue = queue.Queue()
         to_send = _truncate_messages(messages, max_messages) if max_messages > 0 else messages
         thread = threading.Thread(
@@ -198,6 +244,16 @@ async def run_agent_loop_stream(
         if not tool_calls:
             return
 
+        names = []
+        for tc in tool_calls:
+            fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
+            if fn is not None:
+                n = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
+                if n:
+                    names.append(n)
+        if names:
+            print(f"[OllamaCode] Model requested {len(names)} tool(s): {', '.join(names)}", file=sys.stderr, flush=True)
+
         for tc in tool_calls:
             fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
             if fn is None:
@@ -213,8 +269,10 @@ async def run_agent_loop_stream(
                     arguments = {}
             else:
                 arguments = raw_args or {}
+            _log_tool_call(name, arguments)
             result = await call_tool(session, name, arguments)
             content = tool_result_to_content(result)
+            _log_tool_result(name, content, is_error=getattr(result, "isError", False))
             messages.append({"role": "tool", "tool_name": name, "content": content})
 
 
@@ -223,11 +281,14 @@ async def run_agent_loop_no_mcp(
     user_message: str,
     *,
     system_prompt: str | None = None,
+    message_history: list[dict[str, Any]] | None = None,
 ) -> str:
     """Run one turn with Ollama only (no MCP tools). Returns assistant text."""
     messages: list[dict[str, Any]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
+    if message_history:
+        messages.extend(message_history)
     messages.append({"role": "user", "content": user_message})
 
     loop = asyncio.get_event_loop()
@@ -262,11 +323,14 @@ async def run_agent_loop_no_mcp_stream(
     user_message: str,
     *,
     system_prompt: str | None = None,
+    message_history: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[str]:
     """Stream one turn with Ollama only (no MCP). Yields content fragments."""
     messages: list[dict[str, Any]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
+    if message_history:
+        messages.extend(message_history)
     messages.append({"role": "user", "content": user_message})
 
     q: queue.Queue = queue.Queue()

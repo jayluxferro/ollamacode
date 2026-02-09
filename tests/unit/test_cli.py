@@ -11,7 +11,7 @@ def test_parse_args_defaults():
     """_parse_args uses default model and no MCP args when not provided."""
     with patch("sys.argv", ["ollamacode"]):
         args = _parse_args()
-    assert args.model == "qwen2.5-coder:32b"  # or env value
+    assert args.model == "gpt-oss:20b"  # or env value
     assert args.mcp_command == "python"
     assert args.mcp_args == []
     assert args.query is None

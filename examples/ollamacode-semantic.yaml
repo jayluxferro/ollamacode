@@ -3,7 +3,7 @@
 # Requires: ollama pull nomic-embed-text (or set OLLAMACODE_EMBED_MODEL).
 # In chat, ask the agent to run index_codebase first, then use semantic_search_codebase.
 
-model: qwen2.5-coder:32b
+model: gpt-oss:20b
 
 mcp_servers:
   - type: stdio

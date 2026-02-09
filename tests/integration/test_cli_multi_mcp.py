@@ -27,7 +27,7 @@ def test_cli_with_config_two_mcp_servers(tmp_path):
     demo_path = REPO_ROOT / "examples" / "demo_server.py"
     fs_path = REPO_ROOT / "examples" / "fs_mcp.py"
     cfg = {
-        "model": "qwen2.5-coder:32b",
+        "model": "gpt-oss:20b",
         "mcp_servers": [
             {"type": "stdio", "command": sys.executable, "args": [str(demo_path)]},
             {"type": "stdio", "command": sys.executable, "args": [str(fs_path)]},

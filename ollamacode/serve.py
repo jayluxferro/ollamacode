@@ -113,7 +113,7 @@ def run_serve(port: int = 8000, config_path: str | None = None) -> None:
         system_extra_env=os.environ.get("OLLAMACODE_SYSTEM_EXTRA"),
     )
     model = merged.get("model") or os.environ.get(
-        "OLLAMACODE_MODEL", "qwen2.5-coder:32b"
+        "OLLAMACODE_MODEL", "gpt-oss:20b"
     )
     system_extra = (merged.get("system_prompt_extra") or "").strip()
     mcp_servers = merged.get("mcp_servers") or []

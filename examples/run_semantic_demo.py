@@ -4,14 +4,16 @@ Demo: run semantic codebase index + search using nomic-embed-text.
 From repo root: uv run python examples/run_semantic_demo.py
 Requires: ollama pull nomic-embed-text
 """
+
+import sys
 from pathlib import Path
 
-# Run from repo root
-import sys
+# Ensure the repo root is on the import path
 repo_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(repo_root))
 
 from ollamacode.servers.semantic_mcp import index_codebase, semantic_search_codebase
+
 
 def main():
     print("=== 1. Indexing Python files (ollamacode/*.py) ===\n")
@@ -27,6 +29,7 @@ def main():
     print("=== 3. Semantic search: 'run tests or pytest' ===\n")
     out = semantic_search_codebase("run tests or pytest", max_results=5)
     print(out)
+
 
 if __name__ == "__main__":
     main()
