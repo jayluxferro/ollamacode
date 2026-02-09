@@ -35,13 +35,7 @@ dev = [
     "mkdocstrings[python]>=0.24.0",
     "ruff>=0.8.0",
     "pyright>=1.1.0",
-]
-tui = [
-    "rich>=13.0.0",
-]
-server = [
-    "uvicorn[standard]>=0.30.0",
-    "starlette>=0.38.0",
+    "pytest-timeout>=2.3.0",
 ]
 
 [project.scripts]
@@ -63,6 +57,7 @@ dev-dependencies = [
     "mkdocstrings[python]>=0.24.0",
     "ruff>=0.8.0",
     "pyright>=1.1.0",
+    "pytest-timeout>=2.3.0",
 ]
 
 [tool.ruff]
