@@ -42,13 +42,15 @@ def add_tool_aliases_for_ollama(
             fn = t.get("function") or {}
             name = fn.get("name") or ""
             if name == target_name or name.endswith("_" + target_name):
-                result.append({
-                    "type": "function",
-                    "function": {
-                        "name": alias_name,
-                        "description": (fn.get("description") or "") + f" (Alias for {target_name}.)",
-                        "parameters": fn.get("parameters") or {},
-                    },
-                })
+                result.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": alias_name,
+                            "description": (fn.get("description") or "") + f" (Alias for {target_name}.)",
+                            "parameters": fn.get("parameters") or {},
+                        },
+                    }
+                )
                 break
     return result

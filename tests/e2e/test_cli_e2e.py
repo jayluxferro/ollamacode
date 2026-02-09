@@ -12,6 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 def _ollama_available() -> bool:
     try:
         import urllib.request
+
         urllib.request.urlopen("http://localhost:11434/api/version", timeout=2)
         return True
     except Exception:

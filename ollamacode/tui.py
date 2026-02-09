@@ -47,6 +47,7 @@ def _handle_tui_slash(
         return "cleared"
     if cmd == "/help":
         from rich.panel import Panel as RichPanel
+
         help_text = """[bold]Slash commands:[/]
   /clear, /new   Clear conversation and start fresh
   /help         Show this help
@@ -94,9 +95,7 @@ async def run_tui(
         from rich.markdown import Markdown
         from rich.panel import Panel
     except ImportError as e:
-        raise ImportError(
-            "TUI requires rich. Install with: pip install ollamacode[tui]"
-        ) from e
+        raise ImportError("TUI requires rich. Install with: pip install ollamacode[tui]") from e
 
     console = Console()
     _SYSTEM = "You are a helpful coding assistant. Use the available tools when they would help."

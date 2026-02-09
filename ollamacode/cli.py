@@ -327,17 +327,13 @@ async def _run(
             if result is not None:
                 continue
             if stream:
-                out = await _do_chat_stream(
-                    session, line, model_ref[0], message_history_mcp
-                )
+                out = await _do_chat_stream(session, line, model_ref[0], message_history_mcp)
                 message_history_mcp.append({"role": "user", "content": line})
                 message_history_mcp.append({"role": "assistant", "content": out})
                 if history_file:
                     _append_history(history_file, line, out)
             else:
-                out = await _do_chat(
-                    session, line, model_ref[0], message_history_mcp
-                )
+                out = await _do_chat(session, line, model_ref[0], message_history_mcp)
                 message_history_mcp.append({"role": "user", "content": line})
                 message_history_mcp.append({"role": "assistant", "content": out})
                 print("Assistant:", out, sep="\n")

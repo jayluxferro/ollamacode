@@ -97,9 +97,7 @@ def merge_config_with_env(
     if mcp_args_env:
         # Legacy: single stdio server from OLLAMACODE_MCP_ARGS "command arg1 arg2" (overrides config)
         parts = mcp_args_env.split()
-        out["mcp_servers"] = [
-            {"type": "stdio", "command": parts[0], "args": parts[1:] if len(parts) > 1 else []}
-        ]
+        out["mcp_servers"] = [{"type": "stdio", "command": parts[0], "args": parts[1:] if len(parts) > 1 else []}]
     elif config.get("mcp_servers") is not None:
         out["mcp_servers"] = config["mcp_servers"]
     else:

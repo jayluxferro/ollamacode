@@ -158,11 +158,13 @@ async def run_agent_loop(
             result = await call_tool(session, name, arguments)
             content = tool_result_to_content(result)
             _log_tool_result(name, content, is_error=getattr(result, "isError", False))
-            messages.append({
-                "role": "tool",
-                "tool_name": name,
-                "content": content,
-            })
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_name": name,
+                    "content": content,
+                }
+            )
 
     return "(Max tool rounds reached; stopping.)"
 

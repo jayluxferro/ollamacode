@@ -39,6 +39,7 @@ def _run_cli_with_demo_mcp(query: str, timeout: int = 150) -> tuple[str, str, in
 def _ollama_available() -> bool:
     try:
         import urllib.request
+
         urllib.request.urlopen("http://localhost:11434/api/version", timeout=2)
         return True
     except Exception:
