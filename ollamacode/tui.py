@@ -13,6 +13,12 @@ import shlex
 import subprocess
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal, cast
 
+# Enable arrow keys and line editing for input() on Unix/macOS (readline not on Windows)
+try:
+    import readline  # noqa: F401
+except ImportError:
+    pass
+
 from .agent import (
     run_agent_loop,
     run_agent_loop_no_mcp,
@@ -25,15 +31,33 @@ if TYPE_CHECKING:
     from .mcp_client import McpConnection
 
 
-def _conversation_to_markdown(history: list[tuple[str, str]], current: str) -> str:
-    """Build markdown string for conversation panel (Rich Markdown renderable)."""
+# Show only the last N exchanges in the Chat panel so tool output (stderr) stays visible
+_CHAT_PANEL_LAST_N_EXCHANGES = 2
+
+
+def _conversation_to_markdown(
+    history: list[tuple[str, str]],
+    current: str,
+    *,
+    limit_exchanges: int | None = _CHAT_PANEL_LAST_N_EXCHANGES,
+) -> str:
+    """Build markdown string for conversation panel (Rich Markdown renderable).
+    If limit_exchanges is set, only the last N user+assistant pairs are shown so
+    the panel stays small and tool output remains visible in the terminal.
+    """
+    if limit_exchanges is not None and limit_exchanges > 0 and len(history) > limit_exchanges * 2:
+        history = history[-(limit_exchanges * 2) :]
+        prefix = "*(scroll up for earlier messages)*\n\n"
+    else:
+        prefix = ""
     parts = []
     for role, text in history:
         label = "**You**" if role == "user" else "**Assistant**"
         parts.append(f"{label}\n\n{text}")
     if current:
         parts.append("**Assistant** *(streaming)*\n\n" + current)
-    return "\n\n---\n\n".join(parts) if parts else "*(no messages yet)*"
+    body = "\n\n---\n\n".join(parts) if parts else "*(no messages yet)*"
+    return prefix + body
 
 
 def _run_cmd_sync(workspace_root: str, command: str) -> str:
