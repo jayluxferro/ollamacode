@@ -5,6 +5,8 @@ From repo root: uv run python examples/run_semantic_demo.py
 Requires: ollama pull nomic-embed-text
 """
 
+# ruff: noqa
+
 import sys
 from pathlib import Path
 
