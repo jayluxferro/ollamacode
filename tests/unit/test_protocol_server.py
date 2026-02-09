@@ -1,7 +1,5 @@
 """Unit tests for stdio JSON-RPC protocol server."""
 
-import asyncio
-import tempfile
 from pathlib import Path
 
 import pytest

@@ -12,7 +12,7 @@ import os
 from collections.abc import AsyncIterator
 from typing import Any
 
-from starlette.requests import Request
+# Removed unused import of Request
 from starlette.responses import JSONResponse
 
 from .agent import (
@@ -74,7 +74,9 @@ async def _handle_chat(
         return {"content": "", "error": str(e)}
 
 
-def _check_api_key(request: Request, api_key: str) -> JSONResponse | None:
+# Update type hint to Any
+
+def _check_api_key(request: Any, api_key: str) -> JSONResponse | None:
     """If api_key is set, require Authorization: Bearer <key> or X-API-Key: <key>. Return 401 response if invalid, else None."""
     auth = request.headers.get("Authorization") or ""
     token = request.headers.get("X-API-Key") or ""
@@ -84,6 +86,8 @@ def _check_api_key(request: Request, api_key: str) -> JSONResponse | None:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     return None
 
+
+# create_app remains largely unchanged, but Request type hint will be Any
 
 def create_app(
     model: str,
@@ -254,9 +258,7 @@ def create_app(
             n = apply_edits(edits, work_root)
             return JSONResponse({"applied": n})
         except Exception as e:
-            return JSONResponse(
-                {"applied": 0, "error": str(e)}, status_code=500
-            )
+            return JSONResponse({"applied": 0, "error": str(e)}, status_code=500)
 
     app = Starlette(
         routes=[
@@ -268,6 +270,8 @@ def create_app(
     )
     return app
 
+
+# run_serve unchanged except for imports
 
 def run_serve(port: int = 8000, config_path: str | None = None) -> None:
     """Load config, create app, run uvicorn."""

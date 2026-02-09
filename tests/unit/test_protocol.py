@@ -1,6 +1,5 @@
 """Unit tests for editor protocol (normalize_chat_body)."""
 
-import pytest
 
 from ollamacode.protocol import normalize_chat_body
 
