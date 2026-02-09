@@ -5,6 +5,7 @@ CLI for OllamaCode: chat with local Ollama + MCP tools.
 from __future__ import annotations
 
 import argparse
+from typing import Literal, cast
 import asyncio
 import json
 import os
@@ -274,11 +275,11 @@ def _handle_slash(
     workspace_root: str = ".",
     linter_command: str | None = None,
     test_command: str | None = None,
-) -> str | None | tuple[str, str]:
+) -> str | None | tuple[str, str] | tuple[Literal["run_summary"], int]:
     """
     Handle slash command. model_ref is [current_model]; message_history is the conversation list to clear.
     Returns new model if /model was used, "cleared" if /clear or /new, "help" if /help, "quit" if /quit,
-    ("run_prompt", prompt) for /fix or /test to send to model, else None.
+    ("run_prompt", prompt) for /fix or /test, ("run_summary", n) for /summary, else None.
     """
     line = line.strip()
     if not line.startswith("/"):
@@ -608,10 +609,10 @@ async def _run(
                     break
                 if result is not None:
                     if isinstance(result, tuple) and result[0] == "run_prompt":
-                        line = result[1]
+                        line = cast(str, result[1])
                     elif isinstance(result, tuple) and result[0] == "run_summary":
                         await _do_summary(
-                            None, model_ref[0], message_history, result[1]
+                            None, model_ref[0], message_history, cast(int, result[1])
                         )
                         continue
                     else:
@@ -685,10 +686,10 @@ async def _run(
                 break
             if result is not None:
                 if isinstance(result, tuple) and result[0] == "run_prompt":
-                    line = result[1]
+                    line = cast(str, result[1])
                 elif isinstance(result, tuple) and result[0] == "run_summary":
                     await _do_summary(
-                        session, model_ref[0], message_history_mcp, result[1]
+                        session, model_ref[0], message_history_mcp, cast(int, result[1])
                     )
                     continue
                 else:

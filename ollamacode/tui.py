@@ -11,7 +11,7 @@ import logging
 import os
 import shlex
 import subprocess
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal, cast
 
 from .agent import (
     run_agent_loop,
@@ -65,8 +65,8 @@ def _handle_tui_slash(
     workspace_root: str = ".",
     linter_command: str | None = None,
     test_command: str | None = None,
-) -> str | None | tuple[str, str]:
-    """Handle slash command in TUI. Returns 'quit', 'cleared', 'help', ('run_prompt', prompt), or None."""
+) -> str | None | tuple[str, str] | tuple[Literal["run_summary"], int]:
+    """Handle slash command in TUI. Returns 'quit', 'cleared', 'help', ('run_prompt', prompt), ('run_summary', n), or None."""
     line = line.strip()
     if not line.startswith("/"):
         return None
@@ -231,9 +231,9 @@ async def run_tui(
             break
         if result is not None:
             if isinstance(result, tuple) and result[0] == "run_prompt":
-                line = result[1]
+                line = cast(str, result[1])
             elif isinstance(result, tuple) and result[0] == "run_summary":
-                n_turns = result[1]
+                n_turns = cast(int, result[1])
                 n_msgs = min(n_turns * 2, len(message_history))
                 if n_msgs == 0:
                     console.print("[dim]No conversation to summarize.[/]")

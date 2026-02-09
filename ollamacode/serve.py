@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+from typing import Any
 
 from .agent import run_agent_loop, run_agent_loop_no_mcp
 from .config import load_config, merge_config_with_env
@@ -53,7 +54,7 @@ async def _handle_chat(
             )
         else:
             out = await run_agent_loop_no_mcp(use_model, message, system_prompt=system)
-        result = {"content": out}
+        result: dict[str, Any] = {"content": out}
         edits = parse_edits(out)
         if edits:
             result["edits"] = edits
