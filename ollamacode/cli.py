@@ -43,7 +43,11 @@ def _check_ollama_and_model(model: str, quiet: bool) -> None:
         else:
             print(f"Ollama error: {e}", file=sys.stderr)
         raise SystemExit(1) from e
-    models_list = getattr(listed, "models", None) or (listed.get("models") if isinstance(listed, dict) else None) or []
+    models_list = (
+        getattr(listed, "models", None)
+        or (listed.get("models") if isinstance(listed, dict) else None)
+        or []
+    )
     names = []
     for m in models_list:
         n = (
@@ -211,7 +215,9 @@ def _resolve_mcp_servers(
         system_extra_env=os.environ.get("OLLAMACODE_SYSTEM_EXTRA"),
     )
     servers = merged.get("mcp_servers") or []
-    cli_args = mcp_args if mcp_args else (os.environ.get("OLLAMACODE_MCP_ARGS") or "").split()
+    cli_args = (
+        mcp_args if mcp_args else (os.environ.get("OLLAMACODE_MCP_ARGS") or "").split()
+    )
     if cli_args:
         servers = [{"type": "stdio", "command": mcp_command, "args": cli_args}]
     has_config_file = find_config_file(config_path) is not None
@@ -298,7 +304,10 @@ def _handle_slash(
         run_cmd = linter_command or "ruff check ."
         output = _run_command_sync(workspace_root, run_cmd)
         if not output:
-            print("[OllamaCode] No linter output (command may have succeeded or not run).", flush=True)
+            print(
+                "[OllamaCode] No linter output (command may have succeeded or not run).",
+                flush=True,
+            )
             return "help"
         prompt = f"Fix these linter errors (from `{run_cmd}`):\n\n```\n{output}\n```"
         return ("run_prompt", prompt)
@@ -306,7 +315,10 @@ def _handle_slash(
         run_cmd = test_command or "pytest"
         output = _run_command_sync(workspace_root, run_cmd)
         if not output:
-            print("[OllamaCode] No test output (command may have succeeded or not run).", flush=True)
+            print(
+                "[OllamaCode] No test output (command may have succeeded or not run).",
+                flush=True,
+            )
             return "help"
         prompt = f"Fix these test failures (from `{run_cmd}`):\n\n```\n{output}\n```"
         return ("run_prompt", prompt)
@@ -351,7 +363,10 @@ async def _run(
     # Inject workspace root so MCP servers (fs, terminal, codebase) run in the directory from which the CLI was started
     workspace_root = os.getcwd()
     mcp_servers = [
-        {**entry, "env": {**(entry.get("env") or {}), "OLLAMACODE_FS_ROOT": workspace_root}}
+        {
+            **entry,
+            "env": {**(entry.get("env") or {}), "OLLAMACODE_FS_ROOT": workspace_root},
+        }
         if (entry.get("type") or "stdio").lower() == "stdio"
         else entry
         for entry in mcp_servers
@@ -426,13 +441,23 @@ async def _run(
             + '\n\nWhen you change files, output edits in this format so the user can apply or reject: <<EDITS>>\n[JSON array of { "path": "file path", "oldText": "optional exact old content", "newText": "new content" }]\n<<END>>\nIf replacing the whole file, omit oldText. Paths are relative to the workspace.'
         )
     if rules_file:
-        rules_path = Path(rules_file) if Path(rules_file).is_absolute() else Path(workspace_root) / rules_file
+        rules_path = (
+            Path(rules_file)
+            if Path(rules_file).is_absolute()
+            else Path(workspace_root) / rules_file
+        )
         if rules_path.exists():
             _SYSTEM = _SYSTEM + "\n\n--- Project rules ---\n\n" + rules_path.read_text()
     if branch_context or pr_description_file:
-        branch_ctx = get_branch_context(workspace_root, branch_context_base, pr_description_file)
+        branch_ctx = get_branch_context(
+            workspace_root, branch_context_base, pr_description_file
+        )
         if branch_ctx:
-            _SYSTEM = _SYSTEM + "\n\n--- Branch/PR context (what we're working on) ---" + branch_ctx
+            _SYSTEM = (
+                _SYSTEM
+                + "\n\n--- Branch/PR context (what we're working on) ---"
+                + branch_ctx
+            )
 
     async def _do_chat(
         conn: McpConnection | None,
@@ -540,11 +565,17 @@ async def _run(
             {"role": "user", "content": "Summary of previous conversation"},
             {"role": "assistant", "content": summary.strip()},
         ]
-        print("[OllamaCode] Replaced last", n_turns, "turn(s) with summary.", flush=True)
+        print(
+            "[OllamaCode] Replaced last", n_turns, "turn(s) with summary.", flush=True
+        )
 
     if not use_mcp:
         if query:
-            q = prepend_file_context(query, file_path, workspace_root, lines_spec) if file_path else query
+            q = (
+                prepend_file_context(query, file_path, workspace_root, lines_spec)
+                if file_path
+                else query
+            )
             if stream:
                 out = await _do_chat_stream(None, q, model, [])
                 _maybe_apply_edits(out)
@@ -553,7 +584,9 @@ async def _run(
                 print(out)
                 _maybe_apply_edits(out)
         else:
-            print("OllamaCode (Ollama only, no MCP tools). /help for commands. Empty line or Ctrl+C to exit.")
+            print(
+                "OllamaCode (Ollama only, no MCP tools). /help for commands. Empty line or Ctrl+C to exit."
+            )
             message_history: list[dict] = []
             model_ref = [model]
             while True:
@@ -577,12 +610,16 @@ async def _run(
                     if isinstance(result, tuple) and result[0] == "run_prompt":
                         line = result[1]
                     elif isinstance(result, tuple) and result[0] == "run_summary":
-                        await _do_summary(None, model_ref[0], message_history, result[1])
+                        await _do_summary(
+                            None, model_ref[0], message_history, result[1]
+                        )
                         continue
                     else:
                         continue
                 if stream:
-                    out = await _do_chat_stream(None, line, model_ref[0], message_history)
+                    out = await _do_chat_stream(
+                        None, line, model_ref[0], message_history
+                    )
                     message_history.append({"role": "user", "content": line})
                     message_history.append({"role": "assistant", "content": out})
                     if history_file:
@@ -604,7 +641,11 @@ async def _run(
 
     async with session_ctx as session:
         if query:
-            q = prepend_file_context(query, file_path, workspace_root, lines_spec) if file_path else query
+            q = (
+                prepend_file_context(query, file_path, workspace_root, lines_spec)
+                if file_path
+                else query
+            )
             if stream:
                 out = await _do_chat_stream(session, q, model, [])
                 _maybe_apply_edits(out)
@@ -613,8 +654,12 @@ async def _run(
                 print(out)
                 _maybe_apply_edits(out)
             return
-        print("OllamaCode (local model + MCP tools). /help for commands. Empty line or Ctrl+C to exit.")
-        if semantic_codebase_hint and not any("semantic" in (s.get("name") or "").lower() for s in mcp_servers):
+        print(
+            "OllamaCode (local model + MCP tools). /help for commands. Empty line or Ctrl+C to exit."
+        )
+        if semantic_codebase_hint and not any(
+            "semantic" in (s.get("name") or "").lower() for s in mcp_servers
+        ):
             print(
                 "[OllamaCode] Tip: For semantic codebase search, add a semantic MCP server to config. See docs/MCP_SERVERS.md.",
                 file=sys.stderr,
@@ -642,12 +687,16 @@ async def _run(
                 if isinstance(result, tuple) and result[0] == "run_prompt":
                     line = result[1]
                 elif isinstance(result, tuple) and result[0] == "run_summary":
-                    await _do_summary(session, model_ref[0], message_history_mcp, result[1])
+                    await _do_summary(
+                        session, model_ref[0], message_history_mcp, result[1]
+                    )
                     continue
                 else:
                     continue
             if stream:
-                out = await _do_chat_stream(session, line, model_ref[0], message_history_mcp)
+                out = await _do_chat_stream(
+                    session, line, model_ref[0], message_history_mcp
+                )
                 message_history_mcp.append({"role": "user", "content": line})
                 message_history_mcp.append({"role": "assistant", "content": out})
                 if history_file:
@@ -667,7 +716,10 @@ def main() -> None:
         try:
             from .convert_mcp import run_convert
         except ImportError as e:
-            print("convert-mcp requires PyYAML. Install with: pip install pyyaml", file=sys.stderr)
+            print(
+                "convert-mcp requires PyYAML. Install with: pip install pyyaml",
+                file=sys.stderr,
+            )
             raise SystemExit(1) from e
         try:
             run_convert(
@@ -690,7 +742,9 @@ def main() -> None:
         port = getattr(args, "port", 8000)
         run_serve(port=port, config_path=args.config)
         return
-    mcp_servers, _, using_builtin = _resolve_mcp_servers(args.config, args.mcp_command, args.mcp_args)
+    mcp_servers, _, using_builtin = _resolve_mcp_servers(
+        args.config, args.mcp_command, args.mcp_args
+    )
     config = load_config(args.config)
     merged = merge_config_with_env(
         config,
@@ -698,10 +752,22 @@ def main() -> None:
         mcp_args_env=os.environ.get("OLLAMACODE_MCP_ARGS"),
         system_extra_env=os.environ.get("OLLAMACODE_SYSTEM_EXTRA"),
     )
-    model = args.model or merged.get("model") or os.environ.get("OLLAMACODE_MODEL", "gpt-oss:20b")
+    model = (
+        args.model
+        or merged.get("model")
+        or os.environ.get("OLLAMACODE_MODEL", "gpt-oss:20b")
+    )
     system_extra = (merged.get("system_prompt_extra") or "").strip()
-    max_messages = args.max_messages if args.max_messages is not None else merged.get("max_messages", 0)
-    max_tool_rounds = args.max_tool_rounds if args.max_tool_rounds is not None else merged.get("max_tool_rounds", 20)
+    max_messages = (
+        args.max_messages
+        if args.max_messages is not None
+        else merged.get("max_messages", 0)
+    )
+    max_tool_rounds = (
+        args.max_tool_rounds
+        if args.max_tool_rounds is not None
+        else merged.get("max_tool_rounds", 20)
+    )
     quiet = getattr(args, "quiet", False)
     timing = getattr(args, "timing", False) or merged.get("timing", False)
     if using_builtin and not quiet:

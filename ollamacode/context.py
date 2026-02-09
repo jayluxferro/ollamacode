@@ -41,7 +41,8 @@ def get_branch_context(
         try:
             if pr_path.is_relative_to(root) and pr_path.is_file():
                 parts.append(
-                    "--- PR / change description ---\n" + pr_path.read_text(encoding="utf-8", errors="replace").strip()
+                    "--- PR / change description ---\n"
+                    + pr_path.read_text(encoding="utf-8", errors="replace").strip()
                 )
         except (ValueError, TypeError, OSError):
             pass

@@ -15,7 +15,11 @@ from typing import Any
 
 import ollama
 
-from .bridge import add_tool_aliases_for_ollama, mcp_tools_to_ollama, use_short_names_for_builtin_tools
+from .bridge import (
+    add_tool_aliases_for_ollama,
+    mcp_tools_to_ollama,
+    use_short_names_for_builtin_tools,
+)
 from .mcp_client import (
     TOOL_NAME_ALIASES,
     McpConnection,
@@ -75,7 +79,9 @@ def _log_tool_result(name: str, content: str, is_error: bool = False) -> None:
         print(f"  [{name}] {label}: (empty)", file=sys.stderr, flush=True)
 
 
-def _truncate_messages(messages: list[dict[str, Any]], max_messages: int) -> list[dict[str, Any]]:
+def _truncate_messages(
+    messages: list[dict[str, Any]], max_messages: int
+) -> list[dict[str, Any]]:
     """Keep system (if first) + last (max_messages - 1) messages to fit context window."""
     if max_messages <= 0 or len(messages) <= max_messages:
         return messages
@@ -142,7 +148,9 @@ async def run_agent_loop(
                 file=sys.stderr,
                 flush=True,
             )
-        to_send = _truncate_messages(messages, max_messages) if max_messages > 0 else messages
+        to_send = (
+            _truncate_messages(messages, max_messages) if max_messages > 0 else messages
+        )
         loop = asyncio.get_event_loop()
         t0 = time.perf_counter() if timing else None
         response = await loop.run_in_executor(
@@ -156,7 +164,11 @@ async def run_agent_loop(
                 flush=True,
             )
 
-        msg = response.get("message") if isinstance(response, dict) else getattr(response, "message", None)
+        msg = (
+            response.get("message")
+            if isinstance(response, dict)
+            else getattr(response, "message", None)
+        )
         if msg is None:
             return "No response from model."
 
@@ -181,9 +193,17 @@ async def run_agent_loop(
         # 3. Execute each tool call via MCP
         names = []
         for tc in tool_calls:
-            fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
+            fn = (
+                tc.get("function")
+                if isinstance(tc, dict)
+                else getattr(tc, "function", None)
+            )
             if fn is not None:
-                n = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
+                n = (
+                    fn.get("name")
+                    if isinstance(fn, dict)
+                    else getattr(fn, "name", None)
+                )
                 if n:
                     names.append(n)
         if names and not quiet:
@@ -194,13 +214,21 @@ async def run_agent_loop(
             )
 
         for tc in tool_calls:
-            fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
+            fn = (
+                tc.get("function")
+                if isinstance(tc, dict)
+                else getattr(tc, "function", None)
+            )
             if fn is None:
                 continue
             name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
             if not name:
                 continue
-            raw_args = fn.get("arguments") if isinstance(fn, dict) else getattr(fn, "arguments", None)
+            raw_args = (
+                fn.get("arguments")
+                if isinstance(fn, dict)
+                else getattr(fn, "arguments", None)
+            )
             arguments = _parse_tool_args(raw_args)
 
             if not quiet:
@@ -215,7 +243,9 @@ async def run_agent_loop(
                 )
             content = tool_result_to_content(result)
             if not quiet:
-                _log_tool_result(name, content, is_error=getattr(result, "isError", False))
+                _log_tool_result(
+                    name, content, is_error=getattr(result, "isError", False)
+                )
             messages.append(
                 {
                     "role": "tool",
@@ -245,12 +275,25 @@ def _stream_into_queue(
     try:
         stream = ollama.chat(model=model, messages=messages, tools=tools, stream=True)
         for chunk in stream:
-            msg = chunk.get("message") if isinstance(chunk, dict) else getattr(chunk, "message", None)
+            msg = (
+                chunk.get("message")
+                if isinstance(chunk, dict)
+                else getattr(chunk, "message", None)
+            )
             content = _get(msg, "content", "") or "" if msg else ""
-            done = chunk.get("done") if isinstance(chunk, dict) else getattr(chunk, "done", False)
+            done = (
+                chunk.get("done")
+                if isinstance(chunk, dict)
+                else getattr(chunk, "done", False)
+            )
             q.put((content, done, msg))
-    except Exception as e:  # e.g. ollama.ResponseError when server fails to parse tool-call JSON
-        if "error parsing tool call" in str(e).lower() or "invalid character" in str(e).lower():
+    except (
+        Exception
+    ) as e:  # e.g. ollama.ResponseError when server fails to parse tool-call JSON
+        if (
+            "error parsing tool call" in str(e).lower()
+            or "invalid character" in str(e).lower()
+        ):
             err = ValueError(
                 "Model produced invalid tool-call JSON (e.g. extra '}' or ']', or unescaped newlines in strings). "
                 "Multi-line arguments must use \\n, not literal line breaks. Try again or use a model with stricter JSON."
@@ -281,7 +324,9 @@ async def run_agent_loop_stream(
     message_history: optional prior turns [{"role":"user","content":...},{"role":"assistant","content":...}, ...].
     """
     list_result = await list_tools(session)
-    ollama_tools = use_short_names_for_builtin_tools(mcp_tools_to_ollama(list_result.tools))
+    ollama_tools = use_short_names_for_builtin_tools(
+        mcp_tools_to_ollama(list_result.tools)
+    )
     ollama_tools = add_tool_aliases_for_ollama(ollama_tools, TOOL_NAME_ALIASES) or []
 
     messages: list[dict[str, Any]] = []
@@ -301,7 +346,9 @@ async def run_agent_loop_stream(
                 flush=True,
             )
         q: queue.Queue = queue.Queue()
-        to_send = _truncate_messages(messages, max_messages) if max_messages > 0 else messages
+        to_send = (
+            _truncate_messages(messages, max_messages) if max_messages > 0 else messages
+        )
         t0 = time.perf_counter() if timing else None
         thread = threading.Thread(
             target=_stream_into_queue,
@@ -348,9 +395,17 @@ async def run_agent_loop_stream(
 
         names = []
         for tc in tool_calls:
-            fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
+            fn = (
+                tc.get("function")
+                if isinstance(tc, dict)
+                else getattr(tc, "function", None)
+            )
             if fn is not None:
-                n = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
+                n = (
+                    fn.get("name")
+                    if isinstance(fn, dict)
+                    else getattr(fn, "name", None)
+                )
                 if n:
                     names.append(n)
         if names and not quiet:
@@ -361,13 +416,21 @@ async def run_agent_loop_stream(
             )
 
         for tc in tool_calls:
-            fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
+            fn = (
+                tc.get("function")
+                if isinstance(tc, dict)
+                else getattr(tc, "function", None)
+            )
             if fn is None:
                 continue
             name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
             if not name:
                 continue
-            raw_args = fn.get("arguments") if isinstance(fn, dict) else getattr(fn, "arguments", None)
+            raw_args = (
+                fn.get("arguments")
+                if isinstance(fn, dict)
+                else getattr(fn, "arguments", None)
+            )
             arguments = _parse_tool_args(raw_args)
             if not quiet:
                 _log_tool_call(name, arguments)
@@ -381,7 +444,9 @@ async def run_agent_loop_stream(
                 )
             content = tool_result_to_content(result)
             if not quiet:
-                _log_tool_result(name, content, is_error=getattr(result, "isError", False))
+                _log_tool_result(
+                    name, content, is_error=getattr(result, "isError", False)
+                )
             messages.append({"role": "tool", "tool_name": name, "content": content})
 
 
@@ -405,10 +470,16 @@ async def run_agent_loop_no_mcp(
         None,
         lambda: _ollama_chat_sync(model, messages, []),
     )
-    msg = response.get("message") if isinstance(response, dict) else getattr(response, "message", None)
+    msg = (
+        response.get("message")
+        if isinstance(response, dict)
+        else getattr(response, "message", None)
+    )
     if msg is None:
         return "No response from model."
-    content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+    content = (
+        msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+    )
     return (content or "").strip()
 
 
@@ -420,7 +491,11 @@ def _stream_no_mcp_into_queue(
     try:
         stream = ollama.chat(model=model, messages=messages, tools=[], stream=True)
         for chunk in stream:
-            msg = chunk.get("message") if isinstance(chunk, dict) else getattr(chunk, "message", None)
+            msg = (
+                chunk.get("message")
+                if isinstance(chunk, dict)
+                else getattr(chunk, "message", None)
+            )
             content = _get(msg, "content", "") or "" if msg else ""
             q.put((content,))
     finally:
@@ -443,7 +518,9 @@ async def run_agent_loop_no_mcp_stream(
     messages.append({"role": "user", "content": user_message})
 
     q: queue.Queue = queue.Queue()
-    thread = threading.Thread(target=_stream_no_mcp_into_queue, args=(q, model, messages))
+    thread = threading.Thread(
+        target=_stream_no_mcp_into_queue, args=(q, model, messages)
+    )
     thread.start()
     loop = asyncio.get_event_loop()
     try:

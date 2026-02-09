@@ -29,7 +29,11 @@ def parse_edits(response_text: str) -> list[dict[str, Any]]:
     start = response_text.find(EDITS_START)
     if start == -1:
         return []
-    after_start = response_text.index("\n", start) if "\n" in response_text[start:] else start + len(EDITS_START)
+    after_start = (
+        response_text.index("\n", start)
+        if "\n" in response_text[start:]
+        else start + len(EDITS_START)
+    )
     end_marker = response_text.find(EDITS_END, after_start)
     if end_marker == -1:
         return []

@@ -31,7 +31,9 @@ def _short_name_for_builtin(name: str) -> str | None:
     return None
 
 
-def use_short_names_for_builtin_tools(ollama_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def use_short_names_for_builtin_tools(
+    ollama_tools: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     """Rewrite built-in server tool names to short form so the model sees read_file, run_command, etc."""
     result = []
     for t in ollama_tools:
@@ -82,7 +84,8 @@ def add_tool_aliases_for_ollama(
                         "type": "function",
                         "function": {
                             "name": alias_name,
-                            "description": (fn.get("description") or "") + f" (Alias for {target_name}.)",
+                            "description": (fn.get("description") or "")
+                            + f" (Alias for {target_name}.)",
                             "parameters": fn.get("parameters") or {},
                         },
                     }

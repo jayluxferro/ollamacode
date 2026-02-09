@@ -75,7 +75,9 @@ def find_config_file(
     if lookup_parent_dirs is None:
         import os
 
-        lookup_parent_dirs = os.environ.get("OLLAMACODE_CONFIG_LOOKUP_PARENT", "").strip().lower() in ("1", "true", "yes")
+        lookup_parent_dirs = os.environ.get(
+            "OLLAMACODE_CONFIG_LOOKUP_PARENT", ""
+        ).strip().lower() in ("1", "true", "yes")
     if lookup_parent_dirs:
         for parent in base.parents:
             for candidate in (
@@ -142,7 +144,9 @@ def merge_config_with_env(
     """
     out: dict[str, Any] = {}
     out["model"] = model_env or config.get("model")
-    out["system_prompt_extra"] = (system_extra_env or "").strip() or (config.get("system_prompt_extra") or "").strip()
+    out["system_prompt_extra"] = (system_extra_env or "").strip() or (
+        config.get("system_prompt_extra") or ""
+    ).strip()
     out["max_messages"] = config.get("max_messages", 0)
     out["max_tool_rounds"] = config.get("max_tool_rounds", 20)
     out["timing"] = config.get("timing", False)

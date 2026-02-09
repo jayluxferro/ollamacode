@@ -102,16 +102,26 @@ def _handle_tui_slash(
         run_cmd = linter_command or "ruff check ."
         output = _run_cmd_sync(workspace_root, run_cmd)
         if not output:
-            console.print("[dim]No linter output (command may have succeeded or not run).[/]")
+            console.print(
+                "[dim]No linter output (command may have succeeded or not run).[/]"
+            )
             return "help"
-        return ("run_prompt", f"Fix these linter errors (from `{run_cmd}`):\n\n```\n{output}\n```")
+        return (
+            "run_prompt",
+            f"Fix these linter errors (from `{run_cmd}`):\n\n```\n{output}\n```",
+        )
     if cmd == "/test":
         run_cmd = test_command or "pytest"
         output = _run_cmd_sync(workspace_root, run_cmd)
         if not output:
-            console.print("[dim]No test output (command may have succeeded or not run).[/]")
+            console.print(
+                "[dim]No test output (command may have succeeded or not run).[/]"
+            )
             return "help"
-        return ("run_prompt", f"Fix these test failures (from `{run_cmd}`):\n\n```\n{output}\n```")
+        return (
+            "run_prompt",
+            f"Fix these test failures (from `{run_cmd}`):\n\n```\n{output}\n```",
+        )
     if cmd == "/summary":
         try:
             n = int(rest) if rest else 5
@@ -161,7 +171,9 @@ async def run_tui(
         from rich.markdown import Markdown
         from rich.panel import Panel
     except ImportError as e:
-        raise ImportError("TUI requires rich. Install with: pip install ollamacode[tui]") from e
+        raise ImportError(
+            "TUI requires rich. Install with: pip install ollamacode[tui]"
+        ) from e
 
     # Suppress MCP SDK INFO logs (e.g. "Processing request of type ListToolsRequest") so TUI stays clean
     for _name in ("mcp", "mcp.client", "mcp.server"):

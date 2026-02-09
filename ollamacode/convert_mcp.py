@@ -107,10 +107,14 @@ def emit_yaml(
 ) -> None:
     """Write OllamaCode-style YAML to file or stdout."""
     if yaml is None:
-        raise RuntimeError("PyYAML required for convert-mcp. Install with: pip install pyyaml")
+        raise RuntimeError(
+            "PyYAML required for convert-mcp. Install with: pip install pyyaml"
+        )
     out: dict[str, Any] = dict(top_level_keys) if top_level_keys else {}
     out["mcp_servers"] = mcp_servers
-    yaml_str = yaml.dump(out, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    yaml_str = yaml.dump(
+        out, default_flow_style=False, allow_unicode=True, sort_keys=False
+    )
     if output_path:
         Path(output_path).write_text(yaml_str, encoding="utf-8")
     else:

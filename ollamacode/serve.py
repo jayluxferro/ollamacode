@@ -30,7 +30,9 @@ async def _handle_chat(
     file_path = body.get("file")
     lines_spec = body.get("lines")
     if file_path:
-        message = prepend_file_context(message, str(file_path), workspace_root, lines_spec)
+        message = prepend_file_context(
+            message, str(file_path), workspace_root, lines_spec
+        )
     model_override = body.get("model")
     use_model = model_override or model
     system = (
@@ -75,7 +77,9 @@ def create_app(
         from starlette.responses import JSONResponse
         from starlette.routing import Route
     except ImportError as e:
-        raise ImportError("Server requires starlette. Install with: pip install ollamacode[server]") from e
+        raise ImportError(
+            "Server requires starlette. Install with: pip install ollamacode[server]"
+        ) from e
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
@@ -103,7 +107,9 @@ def create_app(
         except Exception:
             return JSONResponse({"error": "invalid json"}, status_code=400)
         session: McpConnection | None = getattr(request.app.state, "session", None)
-        result = await _handle_chat(session, model, system_extra, body, max_messages, root)
+        result = await _handle_chat(
+            session, model, system_extra, body, max_messages, root
+        )
         return JSONResponse(result)
 
     app = Starlette(
@@ -118,7 +124,9 @@ def run_serve(port: int = 8000, config_path: str | None = None) -> None:
     try:
         import uvicorn
     except ImportError as e:
-        raise SystemExit("Server requires uvicorn. Install with: pip install ollamacode[server]") from e
+        raise SystemExit(
+            "Server requires uvicorn. Install with: pip install ollamacode[server]"
+        ) from e
 
     config = load_config(config_path)
     merged = merge_config_with_env(

@@ -11,7 +11,10 @@ def test_convert_cursor_stdio():
     """Cursor mcpServers with command+args -> OllamaCode stdio list with name from key."""
     data = {
         "mcpServers": {
-            "git": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-git"]},
+            "git": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-git"],
+            },
             "fs": {"command": "python", "args": ["-m", "ollamacode.servers.fs_mcp"]},
         }
     }
@@ -31,7 +34,10 @@ def test_convert_claude_mcp_servers():
     """Claude mcp_servers (object) -> OllamaCode list with name from key."""
     data = {
         "mcp_servers": {
-            "git": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-git"]},
+            "git": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-git"],
+            },
         }
     }
     out = convert_to_ollamacode_servers(data)
@@ -103,7 +109,9 @@ def test_run_convert_writes_yaml(tmp_path):
     """run_convert reads JSON and writes YAML with name from key."""
     inp = tmp_path / "in.json"
     out = tmp_path / "out.yaml"
-    inp.write_text('{"mcpServers": {"git": {"command": "npx", "args": ["-y", "server-git"]}}}')
+    inp.write_text(
+        '{"mcpServers": {"git": {"command": "npx", "args": ["-y", "server-git"]}}}'
+    )
     run_convert(str(inp), str(out))
     text = out.read_text()
     assert "mcp_servers:" in text

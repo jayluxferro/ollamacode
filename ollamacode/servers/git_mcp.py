@@ -37,7 +37,9 @@ def _base(cwd: str | None) -> Path:
     return (root / cwd.lstrip("/")).resolve()
 
 
-def _run_git(args: list[str], cwd: Path | None = None, max_output: int = 32 * 1024) -> str:
+def _run_git(
+    args: list[str], cwd: Path | None = None, max_output: int = 32 * 1024
+) -> str:
     base = cwd or _root()
     try:
         result = subprocess.run(

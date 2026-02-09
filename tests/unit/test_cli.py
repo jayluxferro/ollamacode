@@ -88,7 +88,9 @@ async def test_run_respects_system_extra(monkeypatch):
     """_run appends system_extra to system prompt when set."""
     with patch("ollamacode.cli.run_agent_loop_no_mcp", new_callable=AsyncMock) as m:
         m.return_value = "ok"
-        await _run("test-model", [], "Extra instruction.", "hello", False, False, 0, None)
+        await _run(
+            "test-model", [], "Extra instruction.", "hello", False, False, 0, None
+        )
     m.assert_awaited_once()
     call_kw = m.call_args[1]
     assert "system_prompt" in call_kw
@@ -98,10 +100,14 @@ async def test_run_respects_system_extra(monkeypatch):
 @pytest.mark.asyncio
 async def test_run_uses_mcp_args_from_env(monkeypatch):
     """_run with single stdio MCP server config uses connect_mcp_stdio."""
-    mcp_servers = [{"type": "stdio", "command": "python", "args": ["examples/demo_server.py"]}]
+    mcp_servers = [
+        {"type": "stdio", "command": "python", "args": ["examples/demo_server.py"]}
+    ]
     with (
         patch("ollamacode.cli.connect_mcp_stdio") as connect,
-        patch("ollamacode.cli.run_agent_loop", new_callable=AsyncMock, return_value="5"),
+        patch(
+            "ollamacode.cli.run_agent_loop", new_callable=AsyncMock, return_value="5"
+        ),
     ):
         connect.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
         connect.return_value.__aexit__ = AsyncMock(return_value=None)
@@ -115,7 +121,9 @@ async def test_run_uses_mcp_args_from_env(monkeypatch):
 def test_resolve_mcp_servers_returns_using_builtin(tmp_path):
     """_resolve_mcp_servers returns (servers, use_mcp, using_builtin)."""
     # No config file (missing path), no env -> using_builtin True
-    servers, use_mcp, using_builtin = _resolve_mcp_servers(str(tmp_path / "missing.yaml"), "python", [])
+    servers, use_mcp, using_builtin = _resolve_mcp_servers(
+        str(tmp_path / "missing.yaml"), "python", []
+    )
     assert use_mcp is True
     assert using_builtin is True
     assert len(servers) == 5

@@ -9,7 +9,9 @@ def test_parse_edits_empty():
 
 
 def test_parse_edits_single():
-    text = 'Here is the fix.\n<<EDITS>>\n[{"path": "a.py", "newText": "x = 1"}]\n<<END>>'
+    text = (
+        'Here is the fix.\n<<EDITS>>\n[{"path": "a.py", "newText": "x = 1"}]\n<<END>>'
+    )
     got = parse_edits(text)
     assert len(got) == 1
     assert got[0]["path"] == "a.py"
