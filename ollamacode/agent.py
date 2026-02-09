@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import queue
 import sys
 import threading
@@ -36,7 +37,7 @@ def _get(o: Any, key: str, default: Any = None) -> Any:
 
 
 def _parse_tool_args(raw_args: str | dict | None) -> dict[str, Any]:
-    """Parse tool-call arguments; tolerate common model JSON errors (e.g. extra trailing '}')."""
+    """Parse tool-call arguments; tolerate common model JSON errors (extra brackets, unescaped newlines)."""
     if raw_args is None:
         return {}
     if isinstance(raw_args, dict):
@@ -44,17 +45,60 @@ def _parse_tool_args(raw_args: str | dict | None) -> dict[str, Any]:
     s = (raw_args or "").strip()
     if not s:
         return {}
-    try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        pass
-    # Common LLM mistake: extra '}' at end (e.g. '{"a":1}}')
-    if s.endswith("}}"):
+
+    def try_parse(t: str) -> dict[str, Any] | None:
         try:
-            return json.loads(s[:-1])
+            return json.loads(t)
         except json.JSONDecodeError:
-            pass
+            return None
+
+    out = try_parse(s)
+    if out is not None:
+        return out
+    # Extra '}' at end (e.g. '{"a":1}}')
+    if s.endswith("}}"):
+        out = try_parse(s[:-1])
+        if out is not None:
+            return out
+    # Extra ']' before '}' (e.g. '{"key": "val"]}')
+    if "]" in s and s.endswith("]}"):
+        out = try_parse(s[:-2] + "}")
+        if out is not None:
+            return out
+    # Unescaped newlines inside quoted strings: replace literal newlines within "..." with space
+    in_string = False
+    escaped = False
+    result: list[str] = []
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if escaped:
+            result.append(c)
+            escaped = False
+        elif c == "\\" and in_string:
+            result.append(c)
+            escaped = True
+        elif c == '"':
+            result.append(c)
+            in_string = not in_string
+        elif in_string and c == "\n":
+            result.append(" ")
+        else:
+            result.append(c)
+        i += 1
+    collapsed = "".join(result)
+    if collapsed != s:
+        out = try_parse(collapsed)
+        if out is not None:
+            return out
     return {}
+
+
+def _json_log_event(**kwargs: Any) -> None:
+    """If OLLAMACODE_JSON_LOGS=1, print one JSON object per line to stderr (for profiling/dashboards)."""
+    if os.environ.get("OLLAMACODE_JSON_LOGS", "").strip().lower() not in ("1", "true", "yes"):
+        return
+    print(json.dumps(kwargs), file=sys.stderr, flush=True)
 
 
 def _log_tool_call(name: str, arguments: dict[str, Any]) -> None:
@@ -107,6 +151,13 @@ def _ollama_chat_sync(
     return ollama.chat(model=model, messages=messages, tools=tools, stream=stream)
 
 
+def _truncate_tool_result(content: str, max_chars: int) -> str:
+    """If max_chars > 0 and content is longer, truncate and append a note."""
+    if max_chars <= 0 or len(content) <= max_chars:
+        return content
+    return content[:max_chars] + f"\n\n... (truncated from {len(content)} chars)"
+
+
 async def run_agent_loop(
     session: McpConnection,
     model: str,
@@ -115,6 +166,7 @@ async def run_agent_loop(
     system_prompt: str | None = None,
     max_tool_rounds: int = 20,
     max_messages: int = 0,
+    max_tool_result_chars: int = 0,
     message_history: list[dict[str, Any]] | None = None,
     quiet: bool = False,
     timing: bool = False,
@@ -158,11 +210,13 @@ async def run_agent_loop(
             lambda m=model, msgs=to_send, t=ollama_tools: _ollama_chat_sync(m, msgs, t),
         )
         if timing and t0 is not None:
+            elapsed = time.perf_counter() - t0
             print(
-                f"[OllamaCode] Ollama call: {time.perf_counter() - t0:.2f}s",
+                f"[OllamaCode] Ollama call: {elapsed:.2f}s",
                 file=sys.stderr,
                 flush=True,
             )
+            _json_log_event(event="ollama", duration_s=round(elapsed, 3))
 
         msg = (
             response.get("message")
@@ -190,29 +244,8 @@ async def run_agent_loop(
                 )
             return (content or "").strip()
 
-        # 3. Execute each tool call via MCP
-        names = []
-        for tc in tool_calls:
-            fn = (
-                tc.get("function")
-                if isinstance(tc, dict)
-                else getattr(tc, "function", None)
-            )
-            if fn is not None:
-                n = (
-                    fn.get("name")
-                    if isinstance(fn, dict)
-                    else getattr(fn, "name", None)
-                )
-                if n:
-                    names.append(n)
-        if names and not quiet:
-            print(
-                f"[OllamaCode] Model requested {len(names)} tool(s): {', '.join(names)}",
-                file=sys.stderr,
-                flush=True,
-            )
-
+        # 3. Execute tool calls via MCP (in parallel when multiple)
+        items: list[tuple[str, dict[str, Any]]] = []
         for tc in tool_calls:
             fn = (
                 tc.get("function")
@@ -230,36 +263,56 @@ async def run_agent_loop(
                 else getattr(fn, "arguments", None)
             )
             arguments = _parse_tool_args(raw_args)
+            items.append((name, arguments))
 
-            if not quiet:
-                _log_tool_call(name, arguments)
-            t0 = time.perf_counter() if timing else None
-            result = await call_tool(session, name, arguments)
-            if timing and t0 is not None:
+        if items and not quiet:
+            names = [x[0] for x in items]
+            print(
+                f"[OllamaCode] Model requested {len(names)} tool(s): {', '.join(names)}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        if items:
+            t0_parallel = time.perf_counter() if timing else None
+            results = await asyncio.gather(
+                *[call_tool(session, name, arguments) for name, arguments in items],
+                return_exceptions=True,
+            )
+            for (name, arguments), result in zip(items, results):
+                if not quiet:
+                    _log_tool_call(name, arguments)
+                if isinstance(result, BaseException):
+                    content = f"Tool error: {result}"
+                    if not quiet:
+                        _log_tool_result(name, content, is_error=True)
+                else:
+                    content = tool_result_to_content(result)
+                    if not quiet:
+                        _log_tool_result(
+                            name, content, is_error=getattr(result, "isError", False)
+                        )
+                content = _truncate_tool_result(content, max_tool_result_chars)
+                messages.append(
+                    {"role": "tool", "tool_name": name, "content": content}
+                )
+            if timing and t0_parallel is not None:
+                elapsed = time.perf_counter() - t0_parallel
                 print(
-                    f"[OllamaCode] {name}: {time.perf_counter() - t0:.2f}s",
+                    f"[OllamaCode] Tools (parallel): {elapsed:.2f}s",
                     file=sys.stderr,
                     flush=True,
                 )
-            content = tool_result_to_content(result)
-            if not quiet:
-                _log_tool_result(
-                    name, content, is_error=getattr(result, "isError", False)
-                )
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_name": name,
-                    "content": content,
-                }
-            )
+                _json_log_event(event="tools", duration_s=round(elapsed, 3), count=len(items))
 
     if timing and turn_start is not None:
+        turn_elapsed = time.perf_counter() - turn_start
         print(
-            f"[OllamaCode] Turn total: {time.perf_counter() - turn_start:.2f}s",
+            f"[OllamaCode] Turn total: {turn_elapsed:.2f}s",
             file=sys.stderr,
             flush=True,
         )
+        _json_log_event(event="turn", duration_s=round(turn_elapsed, 3))
     return "(Max tool rounds reached; stopping.)"
 
 
@@ -314,6 +367,7 @@ async def run_agent_loop_stream(
     system_prompt: str | None = None,
     max_tool_rounds: int = 20,
     max_messages: int = 0,
+    max_tool_result_chars: int = 0,
     message_history: list[dict[str, Any]] | None = None,
     quiet: bool = False,
     timing: bool = False,
@@ -369,11 +423,13 @@ async def run_agent_loop_stream(
             last_msg = msg
         thread.join()
         if timing and t0 is not None:
+            elapsed = time.perf_counter() - t0
             print(
-                f"[OllamaCode] Ollama call: {time.perf_counter() - t0:.2f}s",
+                f"[OllamaCode] Ollama call: {elapsed:.2f}s",
                 file=sys.stderr,
                 flush=True,
             )
+            _json_log_event(event="ollama", duration_s=round(elapsed, 3))
 
         if last_msg is None:
             return
@@ -393,28 +449,7 @@ async def run_agent_loop_stream(
                 )
             return
 
-        names = []
-        for tc in tool_calls:
-            fn = (
-                tc.get("function")
-                if isinstance(tc, dict)
-                else getattr(tc, "function", None)
-            )
-            if fn is not None:
-                n = (
-                    fn.get("name")
-                    if isinstance(fn, dict)
-                    else getattr(fn, "name", None)
-                )
-                if n:
-                    names.append(n)
-        if names and not quiet:
-            print(
-                f"[OllamaCode] Model requested {len(names)} tool(s): {', '.join(names)}",
-                file=sys.stderr,
-                flush=True,
-            )
-
+        items_stream: list[tuple[str, dict[str, Any]]] = []
         for tc in tool_calls:
             fn = (
                 tc.get("function")
@@ -432,22 +467,39 @@ async def run_agent_loop_stream(
                 else getattr(fn, "arguments", None)
             )
             arguments = _parse_tool_args(raw_args)
-            if not quiet:
-                _log_tool_call(name, arguments)
-            t0 = time.perf_counter() if timing else None
-            result = await call_tool(session, name, arguments)
-            if timing and t0 is not None:
-                print(
-                    f"[OllamaCode] {name}: {time.perf_counter() - t0:.2f}s",
-                    file=sys.stderr,
-                    flush=True,
+            items_stream.append((name, arguments))
+        if items_stream and not quiet:
+            names = [x[0] for x in items_stream]
+            print(
+                f"[OllamaCode] Model requested {len(names)} tool(s): {', '.join(names)}",
+                file=sys.stderr,
+                flush=True,
+            )
+        if items_stream:
+            results_stream = await asyncio.gather(
+                *[
+                    call_tool(session, name, arguments)
+                    for name, arguments in items_stream
+                ],
+                return_exceptions=True,
+            )
+            for (name, arguments), result in zip(items_stream, results_stream):
+                if not quiet:
+                    _log_tool_call(name, arguments)
+                if isinstance(result, BaseException):
+                    content = f"Tool error: {result}"
+                    if not quiet:
+                        _log_tool_result(name, content, is_error=True)
+                else:
+                    content = tool_result_to_content(result)
+                    if not quiet:
+                        _log_tool_result(
+                            name, content, is_error=getattr(result, "isError", False)
+                        )
+                content = _truncate_tool_result(content, max_tool_result_chars)
+                messages.append(
+                    {"role": "tool", "tool_name": name, "content": content}
                 )
-            content = tool_result_to_content(result)
-            if not quiet:
-                _log_tool_result(
-                    name, content, is_error=getattr(result, "isError", False)
-                )
-            messages.append({"role": "tool", "tool_name": name, "content": content})
 
 
 async def run_agent_loop_no_mcp(

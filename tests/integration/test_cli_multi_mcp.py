@@ -1,4 +1,8 @@
-"""Integration: CLI with config and multiple MCP servers. Requires Ollama + tool-capable model."""
+"""Integration: CLI with config and multiple MCP servers. Requires Ollama + tool-capable model.
+
+Run with: pytest tests/integration -v (when Ollama is running).
+CI runs unit tests only (pytest -m "not integration"). Skip when Ollama not available.
+"""
 
 import subprocess
 import sys
@@ -9,8 +13,12 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
+# Timeout for CLI subprocess (model inference can be slow)
+INTEGRATION_TIMEOUT = 150
+
 
 def _ollama_available() -> bool:
+    """Return True if Ollama is reachable (skip integration tests otherwise)."""
     try:
         import urllib.request
 
@@ -49,7 +57,7 @@ def test_cli_with_config_two_mcp_servers(tmp_path):
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
-        timeout=150,
+        timeout=INTEGRATION_TIMEOUT,
     )
     assert result.returncode == 0, f"CLI failed: stderr={result.stderr!r}"
     assert "5" in result.stdout, (

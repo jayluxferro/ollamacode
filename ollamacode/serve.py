@@ -1,20 +1,31 @@
 """
 Optional local HTTP API for OllamaCode. Run: ollamacode serve --port 8000
 Requires: pip install ollamacode[server]
-Endpoints: POST /chat with JSON {"message": "...", "file"?,"lines"?} returns {"content": "...", "edits"?}.
+Endpoints: POST /chat, POST /chat/stream (see docs/STRUCTURED_PROTOCOL.md), POST /apply-edits.
 """
 
 from __future__ import annotations
 
 import contextlib
+import json
 import os
+from collections.abc import AsyncIterator
 from typing import Any
 
-from .agent import run_agent_loop, run_agent_loop_no_mcp
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+
+from .agent import (
+    run_agent_loop,
+    run_agent_loop_no_mcp,
+    run_agent_loop_no_mcp_stream,
+    run_agent_loop_stream,
+)
 from .config import load_config, merge_config_with_env
 from .context import prepend_file_context
-from .edits import parse_edits
+from .edits import apply_edits, parse_edits
 from .mcp_client import McpConnection, connect_mcp_servers, connect_mcp_stdio
+from .protocol import normalize_chat_body
 
 
 async def _handle_chat(
@@ -23,13 +34,12 @@ async def _handle_chat(
     system_extra: str,
     body: dict,
     max_messages: int,
+    max_tool_result_chars: int,
     workspace_root: str,
 ) -> dict:
-    message = (body.get("message") or "").strip()
+    message, file_path, lines_spec = normalize_chat_body(body)
     if not message:
         return {"content": "", "error": "message required"}
-    file_path = body.get("file")
-    lines_spec = body.get("lines")
     if file_path:
         message = prepend_file_context(
             message, str(file_path), workspace_root, lines_spec
@@ -51,6 +61,7 @@ async def _handle_chat(
                 message,
                 system_prompt=system,
                 max_messages=max_messages,
+                max_tool_result_chars=max_tool_result_chars,
             )
         else:
             out = await run_agent_loop_no_mcp(use_model, message, system_prompt=system)
@@ -63,19 +74,32 @@ async def _handle_chat(
         return {"content": "", "error": str(e)}
 
 
+def _check_api_key(request: Request, api_key: str) -> JSONResponse | None:
+    """If api_key is set, require Authorization: Bearer <key> or X-API-Key: <key>. Return 401 response if invalid, else None."""
+    auth = request.headers.get("Authorization") or ""
+    token = request.headers.get("X-API-Key") or ""
+    if auth.startswith("Bearer "):
+        token = auth[7:]
+    if not token or token != api_key:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return None
+
+
 def create_app(
     model: str,
     mcp_servers: list[dict],
     system_extra: str,
     max_messages: int = 0,
+    max_tool_result_chars: int = 0,
     workspace_root: str | None = None,
+    api_key: str | None = None,
 ):
-    """Create ASGI app (Starlette) with MCP session in lifespan."""
+    """Create ASGI app (Starlette) with MCP session in lifespan. If api_key is set, requests must send Authorization: Bearer <key> or X-API-Key: <key>."""
     root = workspace_root or os.getcwd()
     try:
         from starlette.applications import Starlette
         from starlette.requests import Request
-        from starlette.responses import JSONResponse
+        from starlette.responses import JSONResponse, StreamingResponse
         from starlette.routing import Route
     except ImportError as e:
         raise ImportError(
@@ -103,18 +127,143 @@ def create_app(
     async def chat(request: Request) -> JSONResponse:
         if request.method != "POST":
             return JSONResponse({"error": "method not allowed"}, status_code=405)
+        if api_key:
+            err = _check_api_key(request, api_key)
+            if err is not None:
+                return err
         try:
             body = await request.json()
         except Exception:
             return JSONResponse({"error": "invalid json"}, status_code=400)
         session: McpConnection | None = getattr(request.app.state, "session", None)
         result = await _handle_chat(
-            session, model, system_extra, body, max_messages, root
+            session, model, system_extra, body, max_messages, max_tool_result_chars, root
         )
         return JSONResponse(result)
 
+    async def chat_stream(request: Request):
+        if request.method != "POST":
+            return JSONResponse({"error": "method not allowed"}, status_code=405)
+        if api_key:
+            err = _check_api_key(request, api_key)
+            if err is not None:
+                return err
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        message, file_path, lines_spec = normalize_chat_body(body)
+        if not message:
+            return JSONResponse({"error": "message required"}, status_code=400)
+        if file_path:
+            message = prepend_file_context(
+                message, str(file_path), root, lines_spec
+            )
+        model_override = body.get("model")
+        use_model = model_override or model
+        system = (
+            "You are a coding assistant with full access to the workspace. You are given a list of available tools with their names "
+            "and descriptions—use whichever tools fit the task. When the user asks you to run something, check something, or change "
+            "something, use the appropriate tool and report the result."
+        )
+        if system_extra:
+            system = system + "\n\n" + system_extra
+
+        async def generate() -> AsyncIterator[str]:
+            session: McpConnection | None = getattr(
+                request.app.state, "session", None
+            )
+            accumulated: list[str] = []
+            try:
+                if session is not None:
+                    stream = run_agent_loop_stream(
+                        session,
+                        use_model,
+                        message,
+                        system_prompt=system,
+                        max_messages=max_messages,
+                        max_tool_result_chars=max_tool_result_chars,
+                        quiet=True,
+                    )
+                else:
+                    stream = run_agent_loop_no_mcp_stream(
+                        use_model,
+                        message,
+                        system_prompt=system,
+                        message_history=[],
+                    )
+                async for chunk in stream:
+                    accumulated.append(chunk)
+                    yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
+                full = "".join(accumulated)
+                edits = parse_edits(full)
+                yield f"data: {json.dumps({'type': 'done', 'content': full, 'edits': edits})}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    async def apply_edits_handler(request: Request):
+        """POST /apply-edits: apply protocol edits server-side. Body: { "edits": [...], "workspaceRoot"?: "..." }."""
+        if request.method != "POST":
+            return JSONResponse({"error": "method not allowed"}, status_code=405)
+        if api_key:
+            err = _check_api_key(request, api_key)
+            if err is not None:
+                return err
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid json"}, status_code=400)
+        edits_raw = body.get("edits")
+        if not isinstance(edits_raw, list):
+            return JSONResponse(
+                {"applied": 0, "error": "edits required (array)"}, status_code=400
+            )
+        workspace_override = body.get("workspaceRoot")
+        work_root = (
+            os.path.abspath(workspace_override)
+            if isinstance(workspace_override, str) and workspace_override.strip()
+            else root
+        )
+        edits: list[dict[str, Any]] = []
+        for item in edits_raw:
+            if not isinstance(item, dict):
+                continue
+            path_val = item.get("path")
+            new_text = item.get("newText")
+            if path_val is None or new_text is None:
+                continue
+            edits.append(
+                {
+                    "path": str(path_val),
+                    "oldText": item.get("oldText"),
+                    "newText": new_text if isinstance(new_text, str) else str(new_text),
+                }
+            )
+        if not edits:
+            return JSONResponse(
+                {"applied": 0, "error": "no valid edits (path and newText required)"},
+                status_code=400,
+            )
+        try:
+            n = apply_edits(edits, work_root)
+            return JSONResponse({"applied": n})
+        except Exception as e:
+            return JSONResponse(
+                {"applied": 0, "error": str(e)}, status_code=500
+            )
+
     app = Starlette(
-        routes=[Route("/chat", chat, methods=["POST"])],
+        routes=[
+            Route("/chat", chat, methods=["POST"]),
+            Route("/chat/stream", chat_stream, methods=["POST"]),
+            Route("/apply-edits", apply_edits_handler, methods=["POST"]),
+        ],
         lifespan=lifespan,
     )
     return app
@@ -140,7 +289,18 @@ def run_serve(port: int = 8000, config_path: str | None = None) -> None:
     system_extra = (merged.get("system_prompt_extra") or "").strip()
     mcp_servers = merged.get("mcp_servers") or []
     max_messages = merged.get("max_messages", 0)
+    max_tool_result_chars = merged.get("max_tool_result_chars", 0)
     workspace_root = os.getcwd()
+    serve_config = merged.get("serve") or {}
+    api_key = (serve_config.get("api_key") or os.environ.get("OLLAMACODE_SERVE_API_KEY") or "").strip() or None
 
-    app = create_app(model, mcp_servers, system_extra, max_messages, workspace_root)
+    app = create_app(
+        model,
+        mcp_servers,
+        system_extra,
+        max_messages,
+        max_tool_result_chars,
+        workspace_root,
+        api_key=api_key,
+    )
     uvicorn.run(app, host="127.0.0.1", port=port)

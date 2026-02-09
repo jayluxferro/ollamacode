@@ -5,8 +5,9 @@ A coding assistant powered by **local models** (Ollama) and **MCP** (Model Conte
 ## Features
 
 - **Local-only**: Ollama for all reasoning and code generation; no cloud API required.
-- **MCP tools**: Connect any MCP server (filesystem, browser, custom tools) and use them from the agent.
-- **CLI**: One-off queries or interactive chat from the terminal.
+- **MCP tools**: Connect any MCP server (filesystem, terminal, codebase, custom tools) and use them from the agent. Built-in fs, terminal, codebase, tools, and git when no config is present.
+- **CLI**: One-off queries or interactive chat from the terminal; optional TUI (`--tui`).
+- **HTTP & stdio API**: `ollamacode serve` for REST (POST /chat, /chat/stream, /apply-edits); `ollamacode protocol` for JSON-RPC over stdin/stdout so editors can integrate without HTTP.
 
 ## Prerequisites
 
@@ -62,6 +63,8 @@ uv run ollamacode --mcp-command python --mcp-args examples/demo_server.py "What 
 
 Use `OLLAMACODE_MCP_ARGS` to pass MCP server args without flags (e.g. `export OLLAMACODE_MCP_ARGS="python examples/demo_server.py"`). To use **no MCP**, add a config file with `mcp_servers: []`.
 
+**Commands** (as first argument): `serve` — start HTTP API; `protocol` — stdio JSON-RPC for editors; `convert-mcp` — convert Cursor/Claude MCP JSON to YAML.
+
 **Options:**
 
 | Option | Env / default | Description |
@@ -70,8 +73,13 @@ Use `OLLAMACODE_MCP_ARGS` to pass MCP server args without flags (e.g. `export OL
 | `--model`, `-m` | `OLLAMACODE_MODEL` / `gpt-oss:20b` | Ollama model name |
 | `--stream`, `-s` | (flag) | Stream response tokens to stdout |
 | `--tui` | (flag) | Interactive terminal UI (Rich). Requires: `pip install ollamacode[tui]` |
+| `--file`, `-f` | (path) | Prepend file contents to prompt (chat-with-selection) |
+| `--lines` | START-END | With `--file`: include only this line range (1-based inclusive) |
+| `--apply-edits` | (flag) | Parse `<<EDITS>>` from model output; show diff and prompt to apply |
+| `--apply-edits-dry-run` | (flag) | With `--apply-edits`: show diff only, do not apply |
 | `--max-messages` | config `max_messages` / 0 | Cap message history sent to Ollama (0 = no limit). For long chats. |
 | `--max-tool-rounds` | config `max_tool_rounds` / 20 | Max tool-call rounds per turn. |
+| `--no-mcp` | (flag) | Skip starting MCP servers for this run (faster when you don't need tools). |
 | `--timing` | config `timing` / false | Log per-step durations (Ollama call, each tool call, turn total) to stderr. |
 | `--history-file` | (path) | Append each interactive turn (user + assistant) to this file. |
 | `--quiet`, `-q` | (flag) | Suppress [OllamaCode] progress lines (e.g. for scripts). |
@@ -91,7 +99,10 @@ model: gpt-oss:20b
 system_prompt_extra: "Optional extra system instructions."
 rules_file: .ollamacode/rules.md   # optional: load and append to system prompt (path relative to cwd)
 max_messages: 0   # 0 = no limit; cap message history sent to Ollama (e.g. 50 for long chats)
+auto_summarize_after_turns: 0   # when > 0, summarize oldest turns when history exceeds this (e.g. 10)
 max_tool_rounds: 20   # max tool-call rounds per turn
+max_tool_result_chars: 0   # 0 = no limit; truncate tool results to this many chars to save context
+max_edits_per_request: 0   # 0 = no limit; cap <<EDITS>> count per turn (e.g. 10)
 timing: false         # set true to log per-step durations to stderr
 linter_command: "ruff check ."   # used by /fix slash command (CLI and TUI)
 test_command: "pytest"          # used by /test slash command (CLI and TUI)
@@ -125,16 +136,16 @@ You can add an optional **`name`** to each server (e.g. `name: git`, `name: burp
 When you run OllamaCode **without** a config file and **without** `OLLAMACODE_MCP_ARGS`, it automatically starts five built-in MCP servers so the agent can work efficiently out of the box:
 
 - **ollamacode-fs** – `read_file`, `write_file`, `list_dir` (workspace root: `OLLAMACODE_FS_ROOT` or cwd).
-- **ollamacode-terminal** – `run_command` (run shell commands, cwd, env, timeout). Set **`OLLAMACODE_BLOCK_DANGEROUS_COMMANDS=1`** to block dangerous patterns (e.g. `rm -rf /`, `curl | bash`).
+- **ollamacode-terminal** – `run_command` (run shell commands, cwd, env, timeout). Set **`OLLAMACODE_BLOCK_DANGEROUS_COMMANDS=1`** to block dangerous patterns (e.g. `rm -rf /`, `curl | bash`). Optional **`OLLAMACODE_CONFIRM_RISKY=1`** to require confirmation for risky patterns (re-run with **`OLLAMACODE_CONFIRM_RISKY_CONFIRMED=1`** to execute).
 - **ollamacode-codebase** – `search_codebase` (keyword search), `get_relevant_files` (path match).
 - **ollamacode-tools** – `run_linter` (e.g. ruff, eslint), `run_tests` (e.g. pytest, npm test); returns stdout/stderr/return code.
-- **ollamacode-git** – Git: `git_status`, `git_diff_unstaged`, `git_diff_staged`, `git_log`, `git_show`, `git_branch`, `git_add`, `git_commit` (no push or checkout).
+- **ollamacode-git** – Git: `git_status`, `git_diff_unstaged`, `git_diff_staged`, `git_log`, `git_show`, `git_branch`, `git_add`, `git_commit`, `git_push`.
 
-They are shipped inside the package (`ollamacode.servers`) and run as subprocesses. For **full Git** (commit, push), see [Opt-in: full Git (commit, push)](#opt-in-full-git-commit-push). To disable MCP entirely, use a config file with `mcp_servers: []`. To add or replace servers, use `ollamacode.yaml` or `OLLAMACODE_MCP_ARGS`.
+They are shipped inside the package (`ollamacode.servers`) and run as subprocesses. For **checkout** and other advanced Git features, see [Opt-in: full Git (official MCP server)](#opt-in-full-git-commit-push). To disable MCP entirely, use a config file with `mcp_servers: []`. To add or replace servers, use `ollamacode.yaml` or `OLLAMACODE_MCP_ARGS`.
 
-### Opt-in: full Git (commit, push)
+### Opt-in: full Git (official MCP server)
 
-The built-in Git MCP is read-only. To let the agent **stage, commit, and push**, add the official [MCP Git server](https://github.com/modelcontextprotocol/servers/tree/main/src/git) via config. Example: keep the built-in fs, terminal, and codebase servers, and use the official Git server (full-featured) instead of the built-in one:
+The built-in Git MCP supports **stage, commit, and push**. For **checkout**, **branch**, and other advanced Git features, add the official [MCP Git server](https://github.com/modelcontextprotocol/servers/tree/main/src/git) via config. Example: keep the built-in fs, terminal, and codebase servers, and use the official Git server (full-featured) instead of the built-in one:
 
 ```yaml
 # ollamacode.yaml — full Git (add, commit, push) + built-in fs, terminal, codebase
@@ -253,20 +264,22 @@ Ollama and the model define the context limit. Use **`--max-messages`** (or conf
 
 ```
 OllamaCode/
-├── ollamacode/           # Core package
-│   ├── agent.py          # Agent loop (Ollama + MCP tools)
-│   ├── bridge.py         # MCP tool schema → Ollama tool format
-│   ├── cli.py            # CLI entrypoint
-│   ├── config.py         # Config file (YAML) loading
-│   ├── mcp_client.py     # MCP client (stdio + multi-server + HTTP/SSE)
-│   ├── serve.py          # Optional HTTP API (ollamacode serve)
-│   └── tui.py            # Optional TUI (--tui)
-├── examples/
-│   ├── demo_server.py    # Minimal MCP server (add, echo)
-│   ├── fs_mcp.py         # Filesystem MCP (read_file, write_file, list_dir)
-│   ├── terminal_mcp.py   # Terminal MCP (run_command)
-│   └── codebase_mcp.py   # Codebase search (search_codebase, get_relevant_files)
-├── tests/                # Pytest tests
+├── ollamacode/             # Core package
+│   ├── agent.py            # Agent loop (Ollama + MCP tools)
+│   ├── bridge.py           # MCP tool schema → Ollama tool format
+│   ├── cli.py              # CLI entrypoint
+│   ├── config.py           # Config file (YAML) loading
+│   ├── context.py          # @-refs, file/line context, branch context
+│   ├── edits.py            # <<EDITS>> parse and apply
+│   ├── mcp_client.py       # MCP client (stdio + multi-server + HTTP/SSE)
+│   ├── protocol.py         # Editor protocol (normalize request body)
+│   ├── protocol_server.py   # Stdio JSON-RPC (ollamacode protocol)
+│   ├── serve.py            # HTTP API (ollamacode serve)
+│   ├── servers/            # Built-in MCP (fs, terminal, codebase, tools, git, semantic)
+│   └── tui.py              # Optional TUI (--tui)
+├── docs/                   # ROADMAP.md, STRUCTURED_PROTOCOL.md, OTHER_EDITORS.md, MCP_SERVERS.md
+├── examples/               # Demo and optional MCP servers
+├── tests/
 ├── pyproject.toml
 └── README.md
 ```
@@ -281,9 +294,11 @@ User input is sent to the **agent loop**, which:
 
 So: **OllamaCode = MCP client + Ollama (tool calling) + agent loop**. No cloud; all logic and tools are local or under your control.
 
-### Local HTTP API (other editors)
+### HTTP API and editor protocol
 
-Run **`ollamacode serve`** (or `ollamacode serve --port 9000`) to start a local API. Requires: `pip install ollamacode[server]`. **POST /chat** with JSON `{"message": "..."}` returns `{"content": "..."}`. Use this from Zed, Sublime, Neovim, or scripts instead of spawning the CLI. See [docs/OTHER_EDITORS.md](docs/OTHER_EDITORS.md) for integration ideas.
+Run **`ollamacode serve`** (or `ollamacode serve --port 9000`) to start a local HTTP API. Requires: `pip install ollamacode[server]`. Endpoints: **POST /chat** (JSON `{"message": "...", "file?", "lines?", "selection?"}` → `{"content": "...", "edits"?}`), **POST /chat/stream** (SSE), **POST /apply-edits** (apply edits server-side). Optional auth via config `serve.api_key` or `OLLAMACODE_SERVE_API_KEY`.
+
+For editors that prefer a process over HTTP: **`ollamacode protocol`** runs a JSON-RPC server on stdin/stdout (one request per line). Methods: `ollamacode/chat`, `ollamacode/chatStream` (streaming), `ollamacode/applyEdits`. See [docs/STRUCTURED_PROTOCOL.md](docs/STRUCTURED_PROTOCOL.md) and [docs/OTHER_EDITORS.md](docs/OTHER_EDITORS.md) for integration.
 
 ### Conversation history
 
@@ -310,7 +325,7 @@ cat claude_mcp.json | ollamacode convert-mcp -o .ollamacode/config.yaml
 
 ## Roadmap
 
-Ideas to make OllamaCode the best local coding assistant—UX, reliability, safety, and features—are in [.docs/ROADMAP.md](.docs/ROADMAP.md) (for contributors).
+Current features and future ideas: [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## References
 

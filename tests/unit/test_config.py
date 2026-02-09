@@ -1,5 +1,6 @@
 """Unit tests for config loading and merging."""
 
+import sys
 from unittest.mock import patch
 
 from ollamacode.config import (
@@ -81,6 +82,30 @@ def test_merge_config_include_builtin_servers_false():
         config, model_env=None, mcp_args_env=None, system_extra_env=None
     )
     assert out["mcp_servers"] == [{"type": "stdio", "command": "npx", "args": ["mcp"]}]
+
+
+def test_merge_config_deduplicate_builtin_when_in_custom():
+    """When custom mcp_servers includes a server equivalent to a built-in, that built-in is not prepended (no duplicate tools)."""
+    # Custom list includes fs_mcp (same as first built-in) plus a demo server
+    config = {
+        "mcp_servers": [
+            {"type": "stdio", "command": sys.executable, "args": ["-m", "ollamacode.servers.fs_mcp"]},
+            {"type": "stdio", "command": "python", "args": ["examples/demo_server.py"]},
+        ],
+    }
+    out = merge_config_with_env(
+        config, model_env=None, mcp_args_env=None, system_extra_env=None
+    )
+    # Built-in list has 5: fs, terminal, codebase, tools, git. We skip fs because it's in custom.
+    assert len(out["mcp_servers"]) == 4 + 2  # 4 built-in (no fs) + 2 custom
+    mods = [s.get("args", [])[-1] if s.get("args") else "" for s in out["mcp_servers"]]
+    # First 4 should be terminal, codebase, tools, git (no fs)
+    assert "ollamacode.servers.terminal_mcp" in mods
+    assert "ollamacode.servers.codebase_mcp" in mods
+    assert "ollamacode.servers.tools_mcp" in mods
+    assert "ollamacode.servers.git_mcp" in mods
+    assert mods.count("ollamacode.servers.fs_mcp") == 1  # only from custom
+    assert "examples/demo_server.py" in mods
 
 
 def test_merge_config_mcp_args_env_overrides_config():

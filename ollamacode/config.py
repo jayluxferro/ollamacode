@@ -149,6 +149,9 @@ def merge_config_with_env(
     ).strip()
     out["max_messages"] = config.get("max_messages", 0)
     out["max_tool_rounds"] = config.get("max_tool_rounds", 20)
+    out["max_tool_result_chars"] = config.get("max_tool_result_chars", 0)
+    out["max_edits_per_request"] = config.get("max_edits_per_request", 0)
+    out["auto_summarize_after_turns"] = config.get("auto_summarize_after_turns", 0)
     out["timing"] = config.get("timing", False)
     out["rules_file"] = config.get("rules_file")
     out["linter_command"] = config.get("linter_command", "ruff check .")
@@ -157,6 +160,7 @@ def merge_config_with_env(
     out["branch_context"] = config.get("branch_context", False)
     out["branch_context_base"] = config.get("branch_context_base", "main")
     out["pr_description_file"] = config.get("pr_description_file")
+    out["serve"] = config.get("serve")
 
     # Resolve MCP server configuration
     if mcp_args_env:
@@ -174,7 +178,18 @@ def merge_config_with_env(
         if custom:
             # By default include built-in servers; set include_builtin_servers: false to use only custom
             if config.get("include_builtin_servers", True):
-                out["mcp_servers"] = list(DEFAULT_MCP_SERVERS) + custom
+                # Skip a built-in server if config already has an equivalent (same type/command/args)
+                def _server_key(entry: dict[str, Any]) -> tuple[Any, ...]:
+                    t = entry.get("type")
+                    if t == "stdio":
+                        return (t, (entry.get("command") or ""), tuple(entry.get("args") or []))
+                    return (t, entry.get("url"))
+
+                custom_keys = {_server_key(c) for c in custom}
+                builtin_prepend = [
+                    s for s in DEFAULT_MCP_SERVERS if _server_key(s) not in custom_keys
+                ]
+                out["mcp_servers"] = builtin_prepend + custom
             else:
                 out["mcp_servers"] = custom
         else:

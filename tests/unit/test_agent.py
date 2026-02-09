@@ -17,6 +17,12 @@ def test_parse_tool_args_tolerates_extra_brace():
     assert _parse_tool_args('{"x":1}') == {"x": 1}
 
 
+def test_parse_tool_args_tolerates_extra_bracket_and_newlines():
+    """_parse_tool_args fixes extra ']' before '}' and unescaped newlines in strings."""
+    assert _parse_tool_args('{"key": "val"]}') == {"key": "val"}
+    assert _parse_tool_args('{"a": "line1\n line2"}') == {"a": "line1  line2"}
+
+
 def _make_message(content: str, tool_calls: list | None = None) -> dict:
     msg = {"content": content}
     if tool_calls is not None:

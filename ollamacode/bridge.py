@@ -20,6 +20,7 @@ BUILTIN_SERVER_PREFIXES = (
     "ollamacode-codebase_",
     "ollamacode-tools_",
     "ollamacode-git_",
+    "ollamacode-semantic_",
 )
 
 

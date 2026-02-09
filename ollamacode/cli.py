@@ -154,6 +154,11 @@ def _parse_args() -> argparse.Namespace:
         help="Log per-step durations (Ollama call, each tool call, turn total) to stderr.",
     )
     p.add_argument(
+        "--no-mcp",
+        action="store_true",
+        help="Skip starting MCP servers for this run (faster when you don't need tools).",
+    )
+    p.add_argument(
         "--port",
         type=int,
         default=8000,
@@ -179,10 +184,15 @@ def _parse_args() -> argparse.Namespace:
         help="Parse <<EDITS>> JSON from model output; show diff and prompt to apply.",
     )
     p.add_argument(
+        "--apply-edits-dry-run",
+        action="store_true",
+        help="With --apply-edits: show diff only, do not prompt or apply.",
+    )
+    p.add_argument(
         "query",
         nargs="?",
         default=None,
-        help="Single query to run, 'serve' for HTTP API, or 'convert-mcp' to convert MCP config from JSON to YAML.",
+        help="Single query to run, 'serve' for HTTP API, 'protocol' for stdio JSON-RPC, or 'convert-mcp' to convert MCP config.",
     )
     p.add_argument(
         "convert_mcp_input",
@@ -346,15 +356,19 @@ async def _run(
     max_messages: int = 0,
     history_file: str | None = None,
     max_tool_rounds: int = 20,
+    max_tool_result_chars: int = 0,
     quiet: bool = False,
     timing: bool = False,
     rules_file: str | None = None,
     file_path: str | None = None,
     lines_spec: str | None = None,
     apply_edits_flag: bool = False,
+    max_edits_per_request: int = 0,
+    apply_edits_dry_run: bool = False,
     linter_command: str | None = None,
     test_command: str | None = None,
     semantic_codebase_hint: bool = True,
+    auto_summarize_after_turns: int = 0,
     branch_context: bool = False,
     branch_context_base: str = "main",
     pr_description_file: str | None = None,
@@ -402,6 +416,7 @@ async def _run(
                         quiet=quiet,
                         max_tool_rounds=max_tool_rounds,
                         max_messages=max_messages,
+                        max_tool_result_chars=max_tool_result_chars,
                         timing=timing,
                         workspace_root=workspace_root,
                         linter_command=linter_command,
@@ -416,6 +431,7 @@ async def _run(
                     quiet=quiet,
                     max_tool_rounds=max_tool_rounds,
                     max_messages=max_messages,
+                    max_tool_result_chars=max_tool_result_chars,
                     timing=timing,
                     workspace_root=workspace_root,
                     linter_command=linter_command,
@@ -475,6 +491,7 @@ async def _run(
                 system_prompt=_SYSTEM,
                 max_messages=max_messages,
                 max_tool_rounds=max_tool_rounds,
+                max_tool_result_chars=max_tool_result_chars,
                 message_history=message_history if message_history else None,
                 quiet=quiet,
                 timing=timing,
@@ -506,6 +523,7 @@ async def _run(
                 system_prompt=_SYSTEM,
                 max_messages=max_messages,
                 max_tool_rounds=max_tool_rounds,
+                max_tool_result_chars=max_tool_result_chars,
                 message_history=message_history if message_history else None,
                 quiet=quiet,
                 timing=timing,
@@ -531,8 +549,17 @@ async def _run(
         edits = parse_edits(response)
         if not edits:
             return
+        if max_edits_per_request > 0 and len(edits) > max_edits_per_request:
+            print(
+                f"[OllamaCode] Too many edits ({len(edits)} > max_edits_per_request={max_edits_per_request}). Skipping apply.",
+                file=sys.stderr,
+            )
+            return
         print(file=sys.stderr)
         print(format_edits_diff(edits, workspace_root), file=sys.stderr)
+        if apply_edits_dry_run:
+            print("[OllamaCode] Dry run: no edits applied.", file=sys.stderr)
+            return
         try:
             ans = input("Apply these edits? [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -569,6 +596,44 @@ async def _run(
         print(
             "[OllamaCode] Replaced last", n_turns, "turn(s) with summary.", flush=True
         )
+
+    async def _do_auto_summarize_oldest(
+        conn: McpConnection | None,
+        current_model: str,
+        history: list[dict],
+        after_turns: int,
+    ) -> None:
+        """When history has >= after_turns turns, summarize the oldest few turns into one pair."""
+        if after_turns <= 0 or len(history) < after_turns * 2:
+            return
+        n_to_summarize = min(4, max(1, after_turns // 2))
+        n_msgs = n_to_summarize * 2
+        transcript_parts = []
+        for i in range(n_msgs):
+            m = history[i]
+            role = "User" if m.get("role") == "user" else "Assistant"
+            transcript_parts.append(f"{role}: {m.get('content', '')}")
+        transcript = "\n\n".join(transcript_parts)
+        prompt = f"Summarize the following conversation in one short paragraph. Reply with only the summary, no preamble:\n\n{transcript}"
+        if not quiet:
+            print(
+                "[OllamaCode] Auto-summarizing oldest",
+                n_to_summarize,
+                "turn(s)...",
+                flush=True,
+            )
+        summary = await _do_chat(conn, prompt, current_model, [])
+        history[:] = [
+            {"role": "user", "content": "Summary of earlier conversation"},
+            {"role": "assistant", "content": summary.strip()},
+        ] + history[n_msgs:]
+        if not quiet:
+            print(
+                "[OllamaCode] Replaced oldest",
+                n_to_summarize,
+                "turn(s) with summary.",
+                flush=True,
+            )
 
     if not use_mcp:
         if query:
@@ -617,6 +682,9 @@ async def _run(
                         continue
                     else:
                         continue
+                await _do_auto_summarize_oldest(
+                    None, model_ref[0], message_history, auto_summarize_after_turns
+                )
                 if stream:
                     out = await _do_chat_stream(
                         None, line, model_ref[0], message_history
@@ -640,8 +708,8 @@ async def _run(
     else:
         session_ctx = connect_mcp_servers(mcp_servers)
 
-    async with session_ctx as session:
-        if query:
+    if query:
+        async with session_ctx as session:
             q = (
                 prepend_file_context(query, file_path, workspace_root, lines_spec)
                 if file_path
@@ -654,19 +722,23 @@ async def _run(
                 out = await _do_chat(session, q, model, [])
                 print(out)
                 _maybe_apply_edits(out)
-            return
+        return
+
+    # Interactive: connect MCP on first message that needs tools (lazy)
+    print(
+        "OllamaCode (local model + MCP tools). /help for commands. Empty line or Ctrl+C to exit."
+    )
+    if semantic_codebase_hint and not any(
+        "semantic" in (s.get("name") or "").lower() for s in mcp_servers
+    ):
         print(
-            "OllamaCode (local model + MCP tools). /help for commands. Empty line or Ctrl+C to exit."
+            "[OllamaCode] Tip: For semantic codebase search, add a semantic MCP server to config. See docs/MCP_SERVERS.md.",
+            file=sys.stderr,
         )
-        if semantic_codebase_hint and not any(
-            "semantic" in (s.get("name") or "").lower() for s in mcp_servers
-        ):
-            print(
-                "[OllamaCode] Tip: For semantic codebase search, add a semantic MCP server to config. See docs/MCP_SERVERS.md.",
-                file=sys.stderr,
-            )
-        message_history_mcp: list[dict] = []
-        model_ref = [model]
+    message_history_mcp: list[dict] = []
+    model_ref = [model]
+    session: McpConnection | None = None
+    try:
         while True:
             try:
                 line = input("You: ").strip()
@@ -688,12 +760,19 @@ async def _run(
                 if isinstance(result, tuple) and result[0] == "run_prompt":
                     line = cast(str, result[1])
                 elif isinstance(result, tuple) and result[0] == "run_summary":
+                    if session is None:
+                        session = await session_ctx.__aenter__()
                     await _do_summary(
                         session, model_ref[0], message_history_mcp, cast(int, result[1])
                     )
                     continue
                 else:
                     continue
+            if session is None:
+                session = await session_ctx.__aenter__()
+            await _do_auto_summarize_oldest(
+                session, model_ref[0], message_history_mcp, auto_summarize_after_turns
+            )
             if stream:
                 out = await _do_chat_stream(
                     session, line, model_ref[0], message_history_mcp
@@ -707,6 +786,9 @@ async def _run(
                 message_history_mcp.append({"role": "user", "content": line})
                 message_history_mcp.append({"role": "assistant", "content": out})
                 print("Assistant:", out, sep="\n")
+    finally:
+        if session is not None:
+            await session_ctx.__aexit__(None, None, None)
 
 
 def main() -> None:
@@ -743,9 +825,77 @@ def main() -> None:
         port = getattr(args, "port", 8000)
         run_serve(port=port, config_path=args.config)
         return
+    if args.query == "protocol":
+        import contextlib
+
+        from .protocol_server import run_protocol_stdio
+
+        mcp_servers, _, _ = _resolve_mcp_servers(
+            args.config, args.mcp_command, args.mcp_args
+        )
+        if getattr(args, "no_mcp", False):
+            mcp_servers = []
+        config = load_config(args.config)
+        merged = merge_config_with_env(
+            config,
+            model_env=os.environ.get("OLLAMACODE_MODEL"),
+            mcp_args_env=os.environ.get("OLLAMACODE_MCP_ARGS"),
+            system_extra_env=os.environ.get("OLLAMACODE_SYSTEM_EXTRA"),
+        )
+        model = (
+            args.model
+            or merged.get("model")
+            or os.environ.get("OLLAMACODE_MODEL", "gpt-oss:20b")
+        )
+        system_extra = (merged.get("system_prompt_extra") or "").strip()
+        max_messages = merged.get("max_messages", 0)
+        max_tool_result_chars = merged.get("max_tool_result_chars", 0)
+        workspace_root = os.getcwd()
+        mcp_servers = [
+            {
+                **entry,
+                "env": {**(entry.get("env") or {}), "OLLAMACODE_FS_ROOT": workspace_root},
+            }
+            if (entry.get("type") or "stdio").lower() == "stdio"
+            else entry
+            for entry in mcp_servers
+        ]
+        _check_ollama_and_model(model, getattr(args, "quiet", False))
+
+        @contextlib.asynccontextmanager
+        async def _session_ctx():
+            if not mcp_servers:
+                yield None
+                return
+            if len(mcp_servers) == 1 and mcp_servers[0].get("type") == "stdio":
+                cmd = mcp_servers[0].get("command", "python")
+                args_list = mcp_servers[0].get("args") or []
+                env = mcp_servers[0].get("env")
+                ctx = connect_mcp_stdio(cmd, args_list, env=env)
+            else:
+                ctx = connect_mcp_servers(mcp_servers)
+            async with ctx as session:
+                yield session
+
+        async def _protocol_main() -> None:
+            async with _session_ctx() as session:
+                await run_protocol_stdio(
+                    session,
+                    model,
+                    system_extra,
+                    max_messages=max_messages,
+                    max_tool_result_chars=max_tool_result_chars,
+                    workspace_root=workspace_root,
+                )
+
+        asyncio.run(_protocol_main())
+        return
     mcp_servers, _, using_builtin = _resolve_mcp_servers(
         args.config, args.mcp_command, args.mcp_args
     )
+    if getattr(args, "no_mcp", False):
+        mcp_servers = []
+        using_builtin = False
     config = load_config(args.config)
     merged = merge_config_with_env(
         config,
@@ -769,6 +919,7 @@ def main() -> None:
         if args.max_tool_rounds is not None
         else merged.get("max_tool_rounds", 20)
     )
+    max_tool_result_chars = merged.get("max_tool_result_chars", 0)
     quiet = getattr(args, "quiet", False)
     timing = getattr(args, "timing", False) or merged.get("timing", False)
     if using_builtin and not quiet:
@@ -794,15 +945,19 @@ def main() -> None:
                 max_messages,
                 args.history_file,
                 max_tool_rounds=max_tool_rounds,
+                max_tool_result_chars=max_tool_result_chars,
                 quiet=quiet,
                 timing=timing,
                 rules_file=rules_file,
                 file_path=args.file,
                 lines_spec=args.lines,
                 apply_edits_flag=args.apply_edits,
+                max_edits_per_request=merged.get("max_edits_per_request", 0),
+                apply_edits_dry_run=getattr(args, "apply_edits_dry_run", False),
                 linter_command=merged.get("linter_command"),
                 test_command=merged.get("test_command"),
                 semantic_codebase_hint=merged.get("semantic_codebase_hint", True),
+                auto_summarize_after_turns=merged.get("auto_summarize_after_turns", 0),
                 branch_context=merged.get("branch_context", False),
                 branch_context_base=merged.get("branch_context_base", "main"),
                 pr_description_file=merged.get("pr_description_file"),

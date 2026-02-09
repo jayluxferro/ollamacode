@@ -1,6 +1,6 @@
 [project]
 name = "ollamacode"
-version = "0.1.0"
+version = "1.0.0"
 description = "Local coding assistant with Ollama and MCP tools—no cloud required"
 readme = "README.md"
 license = { text = "MIT" }
@@ -12,7 +12,7 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -30,6 +30,7 @@ Documentation = "https://github.com/your-org/ollamacode#readme"
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "pytest-cov>=4.0.0",
     "mkdocs>=1.5.0",
     "mkdocstrings[python]>=0.24.0",
     "ruff>=0.8.0",
@@ -57,6 +58,7 @@ packages = ["ollamacode"]
 dev-dependencies = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "pytest-cov>=4.0.0",
     "mkdocs>=1.5.0",
     "mkdocstrings[python]>=0.24.0",
     "ruff>=0.8.0",
@@ -82,3 +84,11 @@ markers = [
     "integration: marks tests that require Ollama and/or MCP (deselect with '-m \"not integration\"')",
     "e2e: marks end-to-end tests (full CLI flow; often same as integration)",
 ]
+
+[tool.coverage.run]
+source = ["ollamacode"]
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+fail_under = 30
+exclude_lines = ["pragma: no cover", "def __repr__", "if TYPE_CHECKING:"]
