@@ -31,6 +31,28 @@ def _get(o: Any, key: str, default: Any = None) -> Any:
     return getattr(o, key, default)
 
 
+def _parse_tool_args(raw_args: str | dict | None) -> dict[str, Any]:
+    """Parse tool-call arguments; tolerate common model JSON errors (e.g. extra trailing '}')."""
+    if raw_args is None:
+        return {}
+    if isinstance(raw_args, dict):
+        return raw_args
+    s = (raw_args or "").strip()
+    if not s:
+        return {}
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        pass
+    # Common LLM mistake: extra '}' at end (e.g. '{"a":1}}')
+    if s.endswith("}}"):
+        try:
+            return json.loads(s[:-1])
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
 def _log_tool_call(name: str, arguments: dict[str, Any]) -> None:
     """Print tool name and full args to stderr."""
     args_str = json.dumps(arguments, indent=2) if arguments else "{}"
@@ -179,13 +201,7 @@ async def run_agent_loop(
             if not name:
                 continue
             raw_args = fn.get("arguments") if isinstance(fn, dict) else getattr(fn, "arguments", None)
-            if isinstance(raw_args, str):
-                try:
-                    arguments = json.loads(raw_args) if raw_args else {}
-                except json.JSONDecodeError:
-                    arguments = {}
-            else:
-                arguments = raw_args or {}
+            arguments = _parse_tool_args(raw_args)
 
             if not quiet:
                 _log_tool_call(name, arguments)
@@ -223,7 +239,9 @@ def _stream_into_queue(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
 ) -> None:
-    """Run Ollama chat with stream=True and put (content_fragment, done, message) into q. Puts None at end."""
+    """Run Ollama chat with stream=True and put (content_fragment, done, message) into q. Puts None at end.
+    On error (e.g. model produced invalid tool-call JSON), puts the exception then None so the caller can re-raise.
+    """
     try:
         stream = ollama.chat(model=model, messages=messages, tools=tools, stream=True)
         for chunk in stream:
@@ -231,6 +249,16 @@ def _stream_into_queue(
             content = _get(msg, "content", "") or "" if msg else ""
             done = chunk.get("done") if isinstance(chunk, dict) else getattr(chunk, "done", False)
             q.put((content, done, msg))
+    except Exception as e:  # e.g. ollama.ResponseError when server fails to parse tool-call JSON
+        if "error parsing tool call" in str(e).lower() or "invalid character" in str(e).lower():
+            err = ValueError(
+                "Model produced invalid tool-call JSON (e.g. extra '}' or ']', or unescaped newlines in strings). "
+                "Multi-line arguments must use \\n, not literal line breaks. Try again or use a model with stricter JSON."
+            )
+            err.__cause__ = e
+            q.put(err)
+        else:
+            q.put(e)
     finally:
         q.put(None)
 
@@ -286,6 +314,8 @@ async def run_agent_loop_stream(
             item = await loop.run_in_executor(None, q.get)
             if item is None:
                 break
+            if isinstance(item, BaseException):
+                raise item
             content_frag, done, msg = item
             if content_frag:
                 yield content_frag
@@ -338,13 +368,7 @@ async def run_agent_loop_stream(
             if not name:
                 continue
             raw_args = fn.get("arguments") if isinstance(fn, dict) else getattr(fn, "arguments", None)
-            if isinstance(raw_args, str):
-                try:
-                    arguments = json.loads(raw_args) if raw_args else {}
-                except json.JSONDecodeError:
-                    arguments = {}
-            else:
-                arguments = raw_args or {}
+            arguments = _parse_tool_args(raw_args)
             if not quiet:
                 _log_tool_call(name, arguments)
             t0 = time.perf_counter() if timing else None

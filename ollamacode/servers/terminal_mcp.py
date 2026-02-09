@@ -57,7 +57,7 @@ def run_command(
     """
     Run a shell command and return stdout, stderr, and return code.
 
-    command: Shell command to run (e.g. "ls -la" or "git status").
+    command: Shell command to run (e.g. "ls -la" or "git status"). In JSON args use \\n for newlines, not literal line breaks.
     cwd: Working directory (default: workspace root from OLLAMACODE_FS_ROOT or process cwd).
     env: Optional env vars to merge with current env (e.g. {"VAR": "value"}).
     timeout_seconds: Kill command after this many seconds (default 60).

@@ -56,14 +56,3 @@ def test_use_short_names_for_builtin_tools():
     out = use_short_names_for_builtin_tools(ollama_tools)
     assert out[0]["function"]["name"] == "read_file"
     assert out[1]["function"]["name"] == "BURP_REST_API_scan"
-
-
-def test_use_short_names_for_builtin_tools():
-    """Built-in server tool names are rewritten to short form (read_file, run_command, etc.)."""
-    ollama_tools = [
-        {"type": "function", "function": {"name": "ollamacode-fs_read_file", "description": "Read file", "parameters": {}}},
-        {"type": "function", "function": {"name": "BURP_REST_API_scan", "description": "Scan", "parameters": {}}},
-    ]
-    out = use_short_names_for_builtin_tools(ollama_tools)
-    assert out[0]["function"]["name"] == "read_file"
-    assert out[1]["function"]["name"] == "BURP_REST_API_scan"

@@ -5,7 +5,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
-from ollamacode.agent import run_agent_loop, run_agent_loop_no_mcp
+from ollamacode.agent import _parse_tool_args, run_agent_loop, run_agent_loop_no_mcp
+
+
+def test_parse_tool_args_tolerates_extra_brace():
+    """_parse_tool_args fixes common LLM mistake: extra '}' at end of JSON."""
+    raw = '{"cwd":".","message":"Update after test pass"}}'
+    assert _parse_tool_args(raw) == {"cwd": ".", "message": "Update after test pass"}
+    assert _parse_tool_args('{"a":1}}') == {"a": 1}
+    assert _parse_tool_args("{}") == {}
+    assert _parse_tool_args('{"x":1}') == {"x": 1}
 
 
 def _make_message(content: str, tool_calls: list | None = None) -> dict:

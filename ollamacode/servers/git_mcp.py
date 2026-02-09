@@ -1,7 +1,7 @@
 """
-Built-in Git MCP server: git_status, git_diff_*, git_log, git_show, git_branch, git_add, git_commit.
+Built-in Git MCP server: git_status, git_diff_*, git_log, git_show, git_branch, git_add, git_commit, git_push.
 
-Read-only: status, diff, log, show, branch. Write: git_add (stage), git_commit. No push or checkout.
+Read-only: status, diff, log, show, branch. Write: git_add (stage), git_commit, git_push.
 Root: OLLAMACODE_FS_ROOT env var, or current working directory.
 """
 
@@ -158,6 +158,24 @@ def git_commit(message: str, cwd: str | None = None) -> str:
     if not message.strip():
         return "Commit message is required."
     return _run_git(["commit", "-m", message.strip()], cwd=base)
+
+
+@mcp.tool()
+def git_push(
+    cwd: str | None = None,
+    remote: str | None = None,
+    branch: str | None = None,
+) -> str:
+    """Push current branch to remote. remote: remote name (default: origin). branch: branch to push (default: current)."""
+    base = _base(cwd)
+    if not base.is_dir():
+        return f"Not a directory: {cwd or '.'}"
+    args = ["push"]
+    if remote:
+        args.append(remote)
+    if branch:
+        args.append(branch)
+    return _run_git(args, cwd=base)
 
 
 def main() -> None:
