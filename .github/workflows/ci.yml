@@ -1,2 +1,70 @@
-- name: Install dependencies
-  run: uv sync --dev
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Install dependencies
+        run: uv sync
+      - name: Ruff check
+        run: uv run ruff check ollamacode tests
+      - name: Ruff format
+        run: uv run ruff format --check ollamacode tests
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Install dependencies
+        run: uv sync
+      - name: Pyright
+        run: uv run pyright ollamacode
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Install dependencies
+        run: uv sync
+      - name: Unit tests
+        run: uv run pytest tests/ -v -m "not integration"
+      - name: Coverage
+        run: uv run pytest tests/ -v -m "not integration" --cov=ollamacode --cov-report=term-missing --cov-fail-under=30
+
+  integration:
+    name: Integration (Ollama)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Install dependencies
+        run: uv sync
+      - name: Integration tests
+        run: uv run pytest tests/ -v -m integration --timeout=300
+    # Tests skip when Ollama is not running; job passes. To run them in CI, add a step to install/start Ollama and pull a model.
