@@ -89,7 +89,11 @@ def test_merge_config_deduplicate_builtin_when_in_custom():
     # Custom list includes fs_mcp (same as first built-in) plus a demo server
     config = {
         "mcp_servers": [
-            {"type": "stdio", "command": sys.executable, "args": ["-m", "ollamacode.servers.fs_mcp"]},
+            {
+                "type": "stdio",
+                "command": sys.executable,
+                "args": ["-m", "ollamacode.servers.fs_mcp"],
+            },
             {"type": "stdio", "command": "python", "args": ["examples/demo_server.py"]},
         ],
     }

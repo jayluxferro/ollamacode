@@ -855,7 +855,10 @@ def main() -> None:
         mcp_servers = [
             {
                 **entry,
-                "env": {**(entry.get("env") or {}), "OLLAMACODE_FS_ROOT": workspace_root},
+                "env": {
+                    **(entry.get("env") or {}),
+                    "OLLAMACODE_FS_ROOT": workspace_root,
+                },
             }
             if (entry.get("type") or "stdio").lower() == "stdio"
             else entry

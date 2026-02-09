@@ -90,7 +90,11 @@ async def _handle_chat_stream(
     """Stream chat; yield JSON-RPC response objects: N× { result: { type: 'chunk', content } }, then { result: { type: 'done', content, edits? } } or error."""
     message, file_path, lines_spec = normalize_chat_body(params)
     if not message:
-        yield {"jsonrpc": "2.0", "id": req_id, "result": {"type": "error", "error": "message required"}}
+        yield {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"type": "error", "error": "message required"},
+        }
         return
     if file_path:
         message = prepend_file_context(
@@ -118,7 +122,11 @@ async def _handle_chat_stream(
         accumulated: list[str] = []
         async for chunk in stream:
             accumulated.append(chunk)
-            yield {"jsonrpc": "2.0", "id": req_id, "result": {"type": "chunk", "content": chunk}}
+            yield {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"type": "chunk", "content": chunk},
+            }
         full = "".join(accumulated)
         edits_list = parse_edits(full)
         result: dict[str, Any] = {"type": "done", "content": full}
@@ -126,12 +134,14 @@ async def _handle_chat_stream(
             result["edits"] = edits_list
         yield {"jsonrpc": "2.0", "id": req_id, "result": result}
     except Exception as e:
-        yield {"jsonrpc": "2.0", "id": req_id, "result": {"type": "error", "error": str(e)}}
+        yield {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"type": "error", "error": str(e)},
+        }
 
 
-def _handle_apply_edits(
-    params: dict[str, Any], workspace_root: str
-) -> dict[str, Any]:
+def _handle_apply_edits(params: dict[str, Any], workspace_root: str) -> dict[str, Any]:
     """Handle applyEdits params; return { applied } or { applied, error }."""
     edits_raw = params.get("edits")
     if not isinstance(edits_raw, list):

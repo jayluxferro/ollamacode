@@ -182,7 +182,11 @@ def merge_config_with_env(
                 def _server_key(entry: dict[str, Any]) -> tuple[Any, ...]:
                     t = entry.get("type")
                     if t == "stdio":
-                        return (t, (entry.get("command") or ""), tuple(entry.get("args") or []))
+                        return (
+                            t,
+                            (entry.get("command") or ""),
+                            tuple(entry.get("args") or []),
+                        )
                     return (t, entry.get("url"))
 
                 custom_keys = {_server_key(c) for c in custom}

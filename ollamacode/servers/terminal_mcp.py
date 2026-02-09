@@ -134,7 +134,11 @@ def run_command(
             "stderr": "Command not in OLLAMACODE_ALLOWED_COMMANDS allowlist.",
             "return_code": -1,
         }
-    if _confirm_risky_enabled() and _is_risky(command) and not _confirm_risky_confirmed():
+    if (
+        _confirm_risky_enabled()
+        and _is_risky(command)
+        and not _confirm_risky_confirmed()
+    ):
         return {
             "stdout": "",
             "stderr": "Command matches a risky pattern. To run it, set OLLAMACODE_CONFIRM_RISKY_CONFIRMED=1 and re-run, or run the command yourself in a terminal.",

@@ -14,7 +14,16 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("ollamacode-semantic")
 
-SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build", ".ollamacode"}
+SKIP_DIRS = {
+    ".git",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".ollamacode",
+}
 MAX_FILE_BYTES = 100_000
 MAX_CHARS_PER_ENTRY = 8_000
 EMBED_BATCH = 10
@@ -89,7 +98,11 @@ def index_codebase(file_pattern: str = "*") -> str:
         batch = texts[i : i + EMBED_BATCH]
         try:
             r = ollama.embed(model=model, input=batch)
-            embs = r.get("embeddings") if isinstance(r, dict) else getattr(r, "embeddings", None)
+            embs = (
+                r.get("embeddings")
+                if isinstance(r, dict)
+                else getattr(r, "embeddings", None)
+            )
             if embs:
                 all_embeddings.extend(embs)
             else:
@@ -138,7 +151,11 @@ def semantic_search_codebase(query: str, max_results: int = 10) -> str:
 
     try:
         r = ollama.embed(model=model, input=query.strip() or " ")
-        qemb = (r.get("embeddings") if isinstance(r, dict) else getattr(r, "embeddings", None)) or []
+        qemb = (
+            r.get("embeddings")
+            if isinstance(r, dict)
+            else getattr(r, "embeddings", None)
+        ) or []
         qvec = qemb[0] if qemb else []
     except Exception as e:
         return f"Embedding error (is {model} pulled?): {e}"
@@ -158,7 +175,12 @@ def semantic_search_codebase(query: str, max_results: int = 10) -> str:
     top = scored[:max_results]
     if not top:
         return "No results."
-    lines = [f"{path} (score={s:.3f}):\n{snippet[:300]}..." if len(snippet) > 300 else f"{path} (score={s:.3f}):\n{snippet}" for s, path, snippet in top]
+    lines = [
+        f"{path} (score={s:.3f}):\n{snippet[:300]}..."
+        if len(snippet) > 300
+        else f"{path} (score={s:.3f}):\n{snippet}"
+        for s, path, snippet in top
+    ]
     return "\n\n".join(lines)
 
 

@@ -53,9 +53,7 @@ def test_handle_apply_edits_applies_file(tmp_path: Path):
 async def test_handle_request_unknown_method():
     """_handle_request returns Method not found for unknown method."""
     req = {"jsonrpc": "2.0", "id": 42, "method": "unknown/method", "params": {}}
-    res = await _handle_request(
-        req, None, "model", "", 0, 0, "/tmp"
-    )
+    res = await _handle_request(req, None, "model", "", 0, 0, "/tmp")
     assert res["jsonrpc"] == "2.0"
     assert res["id"] == 42
     assert "error" in res
@@ -81,7 +79,12 @@ async def test_chat_stream_empty_message_yields_one_error():
 @pytest.mark.asyncio
 async def test_handle_request_chat_stream_empty_message():
     """_handle_request(ollamacode/chatStream) with empty message returns stream of one error."""
-    req = {"jsonrpc": "2.0", "id": 1, "method": "ollamacode/chatStream", "params": {"message": ""}}
+    req = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "ollamacode/chatStream",
+        "params": {"message": ""},
+    }
     response = await _handle_request(req, None, "model", "", 0, 0, "/tmp")
     assert hasattr(response, "__aiter__")
     parts = []

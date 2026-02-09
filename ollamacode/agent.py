@@ -96,7 +96,11 @@ def _parse_tool_args(raw_args: str | dict | None) -> dict[str, Any]:
 
 def _json_log_event(**kwargs: Any) -> None:
     """If OLLAMACODE_JSON_LOGS=1, print one JSON object per line to stderr (for profiling/dashboards)."""
-    if os.environ.get("OLLAMACODE_JSON_LOGS", "").strip().lower() not in ("1", "true", "yes"):
+    if os.environ.get("OLLAMACODE_JSON_LOGS", "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+    ):
         return
     print(json.dumps(kwargs), file=sys.stderr, flush=True)
 
@@ -135,7 +139,11 @@ def _tool_call_one_line(name: str, arguments: dict[str, Any]) -> str:
     if arguments:
         # First key or a short repr
         first = next(iter(arguments.items()))
-        return f"{name}({first[0]}={str(first[1])[:30]}...)" if len(str(first[1])) > 30 else f"{name}({first[0]}={first[1]})"
+        return (
+            f"{name}({first[0]}={str(first[1])[:30]}...)"
+            if len(str(first[1])) > 30
+            else f"{name}({first[0]}={first[1]})"
+        )
     return name
 
 
@@ -152,7 +160,11 @@ def _tool_result_one_line(name: str, content: str, is_error: bool) -> str:
             stdout = (data.get("stdout") or "").strip()
             stderr = (data.get("stderr") or "").strip()
             if code == 0:
-                summary = (stdout.splitlines()[0][:50] + "…") if stdout and len(stdout.splitlines()[0]) > 50 else (stdout or "ok")
+                summary = (
+                    (stdout.splitlines()[0][:50] + "…")
+                    if stdout and len(stdout.splitlines()[0]) > 50
+                    else (stdout or "ok")
+                )
                 return f"→ return_code={code} {summary}"
             err_preview = (stderr.splitlines()[0][:45] + "…") if stderr else "failed"
             return f"→ return_code={code} {err_preview}"
@@ -357,9 +369,7 @@ async def run_agent_loop(
                         flush=True,
                     )
                 content = _truncate_tool_result(content, max_tool_result_chars)
-                messages.append(
-                    {"role": "tool", "tool_name": name, "content": content}
-                )
+                messages.append({"role": "tool", "tool_name": name, "content": content})
             if timing and t0_parallel is not None:
                 elapsed = time.perf_counter() - t0_parallel
                 print(
@@ -367,7 +377,9 @@ async def run_agent_loop(
                     file=sys.stderr,
                     flush=True,
                 )
-                _json_log_event(event="tools", duration_s=round(elapsed, 3), count=len(items))
+                _json_log_event(
+                    event="tools", duration_s=round(elapsed, 3), count=len(items)
+                )
 
     if timing and turn_start is not None:
         turn_elapsed = time.perf_counter() - turn_start
@@ -584,9 +596,7 @@ async def run_agent_loop_stream(
                         flush=True,
                     )
                 content = _truncate_tool_result(content, max_tool_result_chars)
-                messages.append(
-                    {"role": "tool", "tool_name": name, "content": content}
-                )
+                messages.append({"role": "tool", "tool_name": name, "content": content})
 
 
 async def run_agent_loop_no_mcp(

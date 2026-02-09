@@ -76,6 +76,7 @@ async def _handle_chat(
 
 # Update type hint to Any
 
+
 def _check_api_key(request: Any, api_key: str) -> JSONResponse | None:
     """If api_key is set, require Authorization: Bearer <key> or X-API-Key: <key>. Return 401 response if invalid, else None."""
     auth = request.headers.get("Authorization") or ""
@@ -88,6 +89,7 @@ def _check_api_key(request: Any, api_key: str) -> JSONResponse | None:
 
 
 # create_app remains largely unchanged, but Request type hint will be Any
+
 
 def create_app(
     model: str,
@@ -141,7 +143,13 @@ def create_app(
             return JSONResponse({"error": "invalid json"}, status_code=400)
         session: McpConnection | None = getattr(request.app.state, "session", None)
         result = await _handle_chat(
-            session, model, system_extra, body, max_messages, max_tool_result_chars, root
+            session,
+            model,
+            system_extra,
+            body,
+            max_messages,
+            max_tool_result_chars,
+            root,
         )
         return JSONResponse(result)
 
@@ -160,9 +168,7 @@ def create_app(
         if not message:
             return JSONResponse({"error": "message required"}, status_code=400)
         if file_path:
-            message = prepend_file_context(
-                message, str(file_path), root, lines_spec
-            )
+            message = prepend_file_context(message, str(file_path), root, lines_spec)
         model_override = body.get("model")
         use_model = model_override or model
         system = (
@@ -174,9 +180,7 @@ def create_app(
             system = system + "\n\n" + system_extra
 
         async def generate() -> AsyncIterator[str]:
-            session: McpConnection | None = getattr(
-                request.app.state, "session", None
-            )
+            session: McpConnection | None = getattr(request.app.state, "session", None)
             accumulated: list[str] = []
             try:
                 if session is not None:
@@ -273,6 +277,7 @@ def create_app(
 
 # run_serve unchanged except for imports
 
+
 def run_serve(port: int = 8000, config_path: str | None = None) -> None:
     """Load config, create app, run uvicorn."""
     try:
@@ -296,7 +301,9 @@ def run_serve(port: int = 8000, config_path: str | None = None) -> None:
     max_tool_result_chars = merged.get("max_tool_result_chars", 0)
     workspace_root = os.getcwd()
     serve_config = merged.get("serve") or {}
-    api_key = (serve_config.get("api_key") or os.environ.get("OLLAMACODE_SERVE_API_KEY") or "").strip() or None
+    api_key = (
+        serve_config.get("api_key") or os.environ.get("OLLAMACODE_SERVE_API_KEY") or ""
+    ).strip() or None
 
     app = create_app(
         model,
