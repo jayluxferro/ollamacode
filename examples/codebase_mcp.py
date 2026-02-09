@@ -34,9 +34,7 @@ def _resolve(path: str) -> Path:
 
 
 @mcp.tool()
-def search_codebase(
-    query: str, file_pattern: str = "*", max_results: int = MAX_RESULTS
-) -> str:
+def search_codebase(query: str, file_pattern: str = "*", max_results: int = MAX_RESULTS) -> str:
     """
     Search the workspace for a text query (case-insensitive substring match).
     Returns matching file paths with line numbers and snippet context.

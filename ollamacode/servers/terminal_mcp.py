@@ -35,7 +35,7 @@ def _root() -> str:
 
 def _is_blocked(command: str) -> bool:
     """Return True if blocklist is enabled and command matches a blocked pattern."""
-    if not os.environ.get("OLLAMACODE_BLOCK_DANGEROUS_COMMANDS", "").strip().lower() in ("1", "true", "yes"):
+    if os.environ.get("OLLAMACODE_BLOCK_DANGEROUS_COMMANDS", "").strip().lower() not in ("1", "true", "yes"):
         return False
     cmd_lower = command.strip().lower()
     for pat in _BLOCKED_SUBSTRINGS:

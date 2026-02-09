@@ -1,8 +1,6 @@
 """Unit tests for structured apply-edits (<<EDITS>> JSON)."""
 
-from pathlib import Path
-
-from ollamacode.edits import apply_edits, format_edits_diff, parse_edits
+from ollamacode.edits import apply_edits, parse_edits
 
 
 def test_parse_edits_empty():
@@ -11,7 +9,7 @@ def test_parse_edits_empty():
 
 
 def test_parse_edits_single():
-    text = "Here is the fix.\n<<EDITS>>\n[{\"path\": \"a.py\", \"newText\": \"x = 1\"}]\n<<END>>"
+    text = 'Here is the fix.\n<<EDITS>>\n[{"path": "a.py", "newText": "x = 1"}]\n<<END>>'
     got = parse_edits(text)
     assert len(got) == 1
     assert got[0]["path"] == "a.py"
@@ -20,7 +18,7 @@ def test_parse_edits_single():
 
 
 def test_parse_edits_with_old_text():
-    text = "<<EDITS>>\n[{\"path\": \"b.py\", \"oldText\": \"old\", \"newText\": \"new\"}]\n<<END>>"
+    text = '<<EDITS>>\n[{"path": "b.py", "oldText": "old", "newText": "new"}]\n<<END>>'
     got = parse_edits(text)
     assert len(got) == 1
     assert got[0]["oldText"] == "old"

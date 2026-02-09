@@ -1,10 +1,5 @@
 """Unit tests for built-in terminal MCP server (run_command blocklist)."""
 
-import os
-from unittest.mock import patch
-
-import pytest
-
 from ollamacode.servers import terminal_mcp
 
 

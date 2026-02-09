@@ -13,10 +13,8 @@ from __future__ import annotations
 
 import difflib
 import json
-import re
 from pathlib import Path
 from typing import Any
-
 
 EDITS_START = "<<EDITS>>"
 EDITS_END = "<<END>>"
@@ -50,11 +48,13 @@ def parse_edits(response_text: str) -> list[dict[str, Any]]:
         new_text = item.get("newText")
         if path is None or new_text is None:
             continue
-        out.append({
-            "path": str(path),
-            "oldText": item.get("oldText"),
-            "newText": new_text if isinstance(new_text, str) else str(new_text),
-        })
+        out.append(
+            {
+                "path": str(path),
+                "oldText": item.get("oldText"),
+                "newText": new_text if isinstance(new_text, str) else str(new_text),
+            }
+        )
     return out
 
 

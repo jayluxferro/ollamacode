@@ -46,9 +46,15 @@ def _check_ollama_and_model(model: str, quiet: bool) -> None:
     models_list = getattr(listed, "models", None) or (listed.get("models") if isinstance(listed, dict) else None) or []
     names = []
     for m in models_list:
-        n = getattr(m, "name", None) or (m.get("name") if isinstance(m, dict) else None) or getattr(m, "model", None) or (m.get("model") if isinstance(m, dict) else None)
+        n = (
+            getattr(m, "name", None)
+            or (m.get("name") if isinstance(m, dict) else None)
+            or getattr(m, "model", None)
+            or (m.get("model") if isinstance(m, dict) else None)
+        )
         if n:
             names.append(n)
+
     # Match exact, or list name with digest (e.g. gpt-oss:20b-abc), or base name when we ask for tag (e.g. list has "gpt-oss" for gpt-oss:20b)
     def matches(a: str, b: str) -> bool:
         if a == b:
@@ -58,6 +64,7 @@ def _check_ollama_and_model(model: str, quiet: bool) -> None:
         if b.startswith(a + ":") or b.startswith(a + "-"):
             return True
         return False
+
     if not any(matches(n, model) for n in names):
         print(
             f"Model '{model}' not found. Pull it with: ollama pull {model}",
@@ -414,7 +421,10 @@ async def _run(
     if system_extra:
         _SYSTEM = _SYSTEM + "\n\n" + system_extra
     if apply_edits_flag:
-        _SYSTEM = _SYSTEM + "\n\nWhen you change files, output edits in this format so the user can apply or reject: <<EDITS>>\n[JSON array of { \"path\": \"file path\", \"oldText\": \"optional exact old content\", \"newText\": \"new content\" }]\n<<END>>\nIf replacing the whole file, omit oldText. Paths are relative to the workspace."
+        _SYSTEM = (
+            _SYSTEM
+            + '\n\nWhen you change files, output edits in this format so the user can apply or reject: <<EDITS>>\n[JSON array of { "path": "file path", "oldText": "optional exact old content", "newText": "new content" }]\n<<END>>\nIf replacing the whole file, omit oldText. Paths are relative to the workspace.'
+        )
     if rules_file:
         rules_path = Path(rules_file) if Path(rules_file).is_absolute() else Path(workspace_root) / rules_file
         if rules_path.exists():
@@ -554,7 +564,9 @@ async def _run(
                 if not line:
                     continue
                 result = _handle_slash(
-                    line, model_ref, message_history,
+                    line,
+                    model_ref,
+                    message_history,
                     workspace_root=workspace_root,
                     linter_command=linter_command,
                     test_command=test_command,
@@ -602,9 +614,7 @@ async def _run(
                 _maybe_apply_edits(out)
             return
         print("OllamaCode (local model + MCP tools). /help for commands. Empty line or Ctrl+C to exit.")
-        if semantic_codebase_hint and not any(
-            "semantic" in (s.get("name") or "").lower() for s in mcp_servers
-        ):
+        if semantic_codebase_hint and not any("semantic" in (s.get("name") or "").lower() for s in mcp_servers):
             print(
                 "[OllamaCode] Tip: For semantic codebase search, add a semantic MCP server to config. See docs/MCP_SERVERS.md.",
                 file=sys.stderr,
@@ -619,7 +629,9 @@ async def _run(
             if not line:
                 continue
             result = _handle_slash(
-                line, model_ref, message_history_mcp,
+                line,
+                model_ref,
+                message_history_mcp,
                 workspace_root=workspace_root,
                 linter_command=linter_command,
                 test_command=test_command,
@@ -678,9 +690,7 @@ def main() -> None:
         port = getattr(args, "port", 8000)
         run_serve(port=port, config_path=args.config)
         return
-    mcp_servers, _, using_builtin = _resolve_mcp_servers(
-        args.config, args.mcp_command, args.mcp_args
-    )
+    mcp_servers, _, using_builtin = _resolve_mcp_servers(args.config, args.mcp_command, args.mcp_args)
     config = load_config(args.config)
     merged = merge_config_with_env(
         config,
@@ -691,11 +701,7 @@ def main() -> None:
     model = args.model or merged.get("model") or os.environ.get("OLLAMACODE_MODEL", "gpt-oss:20b")
     system_extra = (merged.get("system_prompt_extra") or "").strip()
     max_messages = args.max_messages if args.max_messages is not None else merged.get("max_messages", 0)
-    max_tool_rounds = (
-        args.max_tool_rounds
-        if args.max_tool_rounds is not None
-        else merged.get("max_tool_rounds", 20)
-    )
+    max_tool_rounds = args.max_tool_rounds if args.max_tool_rounds is not None else merged.get("max_tool_rounds", 20)
     quiet = getattr(args, "quiet", False)
     timing = getattr(args, "timing", False) or merged.get("timing", False)
     if using_builtin and not quiet:

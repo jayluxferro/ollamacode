@@ -115,9 +115,7 @@ async def test_run_uses_mcp_args_from_env(monkeypatch):
 def test_resolve_mcp_servers_returns_using_builtin(tmp_path):
     """_resolve_mcp_servers returns (servers, use_mcp, using_builtin)."""
     # No config file (missing path), no env -> using_builtin True
-    servers, use_mcp, using_builtin = _resolve_mcp_servers(
-        str(tmp_path / "missing.yaml"), "python", []
-    )
+    servers, use_mcp, using_builtin = _resolve_mcp_servers(str(tmp_path / "missing.yaml"), "python", [])
     assert use_mcp is True
     assert using_builtin is True
     assert len(servers) == 5

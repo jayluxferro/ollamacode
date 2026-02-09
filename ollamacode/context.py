@@ -40,7 +40,9 @@ def get_branch_context(
         pr_path = (root / pr_description_file).resolve()
         try:
             if pr_path.is_relative_to(root) and pr_path.is_file():
-                parts.append("--- PR / change description ---\n" + pr_path.read_text(encoding="utf-8", errors="replace").strip())
+                parts.append(
+                    "--- PR / change description ---\n" + pr_path.read_text(encoding="utf-8", errors="replace").strip()
+                )
         except (ValueError, TypeError, OSError):
             pass
     if not parts:
@@ -84,7 +86,11 @@ def prepend_file_context(
             start0 = max(0, start - 1)
             end0 = min(len(lines), end)
             content = "\n".join(lines[start0:end0])
-            label = f"Contents of {file_path} (lines {start}-{end}):" if end != start else f"Contents of {file_path} (line {start}):"
+            label = (
+                f"Contents of {file_path} (lines {start}-{end}):"
+                if end != start
+                else f"Contents of {file_path} (line {start}):"
+            )
         except (ValueError, IndexError):
             label = f"Contents of {file_path}:"
     else:

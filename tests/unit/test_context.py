@@ -1,9 +1,5 @@
 """Unit tests for @-style context expansion."""
 
-from pathlib import Path
-
-import pytest
-
 from ollamacode.context import expand_at_refs, get_branch_context, prepend_file_context
 
 

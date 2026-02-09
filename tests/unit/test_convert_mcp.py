@@ -1,10 +1,5 @@
 """Unit tests for MCP config converter (Cursor/Claude JSON -> OllamaCode YAML)."""
 
-import json
-from unittest.mock import patch
-
-import pytest
-
 from ollamacode.convert_mcp import (
     convert_to_ollamacode_servers,
     load_json,

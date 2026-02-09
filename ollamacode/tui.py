@@ -193,7 +193,9 @@ async def run_tui(
         )
     )
     if show_semantic_hint:
-        console.print("[dim]Tip: For semantic codebase search, add a semantic MCP server to config. See docs/MCP_SERVERS.md.[/]")
+        console.print(
+            "[dim]Tip: For semantic codebase search, add a semantic MCP server to config. See docs/MCP_SERVERS.md.[/]"
+        )
 
     while True:
         try:
@@ -204,7 +206,11 @@ async def run_tui(
             continue
 
         result = _handle_tui_slash(
-            line, model_ref, history, message_history, console,
+            line,
+            model_ref,
+            history,
+            message_history,
+            console,
             workspace_root=workspace_root or os.getcwd(),
             linter_command=linter_command,
             test_command=test_command,
@@ -230,12 +236,19 @@ async def run_tui(
                 console.print("[dim]Summarizing last", n_turns, "turn(s)...[/]")
                 if session is not None:
                     summary = await run_agent_loop(
-                        session, model_ref[0], prompt,
-                        system_prompt=_SYSTEM, message_history=[], max_tool_rounds=0,
+                        session,
+                        model_ref[0],
+                        prompt,
+                        system_prompt=_SYSTEM,
+                        message_history=[],
+                        max_tool_rounds=0,
                     )
                 else:
                     summary = await run_agent_loop_no_mcp(
-                        model_ref[0], prompt, system_prompt=_SYSTEM, message_history=[],
+                        model_ref[0],
+                        prompt,
+                        system_prompt=_SYSTEM,
+                        message_history=[],
                     )
                 summary = summary.strip()
                 message_history[:] = message_history[:-n_msgs] + [
