@@ -14,9 +14,15 @@ TEMPLATE_NAMES = ["python-cli", "python-lib", "web-app", "rust-cli", "go-mod"]
 def run_init(template: str | None, dest: str) -> str:
     """List templates or scaffold a project. Returns a message string."""
     if template is None:
-        return "Available templates: " + ", ".join(TEMPLATE_NAMES) + "\nUsage: ollamacode init --template <name> [--dest DIR]"
+        return (
+            "Available templates: "
+            + ", ".join(TEMPLATE_NAMES)
+            + "\nUsage: ollamacode init --template <name> [--dest DIR]"
+        )
     if template not in TEMPLATE_NAMES:
-        return f"Unknown template: {template!r}. Available: " + ", ".join(TEMPLATE_NAMES)
+        return f"Unknown template: {template!r}. Available: " + ", ".join(
+            TEMPLATE_NAMES
+        )
     files = TEMPLATES.get(template, {})
     if not files:
         return f"Template {template!r} has no files defined yet."
