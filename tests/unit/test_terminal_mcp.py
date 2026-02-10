@@ -107,3 +107,21 @@ def test_confirm_risky_runs_when_confirmed(monkeypatch):
     out = terminal_mcp.run_command("echo confirmed")
     assert out["return_code"] == 0
     assert "confirmed" in out["stdout"]
+
+
+def test_log_command_writes_when_enabled(monkeypatch, tmp_path):
+    """When OLLAMACODE_LOG_COMMANDS=1, run_command appends to log file."""
+    log_file = tmp_path / "cmd.log"
+    monkeypatch.setenv("OLLAMACODE_LOG_COMMANDS", "1")
+    monkeypatch.setenv("OLLAMACODE_COMMAND_LOG", str(log_file))
+    monkeypatch.delenv("OLLAMACODE_BLOCK_DANGEROUS_COMMANDS", raising=False)
+    monkeypatch.delenv("OLLAMACODE_ALLOWED_COMMANDS", raising=False)
+    out = terminal_mcp.run_command("echo hi", cwd=str(tmp_path))
+    assert out["return_code"] == 0
+    assert log_file.exists()
+    line = log_file.read_text().strip()
+    parts = line.split("\t")
+    assert len(parts) == 4
+    assert parts[1] == str(tmp_path)
+    assert "echo hi" in parts[2]
+    assert parts[3] == "0"

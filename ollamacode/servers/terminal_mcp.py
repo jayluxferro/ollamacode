@@ -5,11 +5,14 @@ Uses same workspace root as fs/codebase: OLLAMACODE_FS_ROOT or process cwd.
 Optional blocklist: set OLLAMACODE_BLOCK_DANGEROUS_COMMANDS=1 to block dangerous patterns.
 Optional allowlist: set OLLAMACODE_ALLOWED_COMMANDS to a comma-separated list (e.g. ruff,pytest,git).
 When set, only commands whose first word matches one of the entries are allowed.
+Optional command log: set OLLAMACODE_LOG_COMMANDS=1 to append (cwd, command, return_code) to a log file for debugging.
 """
 
 import os
 import re
 import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -102,6 +105,27 @@ def _confirm_risky_confirmed() -> bool:
     )
 
 
+def _log_command(cwd: str, command: str, return_code: int) -> None:
+    """If OLLAMACODE_LOG_COMMANDS=1, append one line (timestamp, cwd, command, return_code) to log file."""
+    if os.environ.get("OLLAMACODE_LOG_COMMANDS", "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return
+    log_path = os.environ.get("OLLAMACODE_COMMAND_LOG", "").strip()
+    if not log_path:
+        log_path = str(Path.home() / ".ollamacode" / "command_history.log")
+    try:
+        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        line = command.replace("\n", " ").replace("\r", "")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"{ts}\t{cwd}\t{line}\t{return_code}\n")
+    except OSError:
+        pass
+
+
 @mcp.tool()
 def run_command(
     command: str,
@@ -121,29 +145,36 @@ def run_command(
     When OLLAMACODE_ALLOWED_COMMANDS is set, only commands whose first word is in the list are allowed.
     When OLLAMACODE_CONFIRM_RISKY=1, risky patterns (e.g. rm -rf, curl|bash) require confirmation:
     re-run with OLLAMACODE_CONFIRM_RISKY_CONFIRMED=1 to execute.
+    When OLLAMACODE_LOG_COMMANDS=1, each run is appended to a log file (path in OLLAMACODE_COMMAND_LOG or ~/.ollamacode/command_history.log).
     """
     if _is_blocked(command):
-        return {
+        out = {
             "stdout": "",
             "stderr": "Command blocked by OLLAMACODE_BLOCK_DANGEROUS_COMMANDS (dangerous pattern).",
             "return_code": -1,
         }
+        _log_command(cwd or _root(), command, -1)
+        return out
     if _is_disallowed_by_allowlist(command):
-        return {
+        out = {
             "stdout": "",
             "stderr": "Command not in OLLAMACODE_ALLOWED_COMMANDS allowlist.",
             "return_code": -1,
         }
+        _log_command(cwd or _root(), command, -1)
+        return out
     if (
         _confirm_risky_enabled()
         and _is_risky(command)
         and not _confirm_risky_confirmed()
     ):
-        return {
+        out = {
             "stdout": "",
             "stderr": "Command matches a risky pattern. To run it, set OLLAMACODE_CONFIRM_RISKY_CONFIRMED=1 and re-run, or run the command yourself in a terminal.",
             "return_code": -2,
         }
+        _log_command(cwd or _root(), command, -2)
+        return out
     run_env = os.environ.copy()
     if env:
         run_env.update(env)
@@ -158,18 +189,21 @@ def run_command(
             text=True,
             timeout=timeout_seconds,
         )
+        _log_command(work_dir, command, result.returncode)
         return {
             "stdout": result.stdout or "",
             "stderr": result.stderr or "",
             "return_code": result.returncode,
         }
     except subprocess.TimeoutExpired:
+        _log_command(work_dir, command, -1)
         return {
             "stdout": "",
             "stderr": f"Command timed out after {timeout_seconds}s",
             "return_code": -1,
         }
     except Exception as e:
+        _log_command(work_dir, command, -1)
         return {"stdout": "", "stderr": str(e), "return_code": -1}
 
 

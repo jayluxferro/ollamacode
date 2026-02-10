@@ -25,7 +25,13 @@ from .config import load_config, merge_config_with_env
 from .context import prepend_file_context
 from .edits import apply_edits, parse_edits
 from .mcp_client import McpConnection, connect_mcp_servers, connect_mcp_stdio
+from .completions import get_completion
+from .diagnostics import get_diagnostics
+from .health import check_ollama
 from .protocol import normalize_chat_body
+from .skills import load_skills_text
+from .state import get_state, format_recent_context
+from .templates import load_prompt_template
 
 
 async def _handle_chat(
@@ -36,6 +42,10 @@ async def _handle_chat(
     max_messages: int,
     max_tool_result_chars: int,
     workspace_root: str,
+    use_skills: bool = True,
+    prompt_template: str | None = None,
+    inject_recent_context: bool = True,
+    recent_context_max_files: int = 10,
 ) -> dict:
     message, file_path, lines_spec = normalize_chat_body(body)
     if not message:
@@ -53,6 +63,23 @@ async def _handle_chat(
     )
     if system_extra:
         system = system + "\n\n" + system_extra
+    if use_skills:
+        skills_text = load_skills_text(workspace_root)
+        if skills_text:
+            system = (
+                system
+                + "\n\n--- Skills (saved instructions & memory) ---\n\n"
+                + skills_text
+            )
+    if prompt_template:
+        template_text = load_prompt_template(prompt_template, workspace_root)
+        if template_text:
+            system = system + "\n\n--- Prompt template ---\n\n" + template_text
+    if inject_recent_context:
+        state = get_state()
+        block = format_recent_context(state, max_files=recent_context_max_files)
+        if block:
+            system = system + "\n\n--- Recent context ---\n\n" + block
     try:
         if session is not None:
             out = await run_agent_loop(
@@ -99,6 +126,10 @@ def create_app(
     max_tool_result_chars: int = 0,
     workspace_root: str | None = None,
     api_key: str | None = None,
+    use_skills: bool = True,
+    prompt_template: str | None = None,
+    inject_recent_context: bool = True,
+    recent_context_max_files: int = 10,
 ):
     """Create ASGI app (Starlette) with MCP session in lifespan. If api_key is set, requests must send Authorization: Bearer <key> or X-API-Key: <key>."""
     root = workspace_root or os.getcwd()
@@ -130,6 +161,11 @@ def create_app(
             if ctx is not None:
                 await ctx.__aexit__(None, None, None)
 
+    async def health_handler(request: Request) -> JSONResponse:
+        """GET /health: verify Ollama (and optionally MCP). No auth required."""
+        ok, msg = check_ollama()
+        return JSONResponse({"ollama": ok, "message": msg})
+
     async def chat(request: Request) -> JSONResponse:
         if request.method != "POST":
             return JSONResponse({"error": "method not allowed"}, status_code=405)
@@ -150,6 +186,10 @@ def create_app(
             max_messages,
             max_tool_result_chars,
             root,
+            use_skills=use_skills,
+            prompt_template=prompt_template,
+            inject_recent_context=inject_recent_context,
+            recent_context_max_files=recent_context_max_files,
         )
         return JSONResponse(result)
 
@@ -178,6 +218,23 @@ def create_app(
         )
         if system_extra:
             system = system + "\n\n" + system_extra
+        if use_skills:
+            skills_text = load_skills_text(root)
+            if skills_text:
+                system = (
+                    system
+                    + "\n\n--- Skills (saved instructions & memory) ---\n\n"
+                    + skills_text
+                )
+        if prompt_template:
+            template_text = load_prompt_template(prompt_template, root)
+            if template_text:
+                system = system + "\n\n--- Prompt template ---\n\n" + template_text
+        if inject_recent_context:
+            state = get_state()
+            block = format_recent_context(state, max_files=recent_context_max_files)
+            if block:
+                system = system + "\n\n--- Recent context ---\n\n" + block
 
         async def generate() -> AsyncIterator[str]:
             session: McpConnection | None = getattr(request.app.state, "session", None)
@@ -264,11 +321,49 @@ def create_app(
         except Exception as e:
             return JSONResponse({"applied": 0, "error": str(e)}, status_code=500)
 
+    async def diagnostics_handler(request: Request):
+        """POST /diagnostics: run linter, return LSP-like diagnostics. Body: { workspaceRoot?, path?, linterCommand? }."""
+        if request.method != "POST":
+            return JSONResponse({"error": "method not allowed"}, status_code=405)
+        if api_key:
+            err = _check_api_key(request, api_key)
+            if err is not None:
+                return err
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        work_root = (body.get("workspaceRoot") or root).strip() or root
+        path = body.get("path")
+        linter = (body.get("linterCommand") or "ruff check .").strip() or "ruff check ."
+        diag = get_diagnostics(work_root, path=path, linter_command=linter)
+        return JSONResponse({"diagnostics": diag})
+
+    async def complete_handler(request: Request):
+        """POST /complete: inline completion for prefix. Body: { prefix, model? }."""
+        if request.method != "POST":
+            return JSONResponse({"error": "method not allowed"}, status_code=405)
+        if api_key:
+            err = _check_api_key(request, api_key)
+            if err is not None:
+                return err
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        prefix = (body.get("prefix") or "").strip()
+        use_model = body.get("model") or model
+        completion = get_completion(prefix, use_model)
+        return JSONResponse({"completions": [completion] if completion else []})
+
     app = Starlette(
         routes=[
+            Route("/health", health_handler, methods=["GET"]),
             Route("/chat", chat, methods=["POST"]),
             Route("/chat/stream", chat_stream, methods=["POST"]),
             Route("/apply-edits", apply_edits_handler, methods=["POST"]),
+            Route("/diagnostics", diagnostics_handler, methods=["POST"]),
+            Route("/complete", complete_handler, methods=["POST"]),
         ],
         lifespan=lifespan,
     )
@@ -313,5 +408,9 @@ def run_serve(port: int = 8000, config_path: str | None = None) -> None:
         max_tool_result_chars,
         workspace_root,
         api_key=api_key,
+        use_skills=merged.get("use_skills", True),
+        prompt_template=merged.get("prompt_template"),
+        inject_recent_context=merged.get("inject_recent_context", True),
+        recent_context_max_files=merged.get("recent_context_max_files", 10),
     )
     uvicorn.run(app, host="127.0.0.1", port=port)

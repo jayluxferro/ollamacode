@@ -13,12 +13,6 @@ import shlex
 import subprocess
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal, cast
 
-# Enable arrow keys and line editing for input() on Unix/macOS (readline not on Windows)
-try:
-    import readline  # noqa: F401
-except ImportError:
-    pass
-
 from .agent import (
     run_agent_loop,
     run_agent_loop_no_mcp,
@@ -26,13 +20,28 @@ from .agent import (
     run_agent_loop_stream,
 )
 from .context import expand_at_refs
+from .skills import load_skills_text
+from .templates import load_prompt_template
 
 if TYPE_CHECKING:
     from .mcp_client import McpConnection
 
+# Arrow keys and line editing: readline on Unix/macOS; on Windows use prompt_toolkit when available (pip install ollamacode[tui])
+_tui_prompt_fn = None
+try:
+    import readline  # noqa: F401  # enables arrow keys for input() on Unix/macOS
+except ImportError:
+    try:
+        from prompt_toolkit import (
+            prompt as _tui_prompt_fn,
+        )  # Windows: use pt for arrow keys
+    except ImportError:
+        pass
 
 # Show only the last N exchanges in the Chat panel so tool output (stderr) stays visible
 _CHAT_PANEL_LAST_N_EXCHANGES = 2
+
+# rest of original functions unchanged...
 
 
 def _conversation_to_markdown(
@@ -93,6 +102,8 @@ def _handle_tui_slash(
     workspace_root: str = ".",
     linter_command: str | None = None,
     test_command: str | None = None,
+    docs_command: str | None = None,
+    profile_command: str | None = None,
 ) -> str | None | tuple[str, str] | tuple[Literal["run_summary"], int]:
     """Handle slash command in TUI. Returns 'quit', 'cleared', 'help', ('run_prompt', prompt), ('run_summary', n), or None."""
     line = line.strip()
@@ -115,6 +126,9 @@ def _handle_tui_slash(
   /model [name] Show or set Ollama model
   /fix          Run linter, send errors to model
   /test         Run tests, send failures to model
+  /docs         Run docs build, send output to model
+  /profile      Run profiler, send summary to model
+  /reset-state  Clear persistent state (recent files, preferences)
   /summary [N]  Summarize last N turns (default 5)
   /quit, /exit  Exit (or Ctrl+C)"""
         console.print(RichPanel(help_text, title="Commands", border_style="dim"))
@@ -150,6 +164,38 @@ def _handle_tui_slash(
             "run_prompt",
             f"Fix these test failures (from `{run_cmd}`):\n\n```\n{output}\n```",
         )
+    if cmd == "/docs":
+        run_cmd = docs_command or "mkdocs build"
+        output = _run_cmd_sync(workspace_root, run_cmd)
+        if not output:
+            console.print("[dim]No docs output (command may have succeeded).[/]")
+            return "help"
+        return (
+            "run_prompt",
+            f"Docs build output (from `{run_cmd}`). Fix any errors or suggest improvements:\n\n```\n{output}\n```",
+        )
+    if cmd == "/profile":
+        run_cmd = (
+            profile_command
+            or "python -m cProfile -s cumtime -m pytest tests/ -q --no-header 2>&1 | head -40"
+        )
+        output = _run_cmd_sync(workspace_root, run_cmd)
+        if not output:
+            console.print("[dim]No profile output.[/]")
+            return "help"
+        return (
+            "run_prompt",
+            f"Profiler output (from `{run_cmd}`). Identify hotspots and suggest optimizations:\n\n```\n{output}\n```",
+        )
+    if cmd == "/reset-state":
+        try:
+            from .state import clear_state
+
+            msg = clear_state()
+            console.print(f"[dim]{msg}[/]")
+        except Exception as e:
+            console.print(f"[dim]Failed to clear state: {e}[/]")
+        return "help"
     if cmd == "/summary":
         try:
             n = int(rest) if rest else 5
@@ -188,10 +234,17 @@ async def run_tui(
     workspace_root: str | None = None,
     linter_command: str | None = None,
     test_command: str | None = None,
+    docs_command: str | None = None,
+    profile_command: str | None = None,
     show_semantic_hint: bool = False,
+    use_skills: bool = True,
+    prompt_template: str | None = None,
+    inject_recent_context: bool = True,
+    recent_context_max_files: int = 10,
+    branch_context: bool = False,
+    branch_context_base: str = "main",
 ) -> None:
-    """
-    Run interactive TUI chat: Rich panels with Markdown, slash commands, multi-line input.
+    """Run interactive TUI chat: Rich panels with Markdown, slash commands, multi-line input.
     Requires rich: pip install ollamacode[tui]
     """
     try:
@@ -216,6 +269,32 @@ async def run_tui(
     )
     if system_extra:
         _SYSTEM = _SYSTEM + "\n\n" + system_extra
+    if use_skills:
+        skills_text = load_skills_text(workspace_root)
+        if skills_text:
+            _SYSTEM = (
+                _SYSTEM
+                + "\n\n--- Skills (saved instructions & memory) ---\n\n"
+                + skills_text
+            )
+    if prompt_template:
+        template_text = load_prompt_template(prompt_template, workspace_root)
+        if template_text:
+            _SYSTEM = _SYSTEM + "\n\n--- Prompt template ---\n\n" + template_text
+    if inject_recent_context and workspace_root:
+        from .state import get_state, format_recent_context
+        from .context import get_branch_summary_one_line
+
+        state = get_state()
+        block = format_recent_context(state, max_files=recent_context_max_files)
+        if branch_context:
+            branch_line = get_branch_summary_one_line(
+                workspace_root, branch_context_base
+            )
+            if branch_line:
+                block = (block + "\n\n" + branch_line) if block else branch_line
+        if block:
+            _SYSTEM = _SYSTEM + "\n\n--- Recent context ---\n\n" + block
 
     history: list[tuple[str, str]] = []
     message_history: list[dict[str, Any]] = []
@@ -223,7 +302,9 @@ async def run_tui(
     loop = asyncio.get_event_loop()
 
     def get_input() -> str:
-        """Read a single line; Enter sends. Prompt shows current model."""
+        """Read a single line; Enter sends. Prompt shows current model. Uses prompt_toolkit on Windows when available for arrow keys."""
+        if _tui_prompt_fn is not None:
+            return _tui_prompt_fn(f"You [{model_ref[0]}]: ").strip()
         return input(f"You [{model_ref[0]}]: ").strip()
 
     console.print(
@@ -255,6 +336,8 @@ async def run_tui(
             workspace_root=workspace_root or os.getcwd(),
             linter_command=linter_command,
             test_command=test_command,
+            docs_command=docs_command,
+            profile_command=profile_command,
         )
         if result == "quit":
             break

@@ -45,6 +45,16 @@ curl -s -X POST http://localhost:8000/chat \
 
 **Editor integration:** From Neovim, Zed, or Sublime, call the API with the current buffer path and optional line range, then display `content` and optionally apply `edits` (write each `path`/`newText` or patch using `oldText`/`newText`). Start the server from the project root so `file` paths and MCP tools use the correct workspace.
 
+### VS Code extension
+
+A minimal **VS Code extension** is included in this repo under **`editors/vscode`**. It adds:
+
+- **OllamaCode: Chat** — prompt the assistant (optionally with current file as context); reply in output channel; apply edits when the model returns them.
+- **OllamaCode: Chat with selection** — same with the current selection as context.
+- **OllamaCode: Apply edits from clipboard/response** — paste JSON `edits` and apply in the workspace.
+
+**Install:** Open `editors/vscode` in VS Code and run **Run > Run Extension** (F5), or build a `.vsix` with `npm install && npm run compile && npx vsce package` and install the `.vsix`. Settings: `ollamacode.baseUrl` (default `http://localhost:8000`), `ollamacode.apiKey` (if your server uses auth). See `editors/vscode/README.md` for details. **Streaming:** Use **OllamaCode: Chat (streaming)** or **OllamaCode: Chat with selection (streaming)** for live token-by-token output in the output channel (POST /chat/stream, SSE).
+
 ### Streaming: POST /chat/stream
 
 For live token-by-token output, **POST** to `http://localhost:8000/chat/stream` with the same JSON body as `/chat`. The response is **Server-Sent Events** (SSE):
@@ -56,7 +66,16 @@ For live token-by-token output, **POST** to `http://localhost:8000/chat/stream` 
 
 Minimal examples to call the HTTP API and (optionally) apply edits. Start `ollamacode serve` from the project root first.
 
-### Neovim (Lua)
+### Neovim plugin
+
+A small **Neovim plugin** is included in **`editors/neovim`**. It provides:
+
+- **`:OllamaCode [prompt]`** — chat with current file as context; reply in a floating window; optional apply edits.
+- **`:OllamaCodeSelection [prompt]`** — same with the current selection as context.
+
+**Install:** Add the `editors/neovim` directory to your runtimepath (e.g. with Packer: `use { path = "/path/to/OllamaCode/editors/neovim", as = "ollamacode.nvim" }`). Config: `require("ollamacode").setup({ base_url = "http://127.0.0.1:8000", api_key = "" })`. See `editors/neovim/README.md`. Requires `curl` and Neovim 0.8+.
+
+### Neovim (Lua snippet, no plugin)
 
 Send selection or buffer to OllamaCode and show the reply in a split. Requires `ollamacode serve` running.
 

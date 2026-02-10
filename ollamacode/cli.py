@@ -22,6 +22,8 @@ from .agent import (
 )
 from .config import find_config_file, load_config, merge_config_with_env
 from .context import expand_at_refs, get_branch_context, prepend_file_context
+from .skills import load_skills_text
+from .templates import load_prompt_template
 from .edits import apply_edits, format_edits_diff, parse_edits
 from .mcp_client import McpConnection, connect_mcp_servers, connect_mcp_stdio
 
@@ -192,7 +194,20 @@ def _parse_args() -> argparse.Namespace:
         "query",
         nargs="?",
         default=None,
-        help="Single query to run, 'serve' for HTTP API, 'protocol' for stdio JSON-RPC, or 'convert-mcp' to convert MCP config.",
+        help="Single query to run, 'serve' for HTTP API, 'protocol' for stdio JSON-RPC, 'health' to check Ollama, 'init' to scaffold, 'tutorial' for interactive tutorial, or 'convert-mcp' to convert MCP config.",
+    )
+    p.add_argument(
+        "--template",
+        "-t",
+        default=None,
+        metavar="NAME",
+        help="For 'init': template name (e.g. python-cli, python-lib). Use 'init' without --template to list.",
+    )
+    p.add_argument(
+        "--dest",
+        default=None,
+        metavar="DIR",
+        help="For 'init': destination directory (default: current directory).",
     )
     p.add_argument(
         "convert_mcp_input",
@@ -367,11 +382,17 @@ async def _run(
     apply_edits_dry_run: bool = False,
     linter_command: str | None = None,
     test_command: str | None = None,
+    docs_command: str | None = None,
+    profile_command: str | None = None,
     semantic_codebase_hint: bool = True,
     auto_summarize_after_turns: int = 0,
     branch_context: bool = False,
     branch_context_base: str = "main",
     pr_description_file: str | None = None,
+    use_skills: bool = True,
+    prompt_template: str | None = None,
+    inject_recent_context: bool = True,
+    recent_context_max_files: int = 10,
 ) -> None:
     use_mcp = bool(mcp_servers)
 
@@ -421,7 +442,15 @@ async def _run(
                         workspace_root=workspace_root,
                         linter_command=linter_command,
                         test_command=test_command,
+                        docs_command=docs_command,
+                        profile_command=profile_command,
                         show_semantic_hint=show_semantic_hint,
+                        use_skills=use_skills,
+                        prompt_template=prompt_template,
+                        inject_recent_context=inject_recent_context,
+                        recent_context_max_files=recent_context_max_files,
+                        branch_context=branch_context,
+                        branch_context_base=branch_context_base,
                     )
             else:
                 await run_tui(
@@ -430,13 +459,21 @@ async def _run(
                     system_extra,
                     quiet=quiet,
                     max_tool_rounds=max_tool_rounds,
+                    use_skills=use_skills,
+                    prompt_template=prompt_template,
                     max_messages=max_messages,
                     max_tool_result_chars=max_tool_result_chars,
                     timing=timing,
                     workspace_root=workspace_root,
                     linter_command=linter_command,
                     test_command=test_command,
+                    docs_command=docs_command,
+                    profile_command=profile_command,
                     show_semantic_hint=False,
+                    inject_recent_context=inject_recent_context,
+                    recent_context_max_files=recent_context_max_files,
+                    branch_context=branch_context,
+                    branch_context_base=branch_context_base,
                 )
         except ImportError as e:
             print(
@@ -475,6 +512,32 @@ async def _run(
                 + "\n\n--- Branch/PR context (what we're working on) ---"
                 + branch_ctx
             )
+    if use_skills:
+        skills_text = load_skills_text(workspace_root)
+        if skills_text:
+            _SYSTEM = (
+                _SYSTEM
+                + "\n\n--- Skills (saved instructions & memory) ---\n\n"
+                + skills_text
+            )
+    if prompt_template:
+        template_text = load_prompt_template(prompt_template, workspace_root)
+        if template_text:
+            _SYSTEM = _SYSTEM + "\n\n--- Prompt template ---\n\n" + template_text
+    if inject_recent_context:
+        from .state import get_state, format_recent_context
+        from .context import get_branch_summary_one_line
+
+        state = get_state()
+        block = format_recent_context(state, max_files=recent_context_max_files)
+        if branch_context:
+            branch_line = get_branch_summary_one_line(
+                workspace_root, branch_context_base
+            )
+            if branch_line:
+                block = (block + "\n\n" + branch_line) if block else branch_line
+        if block:
+            _SYSTEM = _SYSTEM + "\n\n--- Recent context ---\n\n" + block
 
     async def _do_chat(
         conn: McpConnection | None,
@@ -814,6 +877,25 @@ def main() -> None:
             print(f"Error: {e}", file=sys.stderr)
             raise SystemExit(1) from e
         return
+    if args.query == "init":
+        from .init_templates import run_init
+
+        dest = getattr(args, "dest", None) or os.getcwd()
+        template = getattr(args, "template", None)
+        msg = run_init(template, dest)
+        print(msg, file=sys.stderr if template else sys.stdout)
+        return
+    if args.query == "tutorial":
+        from .tutorial import run_tutorial
+
+        run_tutorial()
+        return
+    if args.query == "health":
+        from .health import check_ollama
+
+        ok, msg = check_ollama()
+        print(msg, file=sys.stderr)
+        raise SystemExit(0 if ok else 1)
     if args.query == "serve":
         try:
             from .serve import run_serve
@@ -890,6 +972,10 @@ def main() -> None:
                     max_messages=max_messages,
                     max_tool_result_chars=max_tool_result_chars,
                     workspace_root=workspace_root,
+                    use_skills=merged.get("use_skills", True),
+                    prompt_template=merged.get("prompt_template"),
+                    inject_recent_context=merged.get("inject_recent_context", True),
+                    recent_context_max_files=merged.get("recent_context_max_files", 10),
                 )
 
         asyncio.run(_protocol_main())
@@ -960,11 +1046,17 @@ def main() -> None:
                 apply_edits_dry_run=getattr(args, "apply_edits_dry_run", False),
                 linter_command=merged.get("linter_command"),
                 test_command=merged.get("test_command"),
+                docs_command=merged.get("docs_command", "mkdocs build"),
+                profile_command=merged.get("profile_command"),
                 semantic_codebase_hint=merged.get("semantic_codebase_hint", True),
                 auto_summarize_after_turns=merged.get("auto_summarize_after_turns", 0),
                 branch_context=merged.get("branch_context", False),
                 branch_context_base=merged.get("branch_context_base", "main"),
                 pr_description_file=merged.get("pr_description_file"),
+                use_skills=merged.get("use_skills", True),
+                prompt_template=merged.get("prompt_template"),
+                inject_recent_context=merged.get("inject_recent_context", True),
+                recent_context_max_files=merged.get("recent_context_max_files", 10),
             )
         )
     except KeyboardInterrupt:

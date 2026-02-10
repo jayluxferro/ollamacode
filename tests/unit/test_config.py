@@ -50,6 +50,8 @@ def test_merge_config_with_env_empty():
     assert out["mcp_servers"] == [
         {"type": "stdio", "command": "python", "args": ["server.py"]}
     ]
+    assert out["inject_recent_context"] is True
+    assert out["recent_context_max_files"] == 10
 
 
 def test_merge_config_with_env_config_wins_when_env_empty():
@@ -100,14 +102,16 @@ def test_merge_config_deduplicate_builtin_when_in_custom():
     out = merge_config_with_env(
         config, model_env=None, mcp_args_env=None, system_extra_env=None
     )
-    # Built-in list has 5: fs, terminal, codebase, tools, git. We skip fs because it's in custom.
-    assert len(out["mcp_servers"]) == 4 + 2  # 4 built-in (no fs) + 2 custom
+    # Built-in list has 7: fs, terminal, codebase, tools, git, skills, state. We skip fs because it's in custom.
+    assert len(out["mcp_servers"]) == 6 + 2  # 6 built-in (no fs) + 2 custom
     mods = [s.get("args", [])[-1] if s.get("args") else "" for s in out["mcp_servers"]]
-    # First 4 should be terminal, codebase, tools, git (no fs)
+    # First 5 should be terminal, codebase, tools, git, skills (no fs)
     assert "ollamacode.servers.terminal_mcp" in mods
     assert "ollamacode.servers.codebase_mcp" in mods
     assert "ollamacode.servers.tools_mcp" in mods
     assert "ollamacode.servers.git_mcp" in mods
+    assert "ollamacode.servers.skills_mcp" in mods
+    assert "ollamacode.servers.state_mcp" in mods
     assert mods.count("ollamacode.servers.fs_mcp") == 1  # only from custom
     assert "examples/demo_server.py" in mods
 
@@ -127,13 +131,17 @@ def test_merge_config_empty_config_no_env_uses_default_servers():
         {}, model_env=None, mcp_args_env=None, system_extra_env=None
     )
     assert out["mcp_servers"] == DEFAULT_MCP_SERVERS
-    assert len(out["mcp_servers"]) == 5
+    assert (
+        len(out["mcp_servers"]) == 7
+    )  # fs, terminal, codebase, tools, git, skills, state
     mods = [s["args"][1] for s in out["mcp_servers"] if s["args"]]
     assert "ollamacode.servers.fs_mcp" in mods
     assert "ollamacode.servers.terminal_mcp" in mods
     assert "ollamacode.servers.codebase_mcp" in mods
     assert "ollamacode.servers.tools_mcp" in mods
     assert "ollamacode.servers.git_mcp" in mods
+    assert "ollamacode.servers.skills_mcp" in mods
+    assert "ollamacode.servers.state_mcp" in mods
 
 
 def test_merge_config_explicit_empty_mcp_servers():

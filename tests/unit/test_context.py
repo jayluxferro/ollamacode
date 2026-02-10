@@ -1,6 +1,11 @@
 """Unit tests for @-style context expansion."""
 
-from ollamacode.context import expand_at_refs, get_branch_context, prepend_file_context
+from ollamacode.context import (
+    expand_at_refs,
+    get_branch_context,
+    get_branch_summary_one_line,
+    prepend_file_context,
+)
 
 
 def test_expand_at_refs_no_refs():
@@ -63,3 +68,8 @@ def test_get_branch_context_no_git(tmp_path):
     """get_branch_context returns '' when not a git repo."""
     out = get_branch_context(tmp_path, "main")
     assert out == ""
+
+
+def test_get_branch_summary_one_line_no_git(tmp_path):
+    """get_branch_summary_one_line returns '' when not a git repo."""
+    assert get_branch_summary_one_line(tmp_path, "main") == ""

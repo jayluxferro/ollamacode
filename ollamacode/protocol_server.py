@@ -25,16 +25,46 @@ from .agent import (
 from .context import prepend_file_context
 from .edits import apply_edits, parse_edits
 from .mcp_client import McpConnection
+from .completions import get_completion
+from .diagnostics import get_diagnostics
 from .protocol import normalize_chat_body
+from .skills import load_skills_text
+from .state import get_state, format_recent_context
+from .templates import load_prompt_template
 
 
-def _system_prompt(system_extra: str) -> str:
+def _system_prompt(
+    system_extra: str,
+    workspace_root: str | None = None,
+    use_skills: bool = True,
+    prompt_template: str | None = None,
+    inject_recent_context: bool = True,
+    recent_context_max_files: int = 10,
+) -> str:
     base = (
         "You are a coding assistant with full access to the workspace. You are given a list of available tools with their names "
         "and descriptions—use whichever tools fit the task. When the user asks you to run something, check something, or change "
         "something, use the appropriate tool and report the result."
     )
-    return base + ("\n\n" + system_extra) if system_extra else base
+    out = base + ("\n\n" + system_extra) if system_extra else base
+    if use_skills and workspace_root:
+        skills_text = load_skills_text(workspace_root)
+        if skills_text:
+            out = (
+                out
+                + "\n\n--- Skills (saved instructions & memory) ---\n\n"
+                + skills_text
+            )
+    if prompt_template and workspace_root:
+        template_text = load_prompt_template(prompt_template, workspace_root)
+        if template_text:
+            out = out + "\n\n--- Prompt template ---\n\n" + template_text
+    if inject_recent_context:
+        state = get_state()
+        block = format_recent_context(state, max_files=recent_context_max_files)
+        if block:
+            out = out + "\n\n--- Recent context ---\n\n" + block
+    return out
 
 
 async def _handle_chat(
@@ -45,6 +75,10 @@ async def _handle_chat(
     max_messages: int,
     max_tool_result_chars: int,
     workspace_root: str,
+    use_skills: bool = True,
+    prompt_template: str | None = None,
+    inject_recent_context: bool = True,
+    recent_context_max_files: int = 10,
 ) -> dict[str, Any]:
     """Handle chat params; return { content, edits?, error? }."""
     message, file_path, lines_spec = normalize_chat_body(params)
@@ -55,7 +89,14 @@ async def _handle_chat(
             message, str(file_path), workspace_root, lines_spec
         )
     use_model = params.get("model") or model
-    system = _system_prompt(system_extra)
+    system = _system_prompt(
+        system_extra,
+        workspace_root,
+        use_skills,
+        prompt_template,
+        inject_recent_context=inject_recent_context,
+        recent_context_max_files=recent_context_max_files,
+    )
     try:
         if session is not None:
             out = await run_agent_loop(
@@ -86,6 +127,10 @@ async def _handle_chat_stream(
     max_tool_result_chars: int,
     workspace_root: str,
     req_id: Any,
+    use_skills: bool = True,
+    prompt_template: str | None = None,
+    inject_recent_context: bool = True,
+    recent_context_max_files: int = 10,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream chat; yield JSON-RPC response objects: N× { result: { type: 'chunk', content } }, then { result: { type: 'done', content, edits? } } or error."""
     message, file_path, lines_spec = normalize_chat_body(params)
@@ -101,7 +146,14 @@ async def _handle_chat_stream(
             message, str(file_path), workspace_root, lines_spec
         )
     use_model = params.get("model") or model
-    system = _system_prompt(system_extra)
+    system = _system_prompt(
+        system_extra,
+        workspace_root,
+        use_skills,
+        prompt_template,
+        inject_recent_context=inject_recent_context,
+        recent_context_max_files=recent_context_max_files,
+    )
     try:
         if session is not None:
             stream = run_agent_loop_stream(
@@ -182,6 +234,10 @@ async def _handle_request(
     max_messages: int,
     max_tool_result_chars: int,
     workspace_root: str,
+    use_skills: bool = True,
+    prompt_template: str | None = None,
+    inject_recent_context: bool = True,
+    recent_context_max_files: int = 10,
 ) -> dict[str, Any] | AsyncIterator[dict[str, Any]]:
     """Dispatch JSON-RPC request; return one response dict or an async iterator of response dicts (for chatStream)."""
     req_id = request.get("id")
@@ -199,6 +255,10 @@ async def _handle_request(
             max_messages,
             max_tool_result_chars,
             workspace_root,
+            use_skills=use_skills,
+            prompt_template=prompt_template,
+            inject_recent_context=inject_recent_context,
+            recent_context_max_files=recent_context_max_files,
         )
         return {"jsonrpc": "2.0", "id": req_id, "result": result}
     if method == "ollamacode/chatStream":
@@ -211,10 +271,34 @@ async def _handle_request(
             max_tool_result_chars,
             workspace_root,
             req_id,
+            use_skills=use_skills,
+            prompt_template=prompt_template,
+            inject_recent_context=inject_recent_context,
+            recent_context_max_files=recent_context_max_files,
         )
     if method == "ollamacode/applyEdits":
         result = _handle_apply_edits(params, workspace_root)
         return {"jsonrpc": "2.0", "id": req_id, "result": result}
+    if method == "ollamacode/diagnostics":
+        root = (params.get("workspaceRoot") or workspace_root).strip() or workspace_root
+        path = params.get("path")
+        linter = (
+            params.get("linterCommand") or "ruff check ."
+        ).strip() or "ruff check ."
+        diag = get_diagnostics(root, path=path, linter_command=linter)
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"diagnostics": diag}}
+    if method == "ollamacode/complete":
+        prefix = (params.get("prefix") or "").strip()
+        use_model = params.get("model") or model
+        loop = asyncio.get_event_loop()
+        completion = await loop.run_in_executor(
+            None, lambda: get_completion(prefix, use_model)
+        )
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"completions": [completion] if completion else []},
+        }
 
     return {
         "jsonrpc": "2.0",
@@ -230,6 +314,10 @@ async def run_protocol_stdio(
     max_messages: int = 0,
     max_tool_result_chars: int = 0,
     workspace_root: str | None = None,
+    use_skills: bool = True,
+    prompt_template: str | None = None,
+    inject_recent_context: bool = True,
+    recent_context_max_files: int = 10,
 ) -> None:
     """
     Run the JSON-RPC protocol over stdio. Reads one JSON-RPC request per line from stdin,
@@ -273,6 +361,10 @@ async def run_protocol_stdio(
                 max_messages,
                 max_tool_result_chars,
                 root,
+                use_skills=use_skills,
+                prompt_template=prompt_template,
+                inject_recent_context=inject_recent_context,
+                recent_context_max_files=recent_context_max_files,
             )
             if hasattr(response, "__aiter__") and not isinstance(response, dict):
                 async for part in response:

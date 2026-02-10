@@ -115,9 +115,55 @@ def _log_tool_call(name: str, arguments: dict[str, Any]) -> None:
         print(f"  {line}", file=sys.stderr, flush=True)
 
 
+def _format_tool_error_hint(content: str) -> str | None:
+    """If content matches common failure patterns, return a short 'What failed' + 'Next step' hint."""
+    if not content or len(content) > 2000:
+        return None
+    c = content.lower().strip()
+    if (
+        "filenotfounderror" in c
+        or "no such file" in c
+        or ("not found" in c and "no module" not in c)
+    ):
+        return "What failed: File or path not found.\nNext step: Check path exists and is readable (use list_dir to inspect)."
+    if "permission denied" in c or "eacces" in c or "eperm" in c:
+        return "What failed: Permission denied.\nNext step: Check file/dir permissions or run from a directory you can write to."
+    if "timeout" in c or "timed out" in c:
+        return "What failed: Command or operation timed out.\nNext step: Retry or use a longer timeout / smaller input."
+    if "command not found" in c or (
+        "not found" in c and ("exec" in c or "path" in c or "binary" in c)
+    ):
+        return "What failed: Command or executable not found.\nNext step: Install the tool or use full path (e.g. uv run pytest)."
+    if "syntaxerror" in c or "syntax error" in c:
+        return "What failed: Syntax error in code or command.\nNext step: Fix the reported line/expression and re-run."
+    if "modulenotfounderror" in c or "no module named" in c or "import error" in c:
+        return "What failed: Python module not found.\nNext step: Install dependency (e.g. pip install <module> or uv sync)."
+    if "indentationerror" in c or "indentation error" in c:
+        return "What failed: Indentation error.\nNext step: Fix tabs/spaces and alignment on the reported line."
+    if "typeerror" in c and ("positional" in c or "argument" in c or "required" in c):
+        return "What failed: Wrong number or type of arguments.\nNext step: Check function signature and call site."
+    if "connection refused" in c or "econnrefused" in c:
+        return "What failed: Connection refused (service not listening or not reachable).\nNext step: Start the service or check host/port."
+    if "address already in use" in c or "eaddrinuse" in c:
+        return "What failed: Port already in use.\nNext step: Use another port or stop the process using it."
+    if "out of memory" in c or "memoryerror" in c or "killed" in c and "signal" in c:
+        return "What failed: Out of memory or process killed.\nNext step: Reduce input size or increase available memory."
+    if "json.decoder" in c or "json decode" in c or "expecting value" in c:
+        return "What failed: Invalid JSON.\nNext step: Fix the JSON (quotes, commas, brackets) at the reported position."
+    if "is a directory" in c or "eisdir" in c:
+        return "What failed: Path is a directory but a file was expected.\nNext step: Use a file path or list_dir to pick a file."
+    return None
+
+
 def _log_tool_result(name: str, content: str, is_error: bool = False) -> None:
-    """Print tool result to stderr (truncated)."""
+    """Print tool result to stderr (truncated). On error, prepend a short 'what failed + next step' if recognized."""
     label = "Error" if is_error else "Result"
+    if is_error:
+        hint = _format_tool_error_hint(content)
+        if hint:
+            print(f"  [{name}] {label}:", file=sys.stderr, flush=True)
+            for line in hint.splitlines():
+                print(f"    {line}", file=sys.stderr, flush=True)
     max_len = 1200
     if len(content) > max_len:
         content = content[:max_len] + "\n  ... (truncated)"

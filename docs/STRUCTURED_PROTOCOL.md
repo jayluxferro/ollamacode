@@ -99,6 +99,8 @@ ollamacode protocol
   - `"done"` — `result.content` is the full reply, `result.edits?` the parsed edits (stream complete).
   - `"error"` — `result.error` is the error message (stream complete).
 - **`ollamacode/applyEdits`** — Params: `edits` (array), `workspaceRoot?`. Result: `{ "applied": number, "error"?: string }`.
+- **`ollamacode/diagnostics`** — Params: `workspaceRoot?`, `path?` (file to lint), `linterCommand?` (default `ruff check .`). Result: `{ "diagnostics": array }` where each item is LSP-like: `{ "path", "range": { "start": { "line", "character" }, "end" }, "message", "severity" }`.
+- **`ollamacode/complete`** — Params: `prefix` (text to complete), `model?`. Result: `{ "completions": string[] }` (inline completion suggestions).
 
 Example request (single line to stdin):
 
@@ -114,12 +116,20 @@ Example response:
 
 ---
 
-## 6. Summary
+## 6. HTTP: diagnostics and completions
+
+- **POST /diagnostics** — Body: `{ "workspaceRoot"?, "path"?, "linterCommand"? }`. Response: `{ "diagnostics": [ { "path", "range", "message", "severity" }, ... ] }` (LSP-like; for editor squiggles).
+- **POST /complete** — Body: `{ "prefix", "model"? }`. Response: `{ "completions": [ string ] }` (inline/ghost-text suggestion).
+
+---
+
+## 7. Summary
 
 - **Chat-with-selection**: send `message` plus `file`+`lines` or `selection`; get `content` and optional `edits`.
 - **Streaming**: use `POST /chat/stream` (HTTP only) with the same body; consume SSE events.
 - **Apply-edits**: send `POST /apply-edits` (HTTP) or `ollamacode/applyEdits` (stdio) with `edits` (and optional `workspaceRoot`).
+- **Diagnostics**: send `POST /diagnostics` (HTTP) or `ollamacode/diagnostics` (stdio) for linter results; **Completions**: `POST /complete` or `ollamacode/complete` for inline completion.
 
 **HTTP**: `ollamacode serve` (see README). Optional auth: set `serve.api_key` in config and send `Authorization: Bearer <key>` or `X-API-Key: <key>`.
 
-**Stdio**: `ollamacode protocol` for JSON-RPC (one request per line). Use `ollamacode/chatStream` for streaming; multiple response lines per request.
+**Stdio**: `ollamacode protocol` for JSON-RPC (one request per line). Use `ollamacode/chatStream` for streaming; multiple response lines per request. Use `ollamacode/diagnostics` and `ollamacode/complete` for IDE-style diagnostics and inline completions.

@@ -13,6 +13,45 @@ import subprocess
 from pathlib import Path
 
 
+def get_branch_summary_one_line(
+    workspace_root: str | Path,
+    base_branch: str = "main",
+) -> str:
+    """
+    Return a one-line summary for the system prompt: current branch and last commit.
+    Returns "" if not a git repo or on error.
+    """
+    root = Path(workspace_root).resolve()
+    parts: list[str] = []
+    try:
+        branch_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if branch_result.returncode == 0 and branch_result.stdout.strip():
+            parts.append("Branch: " + branch_result.stdout.strip())
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        pass
+    try:
+        log_result = subprocess.run(
+            ["git", "log", "-1", "--oneline", "--no-decorate"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if log_result.returncode == 0 and log_result.stdout.strip():
+            parts.append("Last commit: " + log_result.stdout.strip())
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        pass
+    if not parts:
+        return ""
+    return " ".join(parts)
+
+
 def get_branch_context(
     workspace_root: str | Path,
     base_branch: str = "main",

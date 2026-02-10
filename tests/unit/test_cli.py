@@ -126,13 +126,13 @@ def test_resolve_mcp_servers_returns_using_builtin(tmp_path):
     )
     assert use_mcp is True
     assert using_builtin is True
-    assert len(servers) == 5
+    assert len(servers) == 7  # fs, terminal, codebase, tools, git, skills, state
     # With config file -> built-in servers prepended by default (include_builtin_servers True)
     cfg = tmp_path / "ollamacode.yaml"
     cfg.write_text("mcp_servers:\n  - type: stdio\n    command: npx\n    args: [mcp]\n")
     servers2, use_mcp2, using_builtin2 = _resolve_mcp_servers(str(cfg), "python", [])
     assert use_mcp2 is True
     assert using_builtin2 is False
-    # Default: built-in (5) + custom (1) = 6; custom server is last
-    assert len(servers2) == 6
+    # Default: built-in (7) + custom (1) = 8; custom server is last
+    assert len(servers2) == 8
     assert servers2[-1]["command"] == "npx"

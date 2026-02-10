@@ -40,6 +40,16 @@ DEFAULT_MCP_SERVERS: list[dict[str, Any]] = [
         "command": sys.executable,
         "args": ["-m", "ollamacode.servers.git_mcp"],
     },
+    {
+        "type": "stdio",
+        "command": sys.executable,
+        "args": ["-m", "ollamacode.servers.skills_mcp"],
+    },
+    {
+        "type": "stdio",
+        "command": sys.executable,
+        "args": ["-m", "ollamacode.servers.state_mcp"],
+    },
 ]
 
 try:
@@ -156,11 +166,20 @@ def merge_config_with_env(
     out["rules_file"] = config.get("rules_file")
     out["linter_command"] = config.get("linter_command", "ruff check .")
     out["test_command"] = config.get("test_command", "pytest")
+    out["docs_command"] = config.get("docs_command", "mkdocs build")
+    out["profile_command"] = config.get(
+        "profile_command",
+        "python -m cProfile -s cumtime -m pytest tests/ -q --no-header 2>&1 | head -40",
+    )
     out["semantic_codebase_hint"] = config.get("semantic_codebase_hint", True)
     out["branch_context"] = config.get("branch_context", False)
     out["branch_context_base"] = config.get("branch_context_base", "main")
     out["pr_description_file"] = config.get("pr_description_file")
     out["serve"] = config.get("serve")
+    out["use_skills"] = config.get("use_skills", True)
+    out["prompt_template"] = config.get("prompt_template")
+    out["inject_recent_context"] = config.get("inject_recent_context", True)
+    out["recent_context_max_files"] = config.get("recent_context_max_files", 10)
 
     # Resolve MCP server configuration
     if mcp_args_env:

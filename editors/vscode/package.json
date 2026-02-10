@@ -1,0 +1,59 @@
+{
+  "name": "ollamacode",
+  "displayName": "OllamaCode",
+  "description": "Chat with OllamaCode (ollamacode serve) and apply edits from the assistant.",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.74.0" },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "ollamacode.chat",
+        "title": "OllamaCode: Chat"
+      },
+      {
+        "command": "ollamacode.chatWithSelection",
+        "title": "OllamaCode: Chat with selection"
+      },
+      {
+        "command": "ollamacode.chatStream",
+        "title": "OllamaCode: Chat (streaming)"
+      },
+      {
+        "command": "ollamacode.chatStreamWithSelection",
+        "title": "OllamaCode: Chat with selection (streaming)"
+      },
+      {
+        "command": "ollamacode.applyEdits",
+        "title": "OllamaCode: Apply edits from clipboard/response"
+      }
+    ],
+    "configuration": {
+      "title": "OllamaCode",
+      "properties": {
+        "ollamacode.baseUrl": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "Base URL of ollamacode serve (e.g. http://localhost:8000)."
+        },
+        "ollamacode.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Optional API key. If set in server config, set here and send as Authorization: Bearer <key> or X-API-Key."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.74.0",
+    "typescript": "^5.0.0"
+  }
+}
