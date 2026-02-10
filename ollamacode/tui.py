@@ -32,9 +32,7 @@ try:
     import readline  # noqa: F401  # enables arrow keys for input() on Unix/macOS
 except ImportError:
     try:
-        from prompt_toolkit import (
-            prompt as _tui_prompt_fn,
-        )  # Windows: use pt for arrow keys
+        from prompt_toolkit import prompt as _tui_prompt_fn  # pyright: ignore[reportMissingImports]
     except ImportError:
         pass
 
