@@ -53,6 +53,20 @@ jobs:
       - name: Coverage
         run: uv run pytest tests/ -v -m "not integration" --cov=ollamacode --cov-report=term-missing --cov-fail-under=30
 
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      - name: Set up Python
+        run: uv python install 3.11
+      - name: Install dependencies
+        run: uv sync --extra docs
+      - name: Build docs
+        run: uv run mkdocs build --strict
+
   integration:
     name: Integration (Ollama)
     runs-on: ubuntu-latest
