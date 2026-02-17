@@ -18,4 +18,10 @@ plugins:
 
 nav:
   - Home: index.md
+  - Wiki: WIKI.md
+  - MCP Servers: MCP_SERVERS.md
+  - Structured Protocol: STRUCTURED_PROTOCOL.md
+  - Other Editors: OTHER_EDITORS.md
+  - RLM: RLM.md
+  - Toolchain Registry: TOOLCHAIN_REGISTRY.md
   - API: api.md

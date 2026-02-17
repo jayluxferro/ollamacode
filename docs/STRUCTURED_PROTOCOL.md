@@ -85,6 +85,8 @@ Server-Sent Events; each event is `data: <JSON>\n\n` with one of:
 
 ---
 
+<a id="edit-format"></a>
+
 ## 3. Edit format
 
 Edits are extracted from model output (`<<EDITS>>` … `<<END>>`) and returned as an array of:

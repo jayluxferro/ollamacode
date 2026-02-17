@@ -30,6 +30,8 @@ mcp_servers:
 
 ---
 
+<a id="url-based-servers-sse--http"></a>
+
 ## 2. URL-based servers (SSE / HTTP)
 
 Some MCP servers are exposed over **HTTP** (SSE or Streamable HTTP) instead of stdio. You point OllamaCode at a **URL**; no `command` or `args` are used.
