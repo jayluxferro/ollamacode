@@ -1,6 +1,6 @@
-"""Unit tests for structured apply-edits (<<EDITS>> JSON)."""
+"""Unit tests for structured apply-edits (<<EDITS>> JSON), parse_reasoning, parse_review."""
 
-from ollamacode.edits import apply_edits, parse_edits
+from ollamacode.edits import apply_edits, parse_edits, parse_reasoning, parse_review
 
 
 def test_parse_edits_empty():
@@ -40,6 +40,43 @@ def test_apply_edits_search_replace(tmp_path):
     n = apply_edits(edits, tmp_path)
     assert n == 1
     assert (tmp_path / "f.py").read_text() == "a = 99\na = 2\n"
+
+
+def test_parse_reasoning_missing():
+    """parse_reasoning returns (None, text) when no block."""
+    out = parse_reasoning("just some text")
+    assert out[0] is None
+    assert out[1] == "just some text"
+
+
+def test_parse_reasoning_present():
+    """parse_reasoning extracts steps and conclusion."""
+    text = (
+        'Hi.\n<<REASONING>>\n{"steps": ["a", "b"], "conclusion": "done"}\n<<END>>\nBye.'
+    )
+    reasoning, rest = parse_reasoning(text)
+    assert reasoning is not None
+    assert reasoning["steps"] == ["a", "b"]
+    assert reasoning["conclusion"] == "done"
+    assert "Bye" in rest and "REASONING" not in rest
+
+
+def test_parse_review_missing():
+    """parse_review returns (None, text) when no block."""
+    out = parse_review("no review block")
+    assert out[0] is None
+    assert out[1] == "no review block"
+
+
+def test_parse_review_present():
+    """parse_review extracts suggestions."""
+    text = '<<REVIEW>>\n{"suggestions": [{"location": "f:1", "suggestion": "add type", "rationale": "clarity"}]}\n<<END>>'
+    sugs, rest = parse_review(text)
+    assert sugs is not None
+    assert len(sugs) == 1
+    assert sugs[0]["location"] == "f:1"
+    assert sugs[0]["suggestion"] == "add type"
+    assert sugs[0]["rationale"] == "clarity"
 
 
 def test_apply_edits_outside_workspace(tmp_path):

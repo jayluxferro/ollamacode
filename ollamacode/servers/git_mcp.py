@@ -114,6 +114,22 @@ def git_log(
 
 
 @mcp.tool()
+def git_log_grep(
+    pattern: str,
+    cwd: str | None = None,
+    max_count: int = 20,
+) -> str:
+    """Show commit log filtered by message pattern (e.g. 'ollamacode' for audit trail). pattern: grep pattern for commit message. max_count: max commits (default 20)."""
+    base = _base(cwd)
+    if not base.is_dir():
+        return f"Not a directory: {cwd or '.'}"
+    if not (pattern or pattern.strip()):
+        return "Pattern is required (e.g. 'ollamacode' to list commits with 'ollamacode' in the message)."
+    args = ["log", "--oneline", f"-{max_count}", f"--grep={pattern.strip()}"]
+    return _run_git(args, cwd=base)
+
+
+@mcp.tool()
 def git_log_graph(cwd: str | None = None, max_count: int = 30) -> str:
     """Show commit log as ASCII graph (branches and merges). max_count: max commits (default 30)."""
     base = _base(cwd)

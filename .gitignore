@@ -12,6 +12,7 @@ site/
 .vscode-test/
 .ollamacode/embeddings.json
 git-push
+demo/
 
 # VS Code extension (editors/vscode)
 editors/vscode/node_modules/

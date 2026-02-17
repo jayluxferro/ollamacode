@@ -95,3 +95,33 @@ def add_tool_aliases_for_ollama(
                 )
                 break
     return result
+
+
+# Ollama's harmony parser sometimes exposes tool names as "functions::<name>"; register those so we get no "no reverse mapping" warning.
+HARMONY_FUNCTIONS_PREFIX = "functions::"
+
+
+def add_harmony_function_aliases(
+    ollama_tools: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    For each tool, add a synthetic entry with name "functions::<name>" so Ollama's
+    harmony parser has a reverse mapping and does not warn.
+    """
+    result = list(ollama_tools)
+    for t in ollama_tools:
+        fn = t.get("function") or {}
+        name = fn.get("name") or ""
+        if not name or name.startswith(HARMONY_FUNCTIONS_PREFIX):
+            continue
+        result.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": HARMONY_FUNCTIONS_PREFIX + name,
+                    "description": fn.get("description") or "",
+                    "parameters": fn.get("parameters") or {},
+                },
+            }
+        )
+    return result

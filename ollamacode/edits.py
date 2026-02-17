@@ -19,6 +19,87 @@ from typing import Any
 EDITS_START = "<<EDITS>>"
 EDITS_END = "<<END>>"
 
+REASONING_START = "<<REASONING>>"
+REASONING_END = "<<END>>"
+
+REVIEW_START = "<<REVIEW>>"
+REVIEW_END = "<<END>>"
+
+
+def parse_reasoning(response_text: str) -> tuple[dict[str, Any] | None, str]:
+    """
+    Extract <<REASONING>> ... <<END>> block; return (reasoning_dict, text_without_block).
+    reasoning_dict is { "steps": list[str], "conclusion": str } or None if not present.
+    """
+    start = response_text.find(REASONING_START)
+    if start == -1:
+        return (None, response_text)
+    after_start = (
+        response_text.index("\n", start)
+        if "\n" in response_text[start:]
+        else start + len(REASONING_START)
+    )
+    end_marker = response_text.find(REASONING_END, after_start)
+    if end_marker == -1:
+        return (None, response_text)
+    raw = response_text[after_start:end_marker].strip()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return (None, response_text)
+    if not isinstance(data, dict):
+        return (None, response_text)
+    steps = data.get("steps")
+    conclusion = data.get("conclusion")
+    if not isinstance(steps, list):
+        steps = []
+    steps = [str(s) for s in steps if s is not None]
+    conclusion = str(conclusion).strip() if conclusion is not None else ""
+    before = response_text[:start].strip()
+    after = response_text[end_marker + len(REASONING_END) :].strip()
+    rest = (before + "\n\n" + after).strip() if after else before
+    return ({"steps": steps, "conclusion": conclusion}, rest)
+
+
+def parse_review(response_text: str) -> tuple[list[dict[str, Any]] | None, str]:
+    """
+    Extract <<REVIEW>> ... <<END>> block; return (suggestions_list, text_without_block).
+    suggestions_list is [ {"location": str, "suggestion": str, "rationale": str}, ... ] or None.
+    """
+    start = response_text.find(REVIEW_START)
+    if start == -1:
+        return (None, response_text)
+    after_start = (
+        response_text.index("\n", start)
+        if "\n" in response_text[start:]
+        else start + len(REVIEW_START)
+    )
+    end_marker = response_text.find(REVIEW_END, after_start)
+    if end_marker == -1:
+        return (None, response_text)
+    raw = response_text[after_start:end_marker].strip()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return (None, response_text)
+    suggestions = data.get("suggestions") if isinstance(data, dict) else None
+    if not isinstance(suggestions, list):
+        return (None, response_text)
+    out: list[dict[str, Any]] = []
+    for s in suggestions:
+        if not isinstance(s, dict):
+            continue
+        loc = s.get("location") or s.get("file") or ""
+        sug = s.get("suggestion") or s.get("text") or ""
+        rat = s.get("rationale") or ""
+        out.append(
+            {"location": str(loc), "suggestion": str(sug), "rationale": str(rat)}
+        )
+    before = response_text[:start].strip()
+    after = response_text[end_marker + len(REVIEW_END) :].strip()
+    rest = (before + "\n\n" + after).strip() if after else before
+    return (out, rest)
+
 
 def parse_edits(response_text: str) -> list[dict[str, Any]]:
     """

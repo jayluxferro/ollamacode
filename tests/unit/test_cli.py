@@ -47,16 +47,21 @@ def test_parse_args_stream():
     assert args.stream is True
 
 
-def test_parse_args_tui():
-    """_parse_args accepts --tui."""
-    with patch("sys.argv", ["ollamacode", "--tui"]):
+def test_parse_args_python():
+    """_parse_args accepts --python for MCP interpreter override."""
+    with patch("sys.argv", ["ollamacode", "--python", "/usr/bin/python3"]):
         args = _parse_args()
-    assert args.tui is True
-    assert args.query is None
-    with patch("sys.argv", ["ollamacode", "--tui", "single query"]):
+    assert getattr(args, "python", None) == "/usr/bin/python3"
+    with patch("sys.argv", ["ollamacode"]):
         args = _parse_args()
-    assert args.tui is True
-    assert args.query == "single query"
+    assert getattr(args, "python", None) is None or getattr(args, "python", None) == ""
+
+
+def test_parse_args_verbose():
+    """_parse_args accepts --verbose."""
+    with patch("sys.argv", ["ollamacode", "--verbose"]):
+        args = _parse_args()
+    assert getattr(args, "verbose", False) is True
 
 
 def test_parse_args_env_model(monkeypatch):
@@ -126,13 +131,15 @@ def test_resolve_mcp_servers_returns_using_builtin(tmp_path):
     )
     assert use_mcp is True
     assert using_builtin is True
-    assert len(servers) == 7  # fs, terminal, codebase, tools, git, skills, state
+    from ollamacode.config import DEFAULT_MCP_SERVERS
+
+    assert len(servers) == len(DEFAULT_MCP_SERVERS)
     # With config file -> built-in servers prepended by default (include_builtin_servers True)
     cfg = tmp_path / "ollamacode.yaml"
     cfg.write_text("mcp_servers:\n  - type: stdio\n    command: npx\n    args: [mcp]\n")
     servers2, use_mcp2, using_builtin2 = _resolve_mcp_servers(str(cfg), "python", [])
     assert use_mcp2 is True
     assert using_builtin2 is False
-    # Default: built-in (7) + custom (1) = 8; custom server is last
-    assert len(servers2) == 8
+    # Default: built-in + custom (1); custom server is last
+    assert len(servers2) == len(DEFAULT_MCP_SERVERS) + 1
     assert servers2[-1]["command"] == "npx"

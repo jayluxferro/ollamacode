@@ -20,6 +20,18 @@ Public Python API for OllamaCode.
         - mcp_tool_to_ollama
         - mcp_tools_to_ollama
 
+## Ollama client
+
+::: ollamacode.ollama_client
+    options:
+      show_root_heading: true
+      members:
+        - chat_async
+        - chat_sync
+        - chat_stream_sync
+        - is_ollama_template_error
+        - wrap_ollama_template_error
+
 ## MCP client
 
 ::: ollamacode.mcp_client
@@ -30,6 +42,9 @@ Public Python API for OllamaCode.
         - connect_mcp_servers
         - list_tools
         - call_tool
+        - get_tool_name
+        - get_registered_mcp_server_types
+        - MCP_SERVER_TYPES_ENTRY_POINT_GROUP
         - tool_result_to_content
         - McpConnection
 
@@ -41,6 +56,12 @@ Public Python API for OllamaCode.
       members:
         - load_config
         - merge_config_with_env
+        - get_resolved_config
+        - get_env_config_overrides
+        - ENV_CONFIG_SCHEMA
+        - validate_config
+        - ConfigValidationError
+        - find_config_file
         - _find_config_file
 
 ## CLI

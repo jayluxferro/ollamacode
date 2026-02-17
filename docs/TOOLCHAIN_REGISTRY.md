@@ -2,6 +2,18 @@
 
 Curated tools that work well with OllamaCode. The **built-in tools MCP** already provides:
 
+**Semantic versioning (Phase 4):** In `ollamacode.yaml` you can add `toolchain_version_checks` so `ollamacode health` verifies versions. Example:
+
+```yaml
+toolchain_version_checks:
+  - name: pytest
+    command: pytest --version
+    expect_contains: "7"
+  - name: ruff
+    command: ruff --version
+    expect_contains: "0.4"
+```
+
 - `run_linter` – run any linter/formatter command
 - `run_tests` – run any test command
 - `run_code_quality` – run ruff, black, isort, mypy (or custom list) and get one report
@@ -14,16 +26,16 @@ No extra MCP config is needed for these; they run in the workspace via `OLLAMACO
 
 ## Python
 
-| Tool | Purpose | Example command | Notes |
-|------|---------|-----------------|--------|
-| **ruff** | Lint + format check | `ruff check .` | Fast; use `run_linter` or default in `run_code_quality`. |
-| **black** | Format check | `black --check .` | Part of default `run_code_quality`. |
-| **isort** | Import sort check | `isort --check-only .` | Part of default `run_code_quality`. |
-| **mypy** | Type checking | `mypy .` | Part of default `run_code_quality`. |
-| **pytest** | Tests | `pytest tests/ -v` | Use `run_tests` or config `test_command`. |
-| **pytest-cov** | Coverage | `pytest --cov --cov-report=term-missing -q` | Use `run_coverage` for report + suggested tests. |
-| **bandit** | Security lint | `bandit -r . -ll` | Add to `run_code_quality` via custom commands. |
-| **safety** | Dependency vulns | `safety check` | Add to `run_code_quality` if desired. |
+| Tool | Purpose | Example command | Version (recommended) | Notes |
+|------|---------|-----------------|------------------------|--------|
+| **ruff** | Lint + format check | `ruff check .` | 0.4+ | Fast; use `run_linter` or default in `run_code_quality`. |
+| **black** | Format check | `black --check .` | 24.x | Part of default `run_code_quality`. |
+| **isort** | Import sort check | `isort --check-only .` | 5.x | Part of default `run_code_quality`. |
+| **mypy** | Type checking | `mypy .` | 1.x | Part of default `run_code_quality`. |
+| **pytest** | Tests | `pytest tests/ -v` | 7.x+ | Use `run_tests` or config `test_command`. |
+| **pytest-cov** | Coverage | `pytest --cov --cov-report=term-missing -q` | - | Use `run_coverage` for report + suggested tests. |
+| **bandit** | Security lint | `bandit -r . -ll` | - | Add to `run_code_quality` via custom commands. |
+| **safety** | Dependency vulns | `safety check` | - | Add to `run_code_quality` if desired. |
 
 ### Custom code quality commands
 

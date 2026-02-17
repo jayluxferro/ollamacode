@@ -3,13 +3,17 @@ MCP client wrapper: connect to one or more MCP servers and aggregate list_tools 
 
 Supports stdio, SSE, and Streamable HTTP transports. Single server via connect_mcp_stdio;
 multiple servers via connect_mcp_servers (ClientSessionGroup).
+
+Plugins: register additional MCP server types via entry point group ``ollamacode.mcp_server_types``.
+Each entry point name is the config ``type`` value (e.g. ``stdio``, ``sse``, ``streamable_http``);
+the entry point must be a callable ``(entry: dict) -> StdioServerParameters | SseServerParameters | StreamableHttpParameters``.
 """
 
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from typing import Any, AsyncIterator, Dict, List
+from typing import Any, Callable, AsyncIterator, Dict, List
 
 from mcp import ClientSession, ClientSessionGroup, StdioServerParameters
 from mcp.client.session_group import (
@@ -22,40 +26,90 @@ from mcp.types import CallToolResult, Implementation, ListToolsResult, TextConte
 
 McpConnection = ClientSession | ClientSessionGroup
 
+# Type of MCP server params returned by built-in and plugin builders.
+ServerParamsType = (
+    StdioServerParameters | SseServerParameters | StreamableHttpParameters
+)
+
+# Entry point group for plugins that add MCP server types.
+MCP_SERVER_TYPES_ENTRY_POINT_GROUP = "ollamacode.mcp_server_types"
+
+
+def _builtin_stdio_params(entry: Dict[str, Any]) -> StdioServerParameters:
+    return StdioServerParameters(
+        command=entry.get("command", "python"),
+        args=entry.get("args") or [],
+        env=entry.get("env"),
+    )
+
+
+def _builtin_sse_params(entry: Dict[str, Any]) -> SseServerParameters:
+    return SseServerParameters(
+        url=entry["url"],
+        headers=entry.get("headers"),
+        timeout=float(entry.get("timeout", 5)),
+        sse_read_timeout=float(entry.get("sse_read_timeout", 60 * 5)),
+    )
+
+
+def _builtin_streamable_http_params(
+    entry: Dict[str, Any],
+) -> StreamableHttpParameters:
+    timeout = entry.get("timeout", 30)
+    sse_read = entry.get("sse_read_timeout", 60 * 5)
+    return StreamableHttpParameters(
+        url=entry["url"],
+        headers=entry.get("headers"),
+        timeout=timedelta(seconds=timeout if isinstance(timeout, (int, float)) else 30),
+        sse_read_timeout=timedelta(
+            seconds=sse_read if isinstance(sse_read, (int, float)) else 60 * 5
+        ),
+        terminate_on_close=entry.get("terminate_on_close", True),
+    )
+
+
+_BUILTIN_SERVER_TYPES: Dict[str, Callable[[Dict[str, Any]], ServerParamsType]] = {
+    "stdio": _builtin_stdio_params,
+    "sse": _builtin_sse_params,
+    "streamable_http": _builtin_streamable_http_params,
+}
+
+
+def _get_server_type_registry() -> Dict[
+    str, Callable[[Dict[str, Any]], ServerParamsType]
+]:
+    """Merge built-in MCP server types with plugins from entry points."""
+    registry = dict(_BUILTIN_SERVER_TYPES)
+    try:
+        from importlib.metadata import entry_points
+
+        eps = entry_points(group=MCP_SERVER_TYPES_ENTRY_POINT_GROUP)
+    except Exception:
+        return registry
+    for ep in eps:
+        try:
+            registry[ep.name.lower()] = ep.load()
+        except Exception:
+            continue
+    return registry
+
+
+def get_registered_mcp_server_types() -> List[str]:
+    """Return sorted list of registered MCP server type names (built-in + plugins)."""
+    return sorted(_get_server_type_registry().keys())
+
 
 def _server_params_from_config(
     entry: Dict[str, Any],
 ) -> StdioServerParameters | SseServerParameters | StreamableHttpParameters:
-    """Build MCP ServerParameters from a config dict (type, command/args or url)."""
+    """Build MCP ServerParameters from a config dict (type, command/args or url). Uses built-in types and plugins from entry point group ollamacode.mcp_server_types."""
     kind = (entry.get("type") or "stdio").lower()
-    if kind == "stdio":
-        return StdioServerParameters(
-            command=entry.get("command", "python"),
-            args=entry.get("args") or [],
-            env=entry.get("env"),
+    registry = _get_server_type_registry()
+    if kind not in registry:
+        raise ValueError(
+            f"Unknown MCP server type: {kind!r}. Registered: {', '.join(sorted(registry.keys()))}"
         )
-    if kind == "sse":
-        return SseServerParameters(
-            url=entry["url"],
-            headers=entry.get("headers"),
-            timeout=float(entry.get("timeout", 5)),
-            sse_read_timeout=float(entry.get("sse_read_timeout", 60 * 5)),
-        )
-    if kind == "streamable_http":
-        timeout = entry.get("timeout", 30)
-        sse_read = entry.get("sse_read_timeout", 60 * 5)
-        return StreamableHttpParameters(
-            url=entry["url"],
-            headers=entry.get("headers"),
-            timeout=timedelta(
-                seconds=timeout if isinstance(timeout, (int, float)) else 30
-            ),
-            sse_read_timeout=timedelta(
-                seconds=sse_read if isinstance(sse_read, (int, float)) else 60 * 5
-            ),
-            terminate_on_close=entry.get("terminate_on_close", True),
-        )
-    raise ValueError(f"Unknown MCP server type: {kind}")
+    return registry[kind](entry)
 
 
 def _component_name_hook(name: str, server_info: Implementation) -> str:
@@ -112,18 +166,46 @@ TOOL_NAME_ALIASES: Dict[str, str] = {
     "container.exec": "run_command",
 }
 
+# Ollama's harmony parser may return tool names as "functions::<name>"; strip so we resolve to the real tool.
+HARMONY_FUNCTIONS_PREFIX = "functions::"
 
-def _resolve_tool_name(group: ClientSessionGroup, name: str) -> str:
-    """Resolve tool name: use as-is if present, else try alias, else match by suffix (model may return unprefixed name)."""
-    if name in group.tools:
+
+def _normalize_tool_name(name: str) -> str:
+    """Strip functions:: prefix and apply aliases. Does not check against any tool list."""
+    lookup = name
+    if lookup.startswith(HARMONY_FUNCTIONS_PREFIX):
+        lookup = lookup[len(HARMONY_FUNCTIONS_PREFIX) :]
+    return TOOL_NAME_ALIASES.get(lookup, lookup)
+
+
+def _resolve_tool_name_for_tools(tools: Dict[str, Any], name: str) -> str:
+    """Resolve name against a tools dict (exact, then normalized, then suffix). Raises KeyError if not found."""
+    if name in tools:
         return name
-    lookup = TOOL_NAME_ALIASES.get(name, name)
-    candidates = [k for k in group.tools if k == lookup or k.endswith("_" + lookup)]
+    lookup = _normalize_tool_name(name)
+    candidates = [k for k in tools if k == lookup or k.endswith("_" + lookup)]
     if len(candidates) == 1:
         return candidates[0]
     if len(candidates) > 1:
         return candidates[0]
-    raise KeyError(f"Unknown tool: {name!r}. Available: {list(group.tools.keys())}")
+    raise KeyError(f"Unknown tool: {name!r}. Available: {list(tools.keys())}")
+
+
+def get_tool_name(connection: McpConnection, name: str) -> str:
+    """
+    Resolve a tool name for use with this connection.
+    Strips ``functions::`` prefix and applies aliases (e.g. open_file -> read_file).
+    For a session group, also resolves to the prefixed name (e.g. read_file -> ollamacode-fs_read_file).
+    Raises KeyError if the name cannot be resolved (group only; single session returns normalized name).
+    """
+    if isinstance(connection, ClientSessionGroup):
+        return _resolve_tool_name_for_tools(connection.tools, name)
+    return _normalize_tool_name(name)
+
+
+def _resolve_tool_name(group: ClientSessionGroup, name: str) -> str:
+    """Resolve tool name for a group. Use get_tool_name(connection, name) in new code."""
+    return get_tool_name(group, name)
 
 
 def _unknown_tool_result(name: str, available: List[str]) -> CallToolResult:
@@ -143,15 +225,16 @@ async def call_tool(
     name: str,
     arguments: Dict[str, Any] | None = None,
 ) -> CallToolResult:
-    """Call a tool by name with optional arguments."""
+    """Call a tool by name with optional arguments. Uses get_tool_name for resolution."""
     args = arguments or {}
     if isinstance(connection, ClientSessionGroup):
         try:
-            resolved = _resolve_tool_name(connection, name)
+            resolved = get_tool_name(connection, name)
         except KeyError:
             return _unknown_tool_result(name, list(connection.tools.keys()))
         return await connection.call_tool(resolved, args)
-    return await connection.call_tool(name, args)
+    resolved = get_tool_name(connection, name)
+    return await connection.call_tool(resolved, args)
 
 
 def tool_result_to_content(result: CallToolResult) -> str:

@@ -128,23 +128,57 @@ def save_memory(key: str, value: str, workspace_root: str | None = None) -> str:
     return write_skill(MEMORY_SKILL_NAME, new_content, workspace_root)
 
 
-def load_skills_text(workspace_root: str | None = None) -> str:
-    """Load all skills as one block for system prompt. Each skill as a section with its name."""
+def _skill_keywords(text: str) -> list[str]:
+    """Parse keywords from skill content: frontmatter ---\\nkeywords: a, b\\n--- or first line # keywords: a, b."""
+    keywords: list[str] = []
+    lines = (text or "").strip().splitlines()
+    if not lines:
+        return []
+    # Frontmatter
+    if lines[0].strip() == "---":
+        i = 1
+        while i < len(lines) and lines[i].strip() != "---":
+            line = lines[i]
+            if line.strip().lower().startswith("keywords:"):
+                rest = line.split(":", 1)[1].strip()
+                keywords.extend(k.strip().lower() for k in rest.split(",") if k.strip())
+            i += 1
+        return keywords
+    # First line # keywords: a, b
+    first = lines[0].strip().lower()
+    if first.startswith("#") and "keywords:" in first:
+        rest = first.split("keywords:", 1)[1].strip()
+        keywords.extend(k.strip().lower() for k in rest.split(",") if k.strip())
+    return keywords
+
+
+def load_skills_text(
+    workspace_root: str | None = None,
+    query: str | None = None,
+) -> str:
+    """Load skills as one block for system prompt. If query is set, only include skills whose keywords match query (case-insensitive)."""
     parts: list[str] = []
+    query_lower = (query or "").lower()
     for d in get_skills_dirs(workspace_root):
         if not d.is_dir():
             continue
         for f in sorted(d.iterdir()):
-            if f.suffix == ".md" and f.is_file():
-                name = f.stem
-                if not _safe_skill_name(name):
+            if f.suffix != ".md" or not f.is_file():
+                continue
+            name = f.stem
+            if not _safe_skill_name(name):
+                continue
+            try:
+                text = f.read_text(encoding="utf-8").strip()
+                if not text:
                     continue
-                try:
-                    text = f.read_text(encoding="utf-8").strip()
-                    if text:
-                        parts.append(f"--- Skill: {name} ---\n\n{text}")
-                except OSError:
-                    continue
+                if query is not None and query_lower:
+                    kw = _skill_keywords(text)
+                    if kw and not any(k in query_lower for k in kw):
+                        continue
+                parts.append(f"--- Skill: {name} ---\n\n{text}")
+            except OSError:
+                continue
     if not parts:
         return ""
     return "\n\n".join(parts)

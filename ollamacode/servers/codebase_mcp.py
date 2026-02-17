@@ -1,10 +1,11 @@
 """
-Built-in codebase search MCP server: search_codebase, get_relevant_files.
+Built-in codebase search MCP server: search_codebase, get_relevant_files, glob, grep.
 
 Root directory: OLLAMACODE_FS_ROOT env var, or current working directory.
 """
 
 import os
+import re
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -104,6 +105,94 @@ def get_relevant_files(description: str, limit: int = 20) -> str:
     if not matches:
         return f"No files matching {description!r}."
     return "\n".join(matches)
+
+
+@mcp.tool()
+def glob(pattern: str, limit: int = 200) -> str:
+    """
+    List files in the workspace matching a glob pattern.
+    pattern: e.g. '*.py', '**/*.md', 'src/**/*.ts'. Paths relative to workspace root.
+    limit: max number of paths to return (default 200).
+    """
+    root = _root()
+    if not pattern.strip():
+        return "Provide a glob pattern (e.g. *.py, **/*.md)."
+    pat = pattern.strip().lstrip("/")
+    if pat.startswith("**/"):
+        pat = pat[3:]
+    results: list[str] = []
+    try:
+        for path in root.rglob(pat):
+            if not path.is_file():
+                continue
+            if any(skip in path.parts for skip in SKIP_DIRS):
+                continue
+            results.append(str(path.relative_to(root)))
+            if len(results) >= limit:
+                break
+    except Exception as e:
+        return f"Glob error: {e}"
+    if not results:
+        return f"No files matching {pattern!r}."
+    return "\n".join(sorted(results))
+
+
+@mcp.tool()
+def grep(
+    pattern: str,
+    path: str = ".",
+    context_lines: int = 0,
+    max_results: int = 100,
+) -> str:
+    """
+    Regex search in workspace files. Returns matching lines with optional context.
+    pattern: regex (Python re). path: directory or file to search (default '.'). context_lines: lines before/after each match (default 0). max_results: cap matches (default 100).
+    """
+    root = _root()
+    try:
+        re.compile(pattern)
+    except re.error as e:
+        return f"Invalid regex: {e}"
+    target = _resolve(path)
+    if target.is_file():
+        files = [target]
+    elif target.is_dir():
+        files = [
+            p
+            for p in target.rglob("*")
+            if p.is_file() and not any(s in p.parts for s in SKIP_DIRS)
+        ]
+    else:
+        return f"Path not found: {path}"
+    ctx = max(0, min(context_lines, 5))
+    results: list[str] = []
+    try:
+        for fp in files[:500]:
+            if len(results) >= max_results:
+                break
+            try:
+                if fp.stat().st_size > MAX_FILE_BYTES:
+                    continue
+                text = fp.read_text(encoding="utf-8", errors="replace")
+            except (OSError, UnicodeDecodeError):
+                continue
+            rel = str(fp.relative_to(root))
+            lines = text.splitlines()
+            for i, line in enumerate(lines):
+                if len(results) >= max_results:
+                    break
+                if re.search(pattern, line):
+                    start = max(0, i - ctx)
+                    end = min(len(lines), i + ctx + 1)
+                    block = "\n".join(
+                        f"  {start + j + 1}: {lines[j]}" for j in range(start, end)
+                    )
+                    results.append(f"{rel}:{i + 1}:\n{block}")
+    except Exception as e:
+        return f"Grep error: {e}"
+    if not results:
+        return f"No matches for {pattern!r}."
+    return "\n---\n".join(results)
 
 
 def main() -> None:

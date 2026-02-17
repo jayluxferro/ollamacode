@@ -90,6 +90,40 @@ def get_branch_context(
     return "\n\n" + "\n\n".join(parts)
 
 
+def load_ollama_md_context(workspace_root: str | Path) -> str:
+    """
+    Load user and project OLLAMA.md context for the system prompt.
+    User: ~/.ollamacode/OLLAMA.md (if present).
+    Project: .ollamacode/OLLAMA.md or OLLAMA.md in workspace_root (if present).
+    Returns a single string to append to the system prompt, or "" if none exist.
+    """
+    root = Path(workspace_root).resolve()
+    parts: list[str] = []
+    user_path = Path.home() / ".ollamacode" / "OLLAMA.md"
+    try:
+        if user_path.is_file():
+            parts.append(
+                "--- User context (OLLAMA.md) ---\n"
+                + user_path.read_text(encoding="utf-8", errors="replace").strip()
+            )
+    except OSError:
+        pass
+    for name in (".ollamacode/OLLAMA.md", "OLLAMA.md"):
+        proj_path = root / name
+        try:
+            if proj_path.is_file():
+                parts.append(
+                    "--- Project context (OLLAMA.md) ---\n"
+                    + proj_path.read_text(encoding="utf-8", errors="replace").strip()
+                )
+                break
+        except OSError:
+            pass
+    if not parts:
+        return ""
+    return "\n\n" + "\n\n".join(parts)
+
+
 def prepend_file_context(
     message: str,
     file_path: str,

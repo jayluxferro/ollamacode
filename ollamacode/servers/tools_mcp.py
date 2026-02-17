@@ -1,5 +1,5 @@
 """
-Built-in tools MCP server: run_linter, run_tests, run_code_quality, run_coverage.
+Built-in tools MCP server: run_linter, run_tests, run_code_quality, run_coverage, fetch_url.
 
 Lets the agent run linters (e.g. ruff, eslint) and test commands (e.g. pytest, npm test)
 without extra dependencies; uses subprocess.
@@ -8,6 +8,7 @@ Root/cwd: OLLAMACODE_FS_ROOT env var, or current working directory.
 
 import os
 import subprocess
+import urllib.request
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -235,6 +236,42 @@ def run_coverage(
         "uncovered_files": uncovered,
         "suggested_tests": suggested,
     }
+
+
+@mcp.tool()
+def fetch_url(
+    url: str,
+    timeout_seconds: int = 30,
+    max_chars: int = 100_000,
+) -> dict[str, Any]:
+    """
+    Fetch a URL with HTTP GET and return the response body as text.
+
+    url: Full URL to fetch (e.g. https://example.com/page).
+    timeout_seconds: Request timeout (default 30).
+    max_chars: Maximum characters to return from the body (default 100000).
+    """
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "OllamaCode/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            if len(body) > max_chars:
+                body = body[:max_chars] + "\n... [truncated]"
+            return {
+                "status_code": getattr(resp, "status", 200),
+                "body": body,
+                "error": None,
+            }
+    except urllib.error.HTTPError as e:
+        return {
+            "status_code": e.code,
+            "body": (
+                e.read().decode("utf-8", errors="replace")[:max_chars] if e.fp else ""
+            ),
+            "error": f"HTTP {e.code}: {e.reason}",
+        }
+    except Exception as e:
+        return {"status_code": -1, "body": "", "error": str(e)}
 
 
 def main() -> None:

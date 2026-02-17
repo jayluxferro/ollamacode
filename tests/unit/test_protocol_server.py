@@ -8,7 +8,9 @@ from ollamacode.protocol_server import (
     _handle_apply_edits,
     _handle_chat_stream,
     _handle_request,
+    _resolve_memory_request_settings,
 )
+from ollamacode.multi_agent import MultiAgentResult
 
 
 def test_handle_apply_edits_missing_edits():
@@ -92,3 +94,140 @@ async def test_handle_request_chat_stream_empty_message():
         parts.append(p)
     assert len(parts) == 1
     assert parts[0]["result"]["type"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_multi_agent_confirm_flow(monkeypatch):
+    """multiAgent with confirmToolCalls returns approval token and completes on continue."""
+
+    async def fake_run_multi_agent(*args, before_tool_call=None, **kwargs):
+        assert before_tool_call is not None
+        decision = await before_tool_call("run_command", {"command": "echo hi"})
+        return MultiAgentResult(
+            content=f"done {decision}",
+            plan="plan",
+            review={"approved": True},
+        )
+
+    monkeypatch.setattr(
+        "ollamacode.protocol_server.run_multi_agent", fake_run_multi_agent
+    )
+
+    req = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "ollamacode/chat",
+        "params": {"message": "do it", "multiAgent": True},
+    }
+    res = await _handle_request(
+        req,
+        object(),
+        "model",
+        "",
+        0,
+        0,
+        "/tmp",
+        confirm_tool_calls=True,
+    )
+    assert res["result"]["toolApprovalRequired"]["tool"] == "run_command"
+    token = res["result"]["approvalToken"]
+
+    res2 = await _handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "ollamacode/chatContinue",
+            "params": {"approvalToken": token, "decision": "run"},
+        },
+        object(),
+        "model",
+        "",
+        0,
+        0,
+        "/tmp",
+        confirm_tool_calls=True,
+    )
+    assert res2["result"]["content"] == "done run"
+    assert res2["result"]["plan"] == "plan"
+    assert res2["result"]["review"]["approved"] is True
+
+
+@pytest.mark.asyncio
+async def test_protocol_rag_methods(monkeypatch):
+    """ollamacode/ragIndex and ollamacode/ragQuery return expected payloads."""
+
+    def fake_build_local_rag_index(
+        workspace_root, max_files=400, max_chars_per_file=20000
+    ):
+        assert workspace_root == "/tmp/work"
+        return {
+            "index_path": "/tmp/rag_index.json",
+            "workspace_root": workspace_root,
+            "indexed_files": 4,
+            "chunk_count": 9,
+        }
+
+    def fake_query_local_rag(query, max_results=5):
+        assert query == "jwt"
+        return [
+            {"path": "docs/AUTH.md", "chunk_index": 0, "score": 4.2, "snippet": "JWT"}
+        ]
+
+    monkeypatch.setattr(
+        "ollamacode.protocol_server.build_local_rag_index", fake_build_local_rag_index
+    )
+    monkeypatch.setattr(
+        "ollamacode.protocol_server.query_local_rag", fake_query_local_rag
+    )
+
+    res1 = await _handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "ollamacode/ragIndex",
+            "params": {"workspaceRoot": "/tmp/work"},
+        },
+        None,
+        "model",
+        "",
+        0,
+        0,
+        "/tmp",
+    )
+    assert res1["result"]["indexed_files"] == 4
+
+    res2 = await _handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "ollamacode/ragQuery",
+            "params": {"query": "jwt", "maxResults": 3},
+        },
+        None,
+        "model",
+        "",
+        0,
+        0,
+        "/tmp",
+    )
+    assert res2["result"]["results"][0]["path"] == "docs/AUTH.md"
+
+
+def test_resolve_memory_request_settings_protocol():
+    """Per-request memory settings accept camelCase/snake_case and clamp values."""
+    auto, kg, rag, chars = _resolve_memory_request_settings(
+        {
+            "memoryAutoContext": False,
+            "memory_kg_max_results": -2,
+            "memoryRagMaxResults": 999,
+            "memory_rag_snippet_chars": 12,
+        },
+        default_auto=True,
+        default_kg_max=4,
+        default_rag_max=4,
+        default_rag_chars=220,
+    )
+    assert auto is False
+    assert kg == 0
+    assert rag == 20
+    assert chars == 40

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Pre-push hook: format and fix with ruff before pushing to GitHub.
+# Install: git config core.hooksPath .githooks
+
+set -e
+cd "$(git rev-parse --show-toplevel)"
+
+echo "[pre-push] Running ruff format and ruff check --fix..."
+uv run ruff format ollamacode tests
+uv run ruff check --fix ollamacode tests
+
+# Check if ruff modified any files (they would be unstaged)
+if ! git diff --quiet ollamacode tests 2>/dev/null; then
+    echo "[pre-push] Ruff modified files. Please review, then: git add -u && git commit --amend --no-edit (or commit and push again)."
+    exit 1
+fi
+exit 0

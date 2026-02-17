@@ -8,6 +8,7 @@ requires-python = ">=3.11"
 dependencies = [
     "mcp[cli]>=1.2.0",
     "ollama>=0.4.0",
+    "playwright>=1.40.0",
     "python-dotenv>=1.0.0",
     "pyyaml>=6.0",
 ]
@@ -22,14 +23,22 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/your-org/ollamacode"
-Repository = "https://github.com/your-org/ollamacode"
-Documentation = "https://github.com/your-org/ollamacode#readme"
+Homepage = "https://github.com/jayluxferro/ollamacode"
+Repository = "https://github.com/jayluxferro/ollamacode"
+Documentation = "https://github.com/jayluxferro/ollamacode#readme"
 
 [project.optional-dependencies]
 tui = [
     "rich>=13.0.0",
     "prompt_toolkit>=3.0.0",
+]
+cli = [
+    "rich>=13.0.0",
+    "prompt_toolkit>=3.0.0",
+]
+docs = [
+    "mkdocs>=1.5.0",
+    "mkdocstrings[python]>=0.24.0",
 ]
 dev = [
     "pytest>=8.0",
@@ -41,7 +50,6 @@ dev = [
     "pyright>=1.1.0",
     "pytest-timeout>=2.3.0",
 ]
-
 [project.scripts]
 ollamacode = "ollamacode.cli:main"
 

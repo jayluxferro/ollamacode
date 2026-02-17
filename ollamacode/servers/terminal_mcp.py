@@ -40,9 +40,10 @@ _RISKY_PATTERNS = [
 
 
 def _root() -> str:
-    """Workspace root (same as fs_mcp): OLLAMACODE_FS_ROOT env or current working directory."""
+    """Workspace root (same as fs_mcp): OLLAMACODE_FS_ROOT env or current working directory. Path is normalized for the current OS."""
     root = os.environ.get("OLLAMACODE_FS_ROOT")
-    return os.path.abspath(root) if root else os.getcwd()
+    path = Path(root).resolve() if root else Path.cwd()
+    return str(path)
 
 
 def _allowed_commands() -> set[str]:

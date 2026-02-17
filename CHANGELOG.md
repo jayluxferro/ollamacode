@@ -23,7 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **run_command guardrails**: `OLLAMACODE_BLOCK_DANGEROUS_COMMANDS` blocklist; `OLLAMACODE_ALLOWED_COMMANDS` allowlist. Optional command history log: `OLLAMACODE_LOG_COMMANDS=1` appends (timestamp, cwd, command, return_code) to `OLLAMACODE_COMMAND_LOG` or `~/.ollamacode/command_history.log`.
 - **Structured logging**: `OLLAMACODE_JSON_LOGS=1` emits JSON-lines for ollama/tools/turn timing.
 - **Coverage**: pytest-cov in dev deps; CI runs unit tests with coverage (fail_under=0).
-- **Docs**: README, docs/ROADMAP.md, docs/OTHER_EDITORS.md (with Neovim/Zed/Sublime snippets), docs/MCP_SERVERS.md.
+- **Docs**: README, docs/OTHER_EDITORS.md (with Neovim/Zed/Sublime snippets), docs/MCP_SERVERS.md.
 - **Memory & skills**: Skills from `~/.ollamacode/skills` and `.ollamacode/skills` loaded into system prompt; MCP tools to read/write skills and save_memory. Config `use_skills`.
 - **Git**: `git_log_graph` tool (ASCII graph of branches/commits).
 - **Error formatting**: On tool failure, print a short "What failed" + "Next step" hint for common errors (file not found, permission, timeout, module not found, indentation, TypeError, connection refused, port in use, OOM, JSON decode, EISDIR, etc.).
@@ -41,5 +41,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Toolchain registry**: docs/TOOLCHAIN_REGISTRY.md with curated tools (Python, JS, etc.) and usage with built-in run_linter/run_tests/run_code_quality/run_coverage.
 - **VS Code extension**: minimal extension in `editors/vscode` (Chat, Chat with selection, Apply edits) using HTTP API; configurable baseUrl and apiKey; see editors/vscode/README.md and docs/OTHER_EDITORS.md. **Streaming:** commands "Chat (streaming)" and "Chat with selection (streaming)" use POST /chat/stream and show reply token-by-token in the output channel.
 - **Neovim plugin**: minimal plugin in `editors/neovim` with `:OllamaCode` and `:OllamaCodeSelection`, config via `require("ollamacode").setup()`; reply in floating window and optional apply edits; see editors/neovim/README.md.
+- **RLM (Recursive Language Model)**: Optional mode `ollamacode rlm` and `--rlm` so the user prompt stays out of model context; model sees metadata only and uses a REPL with `context` and `llm_query()`. FINAL(...) and FINAL_VAR(var_name) for answers; shared namespace across REPL blocks so FINAL_VAR resolves. Config: `rlm_sub_model`, `rlm_max_iterations`, `rlm_stdout_max_chars`, `rlm_prefix_chars`, `rlm_snippet_timeout_seconds`. REPL uses restricted builtins (no `open`/`__import__`), whole-run and per-snippet timeout. See docs/RLM.md.
+- **RLM per-snippet timeout**: Config `rlm_snippet_timeout_seconds` limits each single exec of a REPL block so one runaway snippet doesn't consume the whole run.
+- **Integration test**: `tests/integration/test_rlm.py` runs `ollamacode --rlm` with a tiny prompt and checks for FINAL/output (skips if Ollama not available).
+- **Headless / CI**: `--headless`, `--run-timeout`, `--no-write`, `--max-tools`; exit codes 0/1/2; `--json` for machine-readable output.
+- **OLLAMA.md**: User (`~/.ollamacode/OLLAMA.md`) and project (`.ollamacode/OLLAMA.md` or `OLLAMA.md`) context appended to system prompt.
+- **Autonomous mode**: `--auto` and TUI `/auto` (no per-tool confirm, higher max rounds).
+- **Edit tools**: `edit_file` and `multi_edit` in fs_mcp for surgical find/replace and batch edits.
+- **Codebase tools**: `glob` and `grep` in codebase_mcp.
+- **Custom slash commands**: Load from `~/.ollamacode/commands.md` and `.ollamacode/commands.md`; `/commands` lists them; `{{rest}}` in templates.
+- **Think tool**: `ollamacode.servers.reasoning_mcp` with `think(reasoning)`; included in default MCP servers.
+- **Session persistence**: SQLite at `~/.ollamacode/sessions.db`; TUI `/sessions`, `/resume`, `/session`, `/new`, `/branch`; auto-save after each reply.
+- **Subagents**: Config `subagents: [{ name, tools, model? }]`; TUI `/subagents` and `/subagent <type> <task>`.
+- **Skills keywords**: `load_skills_text(workspace_root, query=...)` filters by frontmatter or `# keywords:` line.
+- **Web search**: Optional `web_search_mcp` when `web_search.enabled` and `endpoint` set; config and env for API.
+- **Vision**: TUI `/image <path> [message]`; `run_agent_loop` / `run_agent_loop_stream` accept `image_paths` for Ollama vision models.
+- **fetch_url**: HTTP GET tool in tools_mcp (`fetch_url(url, timeout_seconds?, max_chars?)`).
+- **Screenshot**: `ollamacode.servers.screenshot_mcp` with `screenshot(url, ...)` using Playwright (Chromium). Auto-install of Chromium on first use; `ollamacode install-browsers` to install upfront.
+- **Context management**: Config `context_management: { enabled, summarize_threshold, keep_recent_messages }`; drives `auto_summarize_after_turns`.
+- **Config hierarchy**: User config `~/.ollamacode/config.yaml` as base; project config deep-merged over it.
+- **Homebrew**: README section for `brew install` when a formula is available.
+- **CLI**: `ollamacode install-browsers` to install Playwright Chromium for the screenshot tool.
 
-[1.0.0]: https://github.com/your-org/ollamacode/releases/tag/v1.0.0
+### Changed
+
+- **RLM default model**: RLM mode uses the same default model as the rest of the CLI (config / `OLLAMACODE_MODEL` / `gpt-oss:20b`) instead of a separate default.
+- **Config**: `load_config()` now loads user config first, then project; deep-merge so project overrides user.
+- **Default MCP servers**: Added reasoning_mcp and screenshot_mcp to the default list.
+
+[1.0.0]: https://github.com/jayluxferro/ollamacode/releases/tag/v1.0.0

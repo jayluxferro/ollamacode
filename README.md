@@ -6,8 +6,10 @@ A coding assistant powered by **local models** (Ollama) and **MCP** (Model Conte
 
 - **Local-only**: Ollama for all reasoning and code generation; no cloud API required.
 - **MCP tools**: Connect any MCP server (filesystem, terminal, codebase, custom tools) and use them from the agent. Built-in fs, terminal, codebase, tools, and git when no config is present.
-- **CLI**: One-off queries or interactive chat from the terminal; optional TUI (`--tui`).
-- **HTTP & stdio API**: `ollamacode serve` for REST (POST /chat, /chat/stream, /apply-edits); `ollamacode protocol` for JSON-RPC over stdin/stdout so editors can integrate without HTTP.
+- **CLI**: One-off queries or interactive chat from the terminal (interactive mode uses the built-in TUI).
+- **HTTP & stdio API**: `ollamacode serve` for REST (POST /chat, /chat/continue, /chat/stream, /apply-edits, /rag/index, /rag/query); `ollamacode protocol` for JSON-RPC over stdin/stdout so editors can integrate without HTTP.
+- **Intelligence on by default**: Reasoning (brief rationale), meta-reflection (second-pass review), branch context (git diff in prompt), and planning/feedback/knowledge are enabled by default; set `use_reasoning: false` or `use_meta_reflection: false` in config to disable.
+- **RLM (experimental)**: `--rlm` — recursive language model mode (opt-in): context stays in a REPL, model sees only metadata and uses `llm_query()` on slices. See [docs/RLM.md](docs/RLM.md).
 
 ## Prerequisites
 
@@ -32,10 +34,21 @@ pipx install ollamacode
 ```bash
 cd OllamaCode
 uv sync
+# optional bootstrap (creates .ollamacode/config.yaml, checks Ollama):
+python install.py
 # or install CLI on PATH from this repo:
 uv tool install .
 # or: pip install -e .
 ```
+
+**Homebrew** (when a formula is available in a tap):
+
+```bash
+brew tap your-org/ollamacode   # if using a custom tap
+brew install ollamacode
+```
+
+If the formula is in homebrew-core, use `brew install ollamacode` only. Check the project releases for the current install method.
 
 Ensure the `ollamacode` CLI is on your PATH (e.g. `uv run ollamacode` from source, or `ollamacode` after `uv tool install` / pipx).
 
@@ -49,7 +62,7 @@ Ensure the `ollamacode` CLI is on your PATH (e.g. `uv run ollamacode` from sourc
 uv run ollamacode "Explain recursion in one sentence"
 ```
 
-**Interactive chat** (same; agent has read_file, run_command, search_codebase, etc.):
+**Interactive chat** (opens the TUI; agent has read_file, run_command, search_codebase, etc.). Requires `pip install ollamacode[tui]` for the Rich TUI:
 
 ```bash
 uv run ollamacode
@@ -63,7 +76,14 @@ uv run ollamacode --mcp-command python --mcp-args examples/demo_server.py "What 
 
 Use `OLLAMACODE_MCP_ARGS` to pass MCP server args without flags (e.g. `export OLLAMACODE_MCP_ARGS="python examples/demo_server.py"`). To use **no MCP**, add a config file with `mcp_servers: []`.
 
-**Commands** (as first argument): `serve` — start HTTP API; `protocol` — stdio JSON-RPC for editors; `convert-mcp` — convert Cursor/Claude MCP JSON to YAML.
+**Commands** (as first argument): `serve` — start HTTP API; `protocol` — stdio JSON-RPC for editors; `convert-mcp` — convert Cursor/Claude MCP JSON to YAML. RLM mode: use `--rlm` (prompt as query or from stdin).
+
+**RLM mode** (opt-in; context not sent to model; model uses REPL + `llm_query()`):
+
+```bash
+uv run ollamacode --rlm "Summarize the key points in the text below..."
+echo "Long document..." | uv run ollamacode --rlm
+```
 
 **Options:**
 
@@ -72,7 +92,6 @@ Use `OLLAMACODE_MCP_ARGS` to pass MCP server args without flags (e.g. `export OL
 | `--config`, `-c` | (none) | Path to config file (default: `ollamacode.yaml` or `.ollamacode/config.yaml` in cwd) |
 | `--model`, `-m` | `OLLAMACODE_MODEL` / `gpt-oss:20b` | Ollama model name |
 | `--stream`, `-s` | (flag) | Stream response tokens to stdout |
-| `--tui` | (flag) | Interactive terminal UI (Rich). Requires: `pip install ollamacode[tui]` |
 | `--file`, `-f` | (path) | Prepend file contents to prompt (chat-with-selection) |
 | `--lines` | START-END | With `--file`: include only this line range (1-based inclusive) |
 | `--apply-edits` | (flag) | Parse `<<EDITS>>` from model output; show diff and prompt to apply |
@@ -87,8 +106,13 @@ Use `OLLAMACODE_MCP_ARGS` to pass MCP server args without flags (e.g. `export OL
 | `--mcp-command` | `OLLAMACODE_MCP_COMMAND` / `python` | Command for legacy single-stdio MCP |
 | `--mcp-args` | `OLLAMACODE_MCP_ARGS` (space-separated) | Args for legacy single-stdio MCP (overrides config when set) |
 | `--output`, `-o` | (path) | For **convert-mcp**: output YAML file; stdout if omitted. |
+| `--headless` | (flag) | CI mode: exit 0/1/2, implies --quiet. Use with --json for machine-readable output. |
+| `--auto` | (flag) | Autonomous mode: no per-tool confirm, more tool rounds (CLI and TUI /auto). |
+| `--no-write` | (flag) | Read-only: block write_file and git add/commit/push. |
+| `--max-tools` | N | Max tool-call rounds for this run (overrides config). |
+| `--run-timeout` | SECONDS | Wall-clock timeout for single-query run; exit 1 on timeout. |
 
-**Stopping:** Press **Ctrl+C** to interrupt the agent (single query, TUI, or interactive chat).
+**Stopping:** Press **Ctrl+C** to interrupt the agent (single query or interactive TUI).
 
 ### Config file
 
@@ -98,6 +122,8 @@ Optional YAML config (`ollamacode.yaml` or `.ollamacode/config.yaml` in the curr
 model: gpt-oss:20b
 system_prompt_extra: "Optional extra system instructions."
 rules_file: .ollamacode/rules.md   # optional: load and append to system prompt (path relative to cwd)
+# OLLAMA.md: optional user (~/.ollamacode/OLLAMA.md) and project (.ollamacode/OLLAMA.md or OLLAMA.md) context appended to system prompt
+# Custom slash commands: ~/.ollamacode/commands.md or .ollamacode/commands.md (## /name, description, optional prompt with {{rest}}); /commands in TUI lists them
 max_messages: 0   # 0 = no limit; cap message history sent to Ollama (e.g. 50 for long chats)
 auto_summarize_after_turns: 0   # when > 0, summarize oldest turns when history exceeds this (e.g. 10)
 max_tool_rounds: 20   # max tool-call rounds per turn
@@ -107,10 +133,36 @@ timing: false         # set true to log per-step durations to stderr
 linter_command: "ruff check ."   # used by /fix slash command (CLI and TUI)
 test_command: "pytest"          # used by /test slash command (CLI and TUI)
 semantic_codebase_hint: true   # one-time tip to add semantic MCP server (set false to disable)
-branch_context: false         # inject git diff vs base into system prompt
-branch_context_base: "main"    # base branch for branch_context
+branch_context: true          # (default) inject git diff vs base into system prompt; set false to disable
+branch_context_base: "main"   # base branch for branch_context
 pr_description_file: null     # optional path to PR/change description (e.g. .git/PR_DESCRIPTION)
 include_builtin_servers: true # when true (default), add fs/terminal/codebase/tools/git so the model can list files, run commands; set false to use only mcp_servers
+# use_reasoning: true         # ask model for brief reasoning/rationale (default on)
+# use_meta_reflection: true   # second-pass review of assistant reply for consistency/clarity (default on)
+# confirm_tool_calls: false   # if true, prompt [y/N/e] before each tool (CLI and TUI); e = edit args in $EDITOR
+# prompt_template: refactor   # load .ollamacode/templates/refactor.md and append to system prompt
+# prompt_snippets: []         # list of strings appended to system prompt (repo-specific instructions)
+# allowed_tools: null         # if set (e.g. [read_file, write_file, run_tests]), only these tools are exposed
+# blocked_tools: null         # if set (e.g. [run_command]), exclude these tools
+# code_style: ""              # optional code style rules injected into system prompt
+# safety_output_patterns: []  # list of substrings that trigger a safety warning in CLI output
+# memory_auto_context: true   # auto-inject query-specific memory (knowledge graph + local RAG)
+# memory_kg_max_results: 4    # max knowledge-graph matches injected per turn
+# memory_rag_max_results: 4   # max local RAG snippets injected per turn
+# memory_rag_snippet_chars: 220 # max chars per injected RAG snippet
+# planner_model: ""           # optional model override for multi-agent planner
+# executor_model: ""          # optional model override for multi-agent executor
+# reviewer_model: ""          # optional model override for multi-agent reviewer
+# multi_agent_max_iterations: 2   # review loops for multi-agent (default 2)
+# multi_agent_require_review: true # if false, skip reviewer stage in multi-agent
+# tui_tool_trace_max: 5       # max tool trace lines in TUI
+# tui_tool_log_max: 8         # max tool log entries in TUI
+# tui_tool_log_chars: 160     # max chars per tool log entry in TUI
+# tui_refresh_hz: 5           # TUI refresh rate (Hz)
+# toolchain_version_checks:
+#   - name: pytest
+#     command: pytest --version
+#     expect_contains: "7"
 
 mcp_servers:
   - name: demo
@@ -131,15 +183,21 @@ mcp_servers:
 
 You can add an optional **`name`** to each server (e.g. `name: git`, `name: burp`) to label it in the config. When multiple servers are configured, tool names are prefixed with the server name (e.g. `OllamaCode Demo_add`, `ollamacode-fs_read_file`) so the agent can call the right server.
 
+**Custom MCP server types (plugins):** Built-in types are `stdio`, `sse`, and `streamable_http`. To add a new type (e.g. a custom transport), register an entry point in the `ollamacode.mcp_server_types` group. The entry point name is the config `type` value; the callable receives the server entry dict and must return `StdioServerParameters`, `SseServerParameters`, or `StreamableHttpParameters`. See `get_registered_mcp_server_types()` and `MCP_SERVER_TYPES_ENTRY_POINT_GROUP` in the [API docs](docs/api.md).
+
 ### Built-in MCP (default)
 
-When you run OllamaCode **without** a config file and **without** `OLLAMACODE_MCP_ARGS`, it automatically starts five built-in MCP servers so the agent can work efficiently out of the box:
+When you run OllamaCode **without** a config file and **without** `OLLAMACODE_MCP_ARGS`, it automatically starts the built-in MCP servers so the agent can work efficiently out of the box:
 
-- **ollamacode-fs** – `read_file`, `write_file`, `list_dir` (workspace root: `OLLAMACODE_FS_ROOT` or cwd).
+- **ollamacode-fs** – `read_file`, `write_file`, `list_dir`, `edit_file` (surgical find/replace), `multi_edit` (batch edits).
 - **ollamacode-terminal** – `run_command` (run shell commands, cwd, env, timeout). Set **`OLLAMACODE_BLOCK_DANGEROUS_COMMANDS=1`** to block dangerous patterns (e.g. `rm -rf /`, `curl | bash`). Optional **`OLLAMACODE_CONFIRM_RISKY=1`** to require confirmation for risky patterns (re-run with **`OLLAMACODE_CONFIRM_RISKY_CONFIRMED=1`** to execute).
-- **ollamacode-codebase** – `search_codebase` (keyword search), `get_relevant_files` (path match).
-- **ollamacode-tools** – `run_linter` (e.g. ruff, eslint), `run_tests` (e.g. pytest, npm test); returns stdout/stderr/return code.
-- **ollamacode-git** – Git: `git_status`, `git_diff_unstaged`, `git_diff_staged`, `git_log`, `git_show`, `git_branch`, `git_add`, `git_commit`, `git_push`.
+- **ollamacode-codebase** – `search_codebase` (keyword search), `get_relevant_files` (path match), `glob` (pattern), `grep` (regex with context).
+- **ollamacode-tools** – `run_linter`, `run_tests`, `run_code_quality`, `run_coverage`, `install_deps`, `fetch_url` (HTTP GET).
+- **ollamacode-git** – Git: `git_status`, `git_diff_*`, `git_log`, `git_add`, `git_commit`, `git_push`.
+- **ollamacode-skills** – read/write skills and memory.
+- **ollamacode-state** – persistent state (recent files, preferences, plan).
+- **ollamacode-reasoning** – `think(reasoning)` for structured reasoning steps.
+- **ollamacode-screenshot** – `screenshot(url)` to capture a web page as PNG. Chromium is installed automatically on first use, or run **`ollamacode install-browsers`** once to install upfront.
 
 They are shipped inside the package (`ollamacode.servers`) and run as subprocesses. For **checkout** and other advanced Git features, see [Opt-in: full Git (official MCP server)](#opt-in-full-git-commit-push). To disable MCP entirely, use a config file with `mcp_servers: []`. To add or replace servers, use `ollamacode.yaml` or `OLLAMACODE_MCP_ARGS`.
 
@@ -246,7 +304,7 @@ The built-in **codebase** MCP does keyword search. For semantic “where is X?�
 
 ### Session summary
 
-In interactive mode (CLI or TUI), use **`/summary [N]`** to summarize the last N turns (default 5) and replace them with one summary message. This frees context for long chats.
+In interactive mode (TUI), use **`/summary [N]`** to summarize the last N turns (default 5) and replace them with one summary message. This frees context for long chats.
 
 ### Branch/PR context
 
@@ -276,13 +334,20 @@ OllamaCode/
 │   ├── protocol_server.py   # Stdio JSON-RPC (ollamacode protocol)
 │   ├── serve.py            # HTTP API (ollamacode serve)
 │   ├── servers/            # Built-in MCP (fs, terminal, codebase, tools, git, semantic)
-│   └── tui.py              # Optional TUI (--tui)
-├── docs/                   # ROADMAP.md, STRUCTURED_PROTOCOL.md, OTHER_EDITORS.md, MCP_SERVERS.md
+│   └── tui.py              # Interactive TUI (default when no query)
+├── docs/                   # STRUCTURED_PROTOCOL.md, OTHER_EDITORS.md, MCP_SERVERS.md, RLM.md, etc.
 ├── examples/               # Demo and optional MCP servers
 ├── tests/
+├── .githooks/               # Pre-push: ruff format + fix (see .githooks/README.md)
 ├── pyproject.toml
 └── README.md
 ```
+
+See the [Wiki](docs/WIKI.md) for a full index of documentation.
+
+### Git pre-push hook (optional)
+
+A **pre-push** hook runs `ruff format` and `ruff check --fix` before pushing. Install: `git config core.hooksPath .githooks` and `chmod +x .githooks/pre-push`. See [.githooks/README.md](.githooks/README.md).
 
 ## Architecture
 
@@ -296,7 +361,17 @@ So: **OllamaCode = MCP client + Ollama (tool calling) + agent loop**. No cloud; 
 
 ### HTTP API and editor protocol
 
-Run **`ollamacode serve`** (or `ollamacode serve --port 9000`) to start a local HTTP API. Requires: `pip install ollamacode[server]`. Endpoints: **POST /chat** (JSON `{"message": "...", "file?", "lines?", "selection?"}` → `{"content": "...", "edits"?}`), **POST /chat/stream** (SSE), **POST /apply-edits** (apply edits server-side). Optional auth via config `serve.api_key` or `OLLAMACODE_SERVE_API_KEY`.
+Run **`ollamacode serve`** (or `ollamacode serve --port 9000`) to start a local HTTP API. Requires: `pip install ollamacode[server]`. Endpoints: **POST /chat** (JSON `{"message": "...", "file?", "lines?", "selection?", "confirmToolCalls?"}` → `{"content": "...", "edits"?}`), **POST /chat/continue** (tool approvals), **POST /chat/stream** (SSE), **POST /apply-edits** (apply edits server-side), **POST /rag/index** (build local retrieval index), **POST /rag/query** (query local retrieval snippets). Optional auth via config `serve.api_key` or `OLLAMACODE_SERVE_API_KEY`.
+
+### VSCode extension (preview)
+
+The VSCode extension lives in `editors/vscode`. It supports chat, streaming, apply-edits, tool approvals, diagnostics, and inline completions.
+
+Key settings:
+- `ollamacode.baseUrl` (default `http://localhost:8000`)
+- `ollamacode.confirmToolCalls` (tool approvals)
+- `ollamacode.multiAgent` (planner/executor/reviewer)
+- `ollamacode.enableDiagnostics`, `ollamacode.enableInlineCompletions`
 
 For editors that prefer a process over HTTP: **`ollamacode protocol`** runs a JSON-RPC server on stdin/stdout (one request per line). Methods: `ollamacode/chat`, `ollamacode/chatStream` (streaming), `ollamacode/applyEdits`. See [docs/STRUCTURED_PROTOCOL.md](docs/STRUCTURED_PROTOCOL.md) and [docs/OTHER_EDITORS.md](docs/OTHER_EDITORS.md) for integration.
 
@@ -325,7 +400,7 @@ cat claude_mcp.json | ollamacode convert-mcp -o .ollamacode/config.yaml
 
 ## Roadmap
 
-Current features and future ideas: [docs/ROADMAP.md](docs/ROADMAP.md).
+Current features and release history: [CHANGELOG.md](CHANGELOG.md).
 
 ## References
 

@@ -5,10 +5,44 @@
   "version": "0.1.0",
   "engines": { "vscode": "^1.74.0" },
   "categories": ["Other"],
-  "activationEvents": [],
+  "activationEvents": [
+    "onCommand:ollamacode.focusChatView",
+    "onCommand:ollamacode.chat",
+    "onCommand:ollamacode.chatWithSelection",
+    "onCommand:ollamacode.chatStream",
+    "onCommand:ollamacode.chatStreamWithSelection",
+    "onCommand:ollamacode.openChatPanel",
+    "onCommand:ollamacode.previewEdits",
+    "onCommand:ollamacode.applyEdits",
+    "onCommand:ollamacode.runDiagnostics",
+    "onCommand:ollamacode.runRagIndex",
+    "onCommand:ollamacode.runRagQuery",
+    "onView:ollamacode.chatView"
+  ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ollamacode",
+          "title": "OllamaCode",
+          "icon": "resources/ollamacode.svg"
+        }
+      ]
+    },
+    "views": {
+      "ollamacode": [
+        {
+          "id": "ollamacode.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
     "commands": [
+      {
+        "command": "ollamacode.focusChatView",
+        "title": "OllamaCode: Open Chat (Sidebar)"
+      },
       {
         "command": "ollamacode.chat",
         "title": "OllamaCode: Chat"
@@ -26,8 +60,28 @@
         "title": "OllamaCode: Chat with selection (streaming)"
       },
       {
+        "command": "ollamacode.openChatPanel",
+        "title": "OllamaCode: Open chat panel"
+      },
+      {
+        "command": "ollamacode.previewEdits",
+        "title": "OllamaCode: Preview edits from clipboard/response"
+      },
+      {
         "command": "ollamacode.applyEdits",
         "title": "OllamaCode: Apply edits from clipboard/response"
+      },
+      {
+        "command": "ollamacode.runDiagnostics",
+        "title": "OllamaCode: Run diagnostics for active file"
+      },
+      {
+        "command": "ollamacode.runRagIndex",
+        "title": "OllamaCode: Build local RAG index"
+      },
+      {
+        "command": "ollamacode.runRagQuery",
+        "title": "OllamaCode: Query local RAG index"
       }
     ],
     "configuration": {
@@ -42,6 +96,62 @@
           "type": "string",
           "default": "",
           "description": "Optional API key. If set in server config, set here and send as Authorization: Bearer <key> or X-API-Key."
+        },
+        "ollamacode.confirmToolCalls": {
+          "type": "boolean",
+          "default": false,
+          "description": "Require approval before each tool call."
+        },
+        "ollamacode.multiAgent": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable multi-agent workflow (planner/executor/reviewer)."
+        },
+        "ollamacode.multiAgentMaxIterations": {
+          "type": "number",
+          "default": 2,
+          "description": "Max review iterations for multi-agent."
+        },
+        "ollamacode.multiAgentRequireReview": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require reviewer approval for multi-agent."
+        },
+        "ollamacode.memoryAutoContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-inject query-specific memory context (knowledge graph + local RAG)."
+        },
+        "ollamacode.memoryKgMaxResults": {
+          "type": "number",
+          "default": 4,
+          "minimum": 0,
+          "maximum": 20,
+          "description": "Maximum knowledge graph matches injected per request."
+        },
+        "ollamacode.memoryRagMaxResults": {
+          "type": "number",
+          "default": 4,
+          "minimum": 0,
+          "maximum": 20,
+          "description": "Maximum local RAG snippets injected per request."
+        },
+        "ollamacode.memoryRagSnippetChars": {
+          "type": "number",
+          "default": 220,
+          "minimum": 40,
+          "maximum": 2000,
+          "description": "Maximum characters per injected RAG snippet."
+        },
+        "ollamacode.enableDiagnostics": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable diagnostics command to populate lint squiggles."
+        },
+        "ollamacode.enableInlineCompletions": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable inline completions via /complete."
         }
       }
     }

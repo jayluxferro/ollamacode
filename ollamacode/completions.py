@@ -14,7 +14,7 @@ def get_completion(prefix: str, model: str, max_tokens: int = 60) -> str:
     Get a short completion for the given prefix using Ollama generate.
     Returns the generated text (single suggestion) or empty string on error.
     """
-    if not (prefix or "").strip() and not model:
+    if not (model or "").strip():
         return ""
     try:
         r = ollama.generate(
