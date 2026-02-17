@@ -14,6 +14,7 @@ site/
 .ollamacode/config.yaml
 git-push
 demo/
+.DS_Store
 
 # VS Code extension (editors/vscode)
 editors/vscode/node_modules/
