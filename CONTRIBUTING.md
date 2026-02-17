@@ -74,7 +74,7 @@ PRs are reviewed for correctness, tests, and consistency with the codebase. Once
 ## Documentation
 
 - User-facing docs: [README.md](README.md), [docs/WIKI.md](docs/WIKI.md).
-- API: [docs/api.md](docs/api.md). Build with `uv run mkdocs build` (requires `uv sync --extra docs`).
+- API: [docs/api.md](docs/api.md). Build with `uv run mkdocs build` (requires doc deps: `uv sync --group docs` or `uv sync --extra docs`).
 
 If you add a feature, update the README or relevant doc when it’s user-visible.
 
