@@ -9,6 +9,7 @@ OLLAMACODE_WEB_SEARCH_ENDPOINT, OLLAMACODE_WEB_SEARCH_API_KEY.
 import json
 import os
 import urllib.request
+from urllib.error import HTTPError
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -82,7 +83,7 @@ def web_search(query: str) -> dict[str, Any]:
                 }
             except json.JSONDecodeError:
                 return {"ok": True, "error": None, "results": [], "raw_preview": body}
-    except urllib.error.HTTPError as e:
+    except HTTPError as e:
         err_body = e.read().decode("utf-8", errors="replace")[:500] if e.fp else ""
         return {
             "ok": False,

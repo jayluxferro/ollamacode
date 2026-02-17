@@ -6,7 +6,7 @@ Community and reference documentation for OllamaCode.
 
 ## Getting started
 
-- **[README](../README.md)** — Installation, quick start, CLI options, and config overview.
+- **[README](https://github.com/jayluxferro/ollamacode/blob/main/README.md)** — Installation, quick start, CLI options, and config overview.
 - **[Quick start](index.md)** — Minimal setup and first run.
 
 ---
@@ -50,4 +50,4 @@ Community and reference documentation for OllamaCode.
 
 ## Changelog
 
-See [CHANGELOG.md](../CHANGELOG.md) for version history.
+See [CHANGELOG](https://github.com/jayluxferro/ollamacode/blob/main/CHANGELOG.md) for version history.

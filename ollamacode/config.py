@@ -12,7 +12,8 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, cast
 
 # Declarative mapping: env var name -> merge_config_with_env keyword argument.
 # Single source of truth for which environment variables override config.
@@ -349,13 +350,17 @@ def get_resolved_config(
     )
 
 
-def get_env_config_overrides(env: dict[str, str] | None = None) -> dict[str, Any]:
+def get_env_config_overrides(
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """
     Build merge_config_with_env kwargs from environment (declarative from ENV_CONFIG_SCHEMA).
     Use when calling get_resolved_config(..., **get_env_config_overrides()) or merge_config_with_env(config, **get_env_config_overrides()).
     """
-    env = env if env is not None else os.environ
-    return {param: env.get(ev) or None for ev, param in ENV_CONFIG_SCHEMA}
+    env_source: Mapping[str, str] = cast(
+        Mapping[str, str], env if env is not None else os.environ
+    )
+    return {param: env_source.get(ev) or None for ev, param in ENV_CONFIG_SCHEMA}
 
 
 def _clamp_int(

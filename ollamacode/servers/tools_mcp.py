@@ -9,6 +9,7 @@ Root/cwd: OLLAMACODE_FS_ROOT env var, or current working directory.
 import os
 import subprocess
 import urllib.request
+from urllib.error import HTTPError
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -262,7 +263,7 @@ def fetch_url(
                 "body": body,
                 "error": None,
             }
-    except urllib.error.HTTPError as e:
+    except HTTPError as e:
         return {
             "status_code": e.code,
             "body": (

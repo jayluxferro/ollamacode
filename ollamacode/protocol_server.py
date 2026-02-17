@@ -568,7 +568,7 @@ async def _handle_request(
         )
         if task in done:
             try:
-                result = task.result()
+                multi_result = task.result()
             except Exception as e:
                 return {
                     "jsonrpc": "2.0",
@@ -576,11 +576,11 @@ async def _handle_request(
                     "result": {"content": "", "error": str(e)},
                 }
             out = {
-                "content": result.content,
-                "plan": result.plan,
-                "review": result.review,
+                "content": multi_result.content,
+                "plan": multi_result.plan,
+                "review": multi_result.review,
             }
-            edits_list = parse_edits(result.content)
+            edits_list = parse_edits(multi_result.content)
             if edits_list:
                 out["edits"] = edits_list
             return {"jsonrpc": "2.0", "id": req_id, "result": out}
@@ -675,7 +675,7 @@ async def _handle_request(
                     "id": req_id,
                     "result": {"content": "", "error": str(e)},
                 }
-            result = {"content": out}
+            result: dict[str, Any] = {"content": out}
             edits_list = parse_edits(out)
             if edits_list:
                 result["edits"] = edits_list
@@ -733,7 +733,7 @@ async def _handle_request(
             memory_rag_max_results=req_mem_rag,
             memory_rag_snippet_chars=req_mem_chars,
         )
-        result = await run_multi_agent(
+        multi_result = await run_multi_agent(
             session,
             use_model,
             message,
@@ -750,8 +750,12 @@ async def _handle_request(
             max_iterations=int(params.get("multiAgentMaxIterations") or 2),
             require_review=bool(params.get("multiAgentRequireReview", True)),
         )
-        out = {"content": result.content, "plan": result.plan, "review": result.review}
-        edits_list = parse_edits(result.content)
+        out = {
+            "content": multi_result.content,
+            "plan": multi_result.plan,
+            "review": multi_result.review,
+        }
+        edits_list = parse_edits(multi_result.content)
         if edits_list:
             out["edits"] = edits_list
         return {"jsonrpc": "2.0", "id": req_id, "result": out}
@@ -834,7 +838,7 @@ async def _handle_request(
             params.get("workspaceRoot")
             if isinstance(params.get("workspaceRoot"), str)
             else workspace_root
-        )
+        ) or "."
         max_files = params.get("maxFiles")
         max_chars_per_file = params.get("maxCharsPerFile")
         try:

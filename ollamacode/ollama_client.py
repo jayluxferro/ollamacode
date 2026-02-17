@@ -98,7 +98,9 @@ async def chat_async(
         if tools:
             raise wrap_ollama_template_error(e)
         system, prompt = _messages_to_system_and_prompt(messages)
-        gen_response = await client.generate(model=model, prompt=prompt, system=system)
+        gen_response = await client.generate(
+            model=model, prompt=prompt, system=system or ""
+        )
         text = (
             gen_response.response
             if hasattr(gen_response, "response")
@@ -108,7 +110,8 @@ async def chat_async(
         )
         return {"message": {"content": (text or "").strip()}}
     finally:
-        await client.close()
+        if hasattr(client, "close"):
+            await client.close()  # type: ignore[attr-defined]
 
 
 def chat_sync(
@@ -130,7 +133,7 @@ def chat_sync(
         if tools:
             raise wrap_ollama_template_error(e)
         system, prompt = _messages_to_system_and_prompt(messages)
-        gen = ollama.generate(model=model, prompt=prompt, system=system)
+        gen = ollama.generate(model=model, prompt=prompt, system=system or "")
         text = (
             gen.get("response")
             if isinstance(gen, dict)

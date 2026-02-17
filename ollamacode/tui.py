@@ -1034,14 +1034,22 @@ async def run_tui(
                 "branch_session",
             ):
                 continue
-            if isinstance(result, tuple) and result[0] == "set_pending_image":
-                pending_image_ref[0] = (result[1], result[2])
+            if (
+                isinstance(result, tuple)
+                and len(result) == 3
+                and result[0] == "set_pending_image"
+            ):
+                pending_image_ref[0] = (cast(str, result[1]), cast(str, result[2]))
                 console.print(
                     f"[dim]Image attached: {result[1]} (message for next turn: {result[2][:40] or '(none)'}...)[/]"
                 )
                 continue
-            if isinstance(result, tuple) and result[0] == "run_subagent":
-                _, stype, task = result
+            if (
+                isinstance(result, tuple)
+                and len(result) == 3
+                and result[0] == "run_subagent"
+            ):
+                _, stype, task = cast(tuple[Any, str, str], result)
                 match = next(
                     (
                         s
@@ -1091,9 +1099,17 @@ async def run_tui(
                 )
                 continue
             if result is not None:
-                if isinstance(result, tuple) and result[0] == "run_prompt":
+                if (
+                    isinstance(result, tuple)
+                    and len(result) >= 2
+                    and result[0] == "run_prompt"
+                ):
                     line = cast(str, result[1])
-                elif isinstance(result, tuple) and result[0] == "run_multi":
+                elif (
+                    isinstance(result, tuple)
+                    and len(result) >= 2
+                    and result[0] == "run_multi"
+                ):
                     prompt = cast(str, result[1])
                     multi_memory = (
                         build_dynamic_memory_context(
@@ -1158,7 +1174,11 @@ async def run_tui(
                         )
                     )
                     continue
-                elif isinstance(result, tuple) and result[0] == "copy_last":
+                elif (
+                    isinstance(result, tuple)
+                    and len(result) >= 2
+                    and result[0] == "copy_last"
+                ):
                     last = ""
                     for role, text in reversed(history):
                         if role == "assistant":
@@ -1177,14 +1197,22 @@ async def run_tui(
                                 "[dim]Clipboard unavailable. Install pbcopy/wl-copy/xclip/xsel.[/]"
                             )
                     continue
-                elif isinstance(result, tuple) and result[0] == "set_trace_filter":
+                elif (
+                    isinstance(result, tuple)
+                    and len(result) >= 2
+                    and result[0] == "set_trace_filter"
+                ):
                     trace_filter = cast(str, result[1]).strip()
                     if trace_filter:
                         console.print(f"[dim]Tool trace filter set: {trace_filter}[/]")
                     else:
                         console.print("[dim]Tool trace filter cleared.[/]")
                     continue
-                elif isinstance(result, tuple) and result[0] == "set_compact_mode":
+                elif (
+                    isinstance(result, tuple)
+                    and len(result) >= 2
+                    and result[0] == "set_compact_mode"
+                ):
                     arg = cast(str, result[1]).strip().lower()
                     if arg in ("", "toggle"):
                         compact_mode = not compact_mode
@@ -1203,7 +1231,11 @@ async def run_tui(
                         f"[dim]Compact mode: {'on' if compact_mode else 'off'}[/]"
                     )
                     continue
-                elif isinstance(result, tuple) and result[0] == "kg_add":
+                elif (
+                    isinstance(result, tuple)
+                    and len(result) >= 2
+                    and result[0] == "kg_add"
+                ):
                     from .state import add_knowledge_node
 
                     raw = cast(str, result[1]).strip()
@@ -1225,7 +1257,11 @@ async def run_tui(
                     )
                     console.print(f"[dim]knowledge_graph: {msg}[/]")
                     continue
-                elif isinstance(result, tuple) and result[0] == "kg_query":
+                elif (
+                    isinstance(result, tuple)
+                    and len(result) >= 2
+                    and result[0] == "kg_query"
+                ):
                     from .state import query_knowledge_graph
 
                     q = cast(str, result[1]).strip()
@@ -1241,7 +1277,11 @@ async def run_tui(
                         if summary:
                             console.print(f"[dim]     - {summary[:160]}[/]")
                     continue
-                elif isinstance(result, tuple) and result[0] == "rag_index":
+                elif (
+                    isinstance(result, tuple)
+                    and len(result) >= 2
+                    and result[0] == "rag_index"
+                ):
                     from .rag import build_local_rag_index
 
                     target = cast(str, result[1]).strip() or (
@@ -1255,7 +1295,11 @@ async def run_tui(
                     except Exception as e:
                         console.print(f"[dim]Failed to build RAG index: {e}[/]")
                     continue
-                elif isinstance(result, tuple) and result[0] == "run_summary":
+                elif (
+                    isinstance(result, tuple)
+                    and len(result) >= 2
+                    and result[0] == "run_summary"
+                ):
                     n_turns = cast(int, result[1])
                     n_msgs = min(n_turns * 2, len(message_history))
                     if n_msgs == 0:
@@ -1308,7 +1352,7 @@ async def run_tui(
             line_expanded = expand_at_refs(line, root)
             image_paths_list: list[str] = []
             if pending_image_ref[0]:
-                path, msg = pending_image_ref[0]
+                path, msg = cast(tuple[str, str], pending_image_ref[0])
                 pending_image_ref[0] = None
                 try:
                     resolved = Path(path) if os.path.isabs(path) else Path(root) / path
@@ -1416,7 +1460,7 @@ async def run_tui(
             if session is not None:
                 mem_block = (
                     build_dynamic_memory_context(
-                        line_expanded,
+                        cast(str, line_expanded),
                         kg_max_results=memory_kg_max_results,
                         rag_max_results=memory_rag_max_results,
                         rag_snippet_chars=memory_rag_snippet_chars,
@@ -1434,7 +1478,7 @@ async def run_tui(
                 stream = run_agent_loop_stream(
                     session,
                     model_ref[0],
-                    line_expanded,
+                    cast(str, line_expanded),
                     system_prompt=sys_prompt,
                     max_tool_rounds=max_tool_rounds_eff(),
                     image_paths=image_paths_list if image_paths_list else None,
@@ -1456,7 +1500,7 @@ async def run_tui(
             else:
                 mem_block = (
                     build_dynamic_memory_context(
-                        line_expanded,
+                        cast(str, line_expanded),
                         kg_max_results=memory_kg_max_results,
                         rag_max_results=memory_rag_max_results,
                         rag_snippet_chars=memory_rag_snippet_chars,
@@ -1473,7 +1517,7 @@ async def run_tui(
                 )
                 stream = run_agent_loop_no_mcp_stream(
                     model_ref[0],
-                    line_expanded,
+                    cast(str, line_expanded),
                     system_prompt=sys_prompt,
                     message_history=msg_history,
                 )

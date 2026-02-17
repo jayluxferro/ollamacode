@@ -600,6 +600,7 @@ async def run_agent_loop(
                             is_error=True,
                         )
                         continue
+                    assert before_tool_call is not None
                     decision = await before_tool_call(name, arguments)
                     if decision == "skip":
                         content = "Skipped by user."
@@ -959,6 +960,7 @@ async def run_agent_loop_stream(
                             is_error=True,
                         )
                         continue
+                    assert before_tool_call is not None
                     decision = await before_tool_call(name, arguments)
                     if decision == "skip":
                         content = "Skipped by user."

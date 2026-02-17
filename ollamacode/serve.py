@@ -532,6 +532,10 @@ def create_app(
                 return decision
 
             tool_errors: list[dict[str, Any]] = []
+            if session is None:
+                return JSONResponse(
+                    {"content": "", "error": "Tool approval requires MCP session"}
+                )
             task = asyncio.create_task(
                 run_agent_loop(
                     session,
@@ -556,13 +560,13 @@ def create_app(
                     out = task.result()
                 except Exception as e:
                     return JSONResponse({"content": "", "error": str(e)})
-                result = {"content": out}
+                result_out: dict[str, Any] = {"content": out}
                 edits = parse_edits(out)
                 if edits:
-                    result["edits"] = edits
+                    result_out["edits"] = edits
                 if tool_errors:
-                    result["tool_errors"] = tool_errors
-                return JSONResponse(result)
+                    result_out["tool_errors"] = tool_errors
+                return JSONResponse(result_out)
             token = uuid.uuid4().hex
             _approval_pending[token] = {
                 "task": task,
