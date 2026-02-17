@@ -38,6 +38,24 @@ Thanks for your interest in contributing. This document explains how to set up t
   uv run pytest tests/ -v -m integration
   ```
 
+## Building the distribution
+
+To build wheel and sdist for manual install:
+
+```bash
+uv build
+```
+
+Output goes to `dist/` (e.g. `ollamacode-1.0.0-py3-none-any.whl`, `ollamacode-1.0.0.tar.gz`). Install with:
+
+```bash
+pip install dist/ollamacode-1.0.0-py3-none-any.whl
+# or
+pip install dist/ollamacode-1.0.0.tar.gz
+```
+
+Optional extras: `pip install dist/ollamacode-1.0.0-py3-none-any.whl[tui]` for the TUI. Requires [build](https://pypi.org/project/build/) if not using uv (`pip install build && python -m build`).
+
 ## Linting and formatting
 
 - **Ruff (lint + format):**
