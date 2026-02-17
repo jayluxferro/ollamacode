@@ -11,6 +11,7 @@ site/
 .cursor/
 .vscode-test/
 .ollamacode/embeddings.json
+.ollamacode/config.yaml
 git-push
 demo/
 
