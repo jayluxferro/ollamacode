@@ -1,8 +1,7 @@
 """
-Health check: verify Ollama and optionally MCP availability.
+Health check: verify AI provider (Ollama or remote) and optionally MCP availability.
 
 Used by `ollamacode health` CLI and GET /health when serving.
-Phase 4: optional toolchain version checks from config.
 """
 
 from __future__ import annotations
@@ -10,11 +9,25 @@ from __future__ import annotations
 import shlex
 import subprocess
 from pathlib import Path
+from typing import Any
+
+
+def check_provider(config: dict[str, Any] | None = None) -> tuple[bool, str]:
+    """Check the configured AI provider. Falls back to Ollama if no config given."""
+    if config:
+        try:
+            from .providers import get_provider
+            p = get_provider(config)
+            return p.health_check()
+        except Exception as e:
+            return False, f"Provider check error: {e}"
+    return check_ollama()
 
 
 def check_ollama() -> tuple[bool, str]:
     """
     Check if Ollama is reachable. Returns (success, message).
+    Kept for backward compatibility; prefer check_provider().
     """
     try:
         import ollama

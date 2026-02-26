@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from .rag import query_local_rag
+try:
+    from .vector_memory import query_local_rag
+except Exception:
+    from .rag import query_local_rag
 from .state import query_knowledge_graph
 
 

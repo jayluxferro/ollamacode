@@ -8,25 +8,112 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 _STATE_PATH = Path(os.path.expanduser("~")) / ".ollamacode" / "state.json"
+_STATE_LOCK_PATH = Path(os.path.expanduser("~")) / ".ollamacode" / "state.lock"
+_STATE_LOCK_TTL_SECONDS = 10.0
 _MAX_RECENT_FILES = 50
 _MAX_KNOWLEDGE_NODES = 200
 
+# In-memory cache: avoid re-reading state.json from disk on every operation.
+# Invalidated on every _save() and validated against file mtime on every _load_raw().
+_state_cache: dict | None = None
+_state_cache_mtime: float = -1.0
+
 
 def _load_raw() -> dict:
+    global _state_cache, _state_cache_mtime
     if not _STATE_PATH.exists():
+        _state_cache = {}
+        _state_cache_mtime = -1.0
         return {}
+    # If a write lock is present, wait briefly to avoid reading mid-write.
+    if _STATE_LOCK_PATH.exists():
+        try:
+            age = time.time() - _STATE_LOCK_PATH.stat().st_mtime
+            if age > _STATE_LOCK_TTL_SECONDS:
+                _STATE_LOCK_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
+    if _STATE_LOCK_PATH.exists():
+        deadline = time.monotonic() + 0.5
+        while _STATE_LOCK_PATH.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
     try:
-        return json.loads(_STATE_PATH.read_text(encoding="utf-8"))
+        mtime = _STATE_PATH.stat().st_mtime
+        if _state_cache is not None and mtime == _state_cache_mtime:
+            return _state_cache
+        data = json.loads(_STATE_PATH.read_text(encoding="utf-8"))
+        _state_cache = data
+        _state_cache_mtime = mtime
+        return data
     except (OSError, json.JSONDecodeError):
         return {}
 
 
+def _acquire_state_lock(timeout_seconds: float = 2.0) -> None:
+    """Acquire a best-effort filesystem lock to serialize state writes."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            fd = os.open(
+                str(_STATE_LOCK_PATH),
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600,
+            )
+            try:
+                os.write(fd, str(time.time()).encode("utf-8"))
+            except OSError:
+                pass
+            os.close(fd)
+            return
+        except FileExistsError:
+            try:
+                age = time.time() - _STATE_LOCK_PATH.stat().st_mtime
+                if age > _STATE_LOCK_TTL_SECONDS:
+                    _STATE_LOCK_PATH.unlink(missing_ok=True)
+                    continue
+            except OSError:
+                pass
+            if time.monotonic() > deadline:
+                raise TimeoutError("Timed out waiting for state lock")
+            time.sleep(0.05)
+
+
+def _release_state_lock() -> None:
+    try:
+        _STATE_LOCK_PATH.unlink()
+    except OSError:
+        pass
+
+
 def _save(data: dict) -> None:
+    global _state_cache, _state_cache_mtime
     _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _STATE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp_path = _STATE_PATH.with_suffix(".tmp")
+    _acquire_state_lock()
+    try:
+        tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        try:
+            tmp_path.chmod(0o600)
+        except OSError:
+            pass
+        os.replace(tmp_path, _STATE_PATH)
+        # Restrict permissions so only the owner can read/write (contains history & prefs).
+        try:
+            _STATE_PATH.chmod(0o600)
+        except OSError:
+            pass
+    finally:
+        _release_state_lock()
+    # Update cache immediately so the next _load_raw() doesn't re-read from disk.
+    _state_cache = data
+    try:
+        _state_cache_mtime = _STATE_PATH.stat().st_mtime
+    except OSError:
+        _state_cache_mtime = -1.0
 
 
 def get_state() -> dict:

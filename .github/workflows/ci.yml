@@ -50,6 +50,8 @@ jobs:
         run: uv sync
       - name: Unit tests
         run: uv run pytest tests/ -v -m "not integration"
+      - name: Eval smoke test
+        run: uv run python -m ollamacode evals --eval-file evals/basic.json --eval-json
       - name: Coverage
         run: uv run pytest tests/ -v -m "not integration" --cov=ollamacode --cov-report=term-missing --cov-fail-under=30
 

@@ -22,6 +22,7 @@ class MultiAgentResult:
     content: str
     plan: str | None = None
     review: dict[str, Any] | None = None
+    synthesis: str | None = None
 
 
 def _parse_review_decision(text: str) -> dict[str, Any] | None:
@@ -80,13 +81,16 @@ async def run_multi_agent(
     planner_model: str | None = None,
     executor_model: str | None = None,
     reviewer_model: str | None = None,
+    synthesis_model: str | None = None,
     max_iterations: int = 2,
     require_review: bool = True,
+    synthesize: bool = True,
 ) -> MultiAgentResult:
     """Run planner → executor → reviewer loop. Returns final content + plan + review decision."""
     planner_model = planner_model or model
     executor_model = executor_model or model
     reviewer_model = reviewer_model or model
+    synthesis_model = synthesis_model or model
 
     # 1) Plan
     if session is not None:
@@ -100,6 +104,7 @@ async def run_multi_agent(
             allowed_tools=[],  # no tools for planner
             blocked_tools=None,
             confirm_tool_calls=False,
+            disallow_tools=True,
         )
     else:
         plan = await run_agent_loop_no_mcp(
@@ -158,6 +163,7 @@ async def run_multi_agent(
                     allowed_tools=[],
                     blocked_tools=None,
                     confirm_tool_calls=False,
+                    disallow_tools=True,
                 )
             else:
                 review_text = await run_agent_loop_no_mcp(
@@ -180,4 +186,39 @@ async def run_multi_agent(
                 feedback = "Reviewer did not return a valid decision block. Please revise the output."
             content = await _run_executor(feedback.strip())
 
-    return MultiAgentResult(content=content, plan=plan, review=review_decision)
+    synthesis_text: str | None = None
+    if synthesize:
+        synth_prompt = (
+            "Synthesize the plan and executor output into a single final answer. "
+            "Explicitly reconcile conflicts. Respond in Markdown with sections:\n"
+            "## Final Answer\n"
+            "## Conflicts Resolved (use 'None' if no conflicts)\n\n"
+            f"Goal:\n{message}\n\nPlan:\n{plan}\n\nExecutor output:\n{content}\n"
+        )
+        if review_decision:
+            synth_prompt += f"\n\nReview decision:\n{json.dumps(review_decision)}"
+        if session is not None:
+            synthesis_text = await run_agent_loop(
+                session,
+                synthesis_model,
+                synth_prompt,
+                system_prompt=system_prompt,
+                max_messages=max_messages,
+                max_tool_result_chars=max_tool_result_chars,
+                allowed_tools=[],
+                blocked_tools=None,
+                confirm_tool_calls=False,
+                disallow_tools=True,
+            )
+        else:
+            synthesis_text = await run_agent_loop_no_mcp(
+                synthesis_model,
+                synth_prompt,
+                system_prompt=system_prompt,
+            )
+        synthesis_text = (synthesis_text or "").strip()
+        content = synthesis_text or content
+
+    return MultiAgentResult(
+        content=content, plan=plan, review=review_decision, synthesis=synthesis_text
+    )

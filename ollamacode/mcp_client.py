@@ -12,6 +12,7 @@ the entry point must be a callable ``(entry: dict) -> StdioServerParameters | Ss
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import contextvars
 from datetime import timedelta
 from typing import Any, Callable, AsyncIterator, Dict, List
 
@@ -33,6 +34,21 @@ ServerParamsType = (
 
 # Entry point group for plugins that add MCP server types.
 MCP_SERVER_TYPES_ENTRY_POINT_GROUP = "ollamacode.mcp_server_types"
+
+# Tool-call guard: set True to hard-block any tool calls (planner/verify phases).
+_TOOL_CALLS_DISABLED: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "ollamacode_tool_calls_disabled", default=False
+)
+
+
+def disable_tool_calls() -> contextvars.Token:
+    """Disable tool calls in the current context; returns a token for reset()."""
+    return _TOOL_CALLS_DISABLED.set(True)
+
+
+def reset_tool_calls(token: contextvars.Token) -> None:
+    """Reset tool-call guard to previous state."""
+    _TOOL_CALLS_DISABLED.reset(token)
 
 
 def _builtin_stdio_params(entry: Dict[str, Any]) -> StdioServerParameters:
@@ -153,11 +169,31 @@ async def connect_mcp_servers(
         yield group
 
 
+# Per-session tool-list cache for single ClientSession connections.
+# ClientSessionGroup already caches in connection.tools; this covers the single-server case.
+_single_session_tools_cache: Dict[int, ListToolsResult] = {}
+
+
+def invalidate_tools_cache(connection: McpConnection) -> None:
+    """Remove cached tool list for a connection (call on reconnect or tool change)."""
+    _single_session_tools_cache.pop(id(connection), None)
+
+
 async def list_tools(connection: McpConnection) -> ListToolsResult:
-    """List tools from the MCP server or session group."""
+    """List tools from the MCP server or session group.
+
+    For ClientSessionGroup the result is already O(1) from the group's internal cache.
+    For a single ClientSession the result is cached after the first call so subsequent
+    agent turns don't make a redundant network round-trip.
+    """
     if isinstance(connection, ClientSessionGroup):
         return ListToolsResult(tools=list(connection.tools.values()))
-    return await connection.list_tools()
+    conn_id = id(connection)
+    if conn_id in _single_session_tools_cache:
+        return _single_session_tools_cache[conn_id]
+    result = await connection.list_tools()
+    _single_session_tools_cache[conn_id] = result
+    return result
 
 
 # Model name -> our tool name. Add aliases so Ollama's harmony parser has a mapping (avoids "no reverse mapping" warning).
@@ -226,6 +262,11 @@ async def call_tool(
     arguments: Dict[str, Any] | None = None,
 ) -> CallToolResult:
     """Call a tool by name with optional arguments. Uses get_tool_name for resolution."""
+    if _TOOL_CALLS_DISABLED.get():
+        return CallToolResult(
+            content=[TextContent(type="text", text="Tool calls are disabled for this phase.")],
+            isError=True,
+        )
     args = arguments or {}
     if isinstance(connection, ClientSessionGroup):
         try:

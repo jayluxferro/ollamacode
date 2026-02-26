@@ -43,6 +43,11 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC);
     """)
     conn.commit()
+    # Restrict DB file to owner-only so session history isn't world-readable.
+    try:
+        _DB_PATH.chmod(0o600)
+    except OSError:
+        pass
 
 
 def create_session(title: str = "") -> str:
@@ -105,13 +110,14 @@ def load_session(session_id: str) -> list[dict[str, Any]] | None:
             (session_id,),
         )
         rows = cur.fetchall()
-    if not rows:
-        cur = sqlite3.connect(_db_path()).execute(
-            "SELECT id FROM sessions WHERE id = ?", (session_id,)
-        )
-        if cur.fetchone() is None:
-            return None
-        return []
+        if not rows:
+            # Distinguish "session exists but empty" from "session not found" in one transaction.
+            exists = conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if exists is None:
+                return None
+            return []
     return [{"role": r, "content": c} for r, c in rows]
 
 

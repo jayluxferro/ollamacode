@@ -10,6 +10,7 @@ Optional command log: set OLLAMACODE_LOG_COMMANDS=1 to append (cwd, command, ret
 
 import os
 import re
+import shlex
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,11 +72,20 @@ def _is_blocked(command: str) -> bool:
 
 
 def _is_disallowed_by_allowlist(command: str) -> bool:
-    """Return True if allowlist is set and command's first word is not in it."""
+    """Return True if allowlist is set and command's first word is not in it.
+
+    Uses shlex.split so quoted arguments (e.g. ruff "file name.py") are handled
+    correctly and the first token is always the actual command binary.
+    """
     allowed = _allowed_commands()
     if not allowed:
         return False
-    first = (command.strip().split() or [""])[0].lower()
+    try:
+        parts = shlex.split(command.strip())
+        first = parts[0].lower() if parts else ""
+    except ValueError:
+        # Malformed quoting — fall back to naive split so we still check something.
+        first = (command.strip().split() or [""])[0].lower()
     return first not in allowed
 
 
@@ -148,6 +158,18 @@ def run_command(
     re-run with OLLAMACODE_CONFIRM_RISKY_CONFIRMED=1 to execute.
     When OLLAMACODE_LOG_COMMANDS=1, each run is appended to a log file (path in OLLAMACODE_COMMAND_LOG or ~/.ollamacode/command_history.log).
     """
+    # Clamp timeout to a safe range regardless of what the model passes.
+    timeout_seconds = max(1, min(timeout_seconds, 300))
+
+    # Sandbox level enforcement (readonly blocks all commands; null-byte guard).
+    try:
+        from ollamacode.sandbox import check_terminal_command
+
+        check_terminal_command(command)
+    except PermissionError as exc:
+        _log_command(cwd or _root(), command, -3)
+        return {"stdout": "", "stderr": str(exc), "return_code": -3}
+
     if _is_blocked(command):
         out = {
             "stdout": "",

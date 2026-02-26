@@ -14,6 +14,7 @@ import os
 import shlex
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 from .agent import (
@@ -23,6 +24,8 @@ from .agent import (
     run_agent_loop_no_mcp_stream,
     run_agent_loop_stream,
 )
+from .providers.base import BaseProvider
+from .providers import get_provider
 from .config import (
     find_config_file,
     get_env_config_overrides,
@@ -52,6 +55,26 @@ from .mcp_client import (
     connect_mcp_stdio,
     list_tools,
 )
+
+
+def _check_provider_connectivity(
+    provider: "BaseProvider | None",
+    model: str,
+    quiet: bool,
+    provider_name: str = "ollama",
+) -> None:
+    """Fail fast if the configured provider is unreachable or the Ollama model is missing."""
+    if os.environ.get("OLLAMACODE_SKIP_MODEL_CHECK"):
+        return
+    if provider is not None and provider_name != "ollama":
+        ok, msg = provider.health_check()
+        if not ok:
+            print(f"Provider check failed: {msg}", file=sys.stderr)
+            raise SystemExit(1)
+        if not quiet:
+            print(f"[OllamaCode] Provider: {provider_name} ({msg})", file=sys.stderr)
+        return
+    _check_ollama_and_model(model, quiet)
 
 
 def _check_ollama_and_model(model: str, quiet: bool) -> None:
@@ -121,7 +144,30 @@ def _parse_args() -> argparse.Namespace:
         "--model",
         "-m",
         default=os.environ.get("OLLAMACODE_MODEL", "gpt-oss:20b"),
-        help="Ollama model name (overrides config and OLLAMACODE_MODEL)",
+        help="Model name (overrides config and OLLAMACODE_MODEL)",
+    )
+    p.add_argument(
+        "--provider",
+        default=os.environ.get("OLLAMACODE_PROVIDER"),
+        metavar="NAME",
+        help=(
+            "AI provider name (default: ollama). "
+            "Options: ollama, openai, groq, deepseek, anthropic, openrouter, mistral, "
+            "xai, together, fireworks, perplexity, venice, cohere, cloudflare_ai, custom. "
+            "Override with OLLAMACODE_PROVIDER env var."
+        ),
+    )
+    p.add_argument(
+        "--base-url",
+        default=os.environ.get("OLLAMACODE_BASE_URL"),
+        metavar="URL",
+        help="Override base URL for the provider (e.g. http://localhost:11434 for Ollama, or any OpenAI-compat endpoint). Override with OLLAMACODE_BASE_URL.",
+    )
+    p.add_argument(
+        "--api-key",
+        default=os.environ.get("OLLAMACODE_API_KEY"),
+        metavar="KEY",
+        help="API key for the provider. Override with OLLAMACODE_API_KEY (or provider-specific: GROQ_API_KEY, OPENAI_API_KEY, etc.).",
     )
     p.add_argument(
         "--mcp-command",
@@ -202,11 +248,73 @@ def _parse_args() -> argparse.Namespace:
         help="Read prompt from stdin and print one response (single-query mode).",
     )
     p.add_argument(
+        "--voice-in",
+        action="store_true",
+        help="Record from microphone and use transcription as the prompt (local).",
+    )
+    p.add_argument(
+        "--voice-out",
+        action="store_true",
+        help="Speak the final response using local TTS.",
+    )
+    p.add_argument(
+        "--voice-seconds",
+        type=float,
+        default=5.0,
+        metavar="SECONDS",
+        help="Voice input record duration (default 5s).",
+    )
+    p.add_argument(
+        "--voice-model",
+        type=str,
+        default="base",
+        metavar="NAME",
+        help="Whisper model for voice input (default: base).",
+    )
+    p.add_argument(
         "--timeout",
         type=float,
         default=None,
         metavar="SECONDS",
         help="Timeout for each Ollama request in seconds.",
+    )
+    p.add_argument(
+        "--tool-timeout",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Timeout for each tool call in seconds (sets OLLAMACODE_TOOL_TIMEOUT_SECONDS).",
+    )
+    p.add_argument(
+        "--tool-budget",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Per-turn tool budget in seconds (sets OLLAMACODE_TOOL_BUDGET_SECONDS).",
+    )
+    p.add_argument(
+        "--run-budget",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Total run budget in seconds (sets OLLAMACODE_RUN_BUDGET_SECONDS).",
+    )
+    p.add_argument(
+        "--eval-file",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Eval cases JSON file (for query=evals). Default: evals/basic.json",
+    )
+    p.add_argument(
+        "--eval-json",
+        action="store_true",
+        help="Emit eval summary as JSON to stdout.",
+    )
+    p.add_argument(
+        "--stream-with-tools",
+        action="store_true",
+        help="Enable streaming even when tool calls are available (less reliable).",
     )
     p.add_argument(
         "--headless",
@@ -251,11 +359,24 @@ def _parse_args() -> argparse.Namespace:
         help="Skip starting MCP servers for this run (faster when you don't need tools).",
     )
     p.add_argument(
+        "--sandbox",
+        choices=["readonly", "supervised", "full"],
+        default=None,
+        metavar="LEVEL",
+        help="Sandbox level for MCP servers: readonly (no writes/commands), supervised (default, workspace-scoped), full (unrestricted).",
+    )
+    p.add_argument(
         "--port",
         type=int,
         default=8000,
         metavar="N",
         help="Port for 'serve' command (default 8000).",
+    )
+    p.add_argument(
+        "--no-tunnel",
+        action="store_true",
+        dest="no_tunnel",
+        help="Disable tunnel for 'serve' command even if tunnel is configured in ollamacode.yaml.",
     )
     p.add_argument(
         "--rlm",
@@ -289,7 +410,7 @@ def _parse_args() -> argparse.Namespace:
         "query",
         nargs="?",
         default=None,
-        help="Single query to run, 'serve' for HTTP API, 'protocol' for stdio JSON-RPC, 'health' to check Ollama, 'init' to scaffold, 'tutorial' for interactive tutorial, 'install-browsers' to install Playwright Chromium (for screenshot tool), 'discover-tools' to scan PATH and emit MCP config snippet, 'list-tools' to list MCP tools, 'list-mcp' to list configured MCP servers, or 'convert-mcp' to convert MCP config. Use --rlm for RLM mode.",
+        help="Single query to run, 'serve' for HTTP API, 'protocol' for stdio JSON-RPC, 'health' to check provider, 'init' to scaffold, 'tutorial' for interactive tutorial, 'setup' for interactive setup wizard, 'secrets' to manage encrypted secrets (--secret-action set/get/list/delete), 'reindex' to rebuild vector memory index, 'repo-map' to generate a repo map, 'cron' for scheduled tasks (cron list / cron run <name>), 'install-browsers' to install Playwright Chromium, 'discover-tools' to scan PATH, 'list-tools' to list MCP tools, 'list-mcp' to list MCP servers, or 'convert-mcp' to convert MCP config. Use --rlm for RLM mode.",
     )
     p.add_argument(
         "--template",
@@ -318,6 +439,46 @@ def _parse_args() -> argparse.Namespace:
         dest="convert_mcp_output",
         metavar="OUTPUT_YAML",
         help="For convert-mcp: output YAML file; stdout if omitted.",
+    )
+    # --- secrets subcommand args ---
+    p.add_argument(
+        "--secret-action",
+        choices=["set", "get", "list", "delete"],
+        default=None,
+        metavar="ACTION",
+        help="For 'secrets': action to perform (set, get, list, delete).",
+    )
+    p.add_argument(
+        "--secret-name",
+        default=None,
+        metavar="NAME",
+        help="For 'secrets set/get/delete': the secret name.",
+    )
+    p.add_argument(
+        "--secret-value",
+        default=None,
+        metavar="VALUE",
+        help="For 'secrets set': the plaintext secret value.",
+    )
+    # --- reindex (vector memory) ---
+    p.add_argument(
+        "--reindex-workspace",
+        default=None,
+        metavar="DIR",
+        help="For 'reindex': workspace root to index (default: current directory).",
+    )
+    p.add_argument(
+        "--repo-map-output",
+        default=None,
+        metavar="PATH",
+        help="For 'repo-map': output path (default: .ollamacode/repo_map.md).",
+    )
+    p.add_argument(
+        "--repo-map-max-files",
+        default=None,
+        type=int,
+        metavar="N",
+        help="For 'repo-map': max files to include (default: 200).",
     )
     return p.parse_args()
 
@@ -537,10 +698,19 @@ async def _run(
     memory_kg_max_results: int = 4,
     memory_rag_max_results: int = 4,
     memory_rag_snippet_chars: int = 220,
+    auto_check_after_edits: bool = False,
+    auto_check_mode: str = "test",
+    auto_check_fix_on_fail: bool = False,
+    auto_check_fix_max_rounds: int = 1,
     headless: bool = False,
     run_timeout: float | None = None,
     autonomous_mode: bool = False,
     subagents: list[dict[str, Any]] | None = None,
+    provider: "BaseProvider | None" = None,
+    voice_in: bool = False,
+    voice_out: bool = False,
+    voice_seconds: float = 5.0,
+    voice_model: str = "base",
 ) -> int | None:
     use_mcp = bool(mcp_servers)
     # Autonomous: no confirm_tool_calls, allow more tool rounds.
@@ -556,6 +726,18 @@ async def _run(
         except Exception:
             piped = ""
         query = (piped or "").strip()
+    if voice_in:
+        try:
+            from .voice import record_and_transcribe
+            query = record_and_transcribe(
+                seconds=voice_seconds, model=voice_model
+            )
+            if not query:
+                print("[OllamaCode] Voice input produced empty text.", file=sys.stderr)
+                return 1
+        except Exception as e:
+            print(f"[OllamaCode] Voice input failed: {e}", file=sys.stderr)
+            return 1
 
     # Inject workspace root so MCP servers (fs, terminal, codebase) run in the directory from which the CLI was started.
     # Merge with os.environ so the subprocess has PATH etc. and reliably sees OLLAMACODE_FS_ROOT.
@@ -584,7 +766,9 @@ async def _run(
         return
 
     # Interactive mode (no query) always uses the TUI.
-    if not query:
+    if query == "evals":
+        pass
+    elif not query:
         try:
             from .tui import run_tui
         except ImportError as e:
@@ -648,6 +832,8 @@ async def _run(
                         memory_rag_snippet_chars=memory_rag_snippet_chars,
                         autonomous_mode=autonomous_mode,
                         subagents=subagents or [],
+                        provider=provider,
+                        provider_name=provider.name if provider is not None else "ollama",
                     )
             else:
                 await run_tui(
@@ -692,6 +878,8 @@ async def _run(
                     allowed_tools=allowed_tools,
                     blocked_tools=blocked_tools,
                     subagents=subagents or [],
+                    provider=provider,
+                    provider_name=provider.name if provider is not None else "ollama",
                 )
         except ImportError as e:
             print(
@@ -893,6 +1081,76 @@ async def _run(
             payload["summary"] = summary
         print(json.dumps(payload, ensure_ascii=False), file=sys.stderr, flush=True)
 
+    def _should_plan_exec_verify(text: str) -> bool:
+        if not text:
+            return False
+        words = len(text.split())
+        if words >= 12:
+            return True
+        lowered = text.lower()
+        keywords = (
+            "analyze",
+            "audit",
+            "review",
+            "regression",
+            "optimize",
+            "refactor",
+            "plan",
+            "roadmap",
+            "deep",
+            "thorough",
+            "migrate",
+            "redesign",
+            "performance",
+            "security",
+        )
+        return any(k in lowered for k in keywords)
+
+    def _route_model(text: str, default_model: str) -> str:
+        if os.environ.get("OLLAMACODE_ROUTER", "0") != "1":
+            return default_model
+        fast = os.environ.get("OLLAMACODE_MODEL_FAST", "").strip() or default_model
+        strong = os.environ.get("OLLAMACODE_MODEL_STRONG", "").strip() or default_model
+        words = len(text.split())
+        lowered = text.lower()
+        heavy = (
+            "analyze",
+            "audit",
+            "review",
+            "refactor",
+            "regression",
+            "optimize",
+            "roadmap",
+            "security",
+            "performance",
+            "migrate",
+        )
+        if words > 40 or any(k in lowered for k in heavy):
+            return strong
+        if words <= 6:
+            return fast
+        return default_model
+
+    def _local_math_answer(text: str) -> str | None:
+        import re
+
+        s = text.strip().lower()
+        m = re.match(r"^(what is\s+)?(\d+)\s*([+\-*/])\s*(\d+)\s*\??$", s)
+        if not m:
+            return None
+        a = int(m.group(2))
+        b = int(m.group(4))
+        op = m.group(3)
+        if op == "+":
+            return str(a + b)
+        if op == "-":
+            return str(a - b)
+        if op == "*":
+            return str(a * b)
+        if op == "/" and b != 0:
+            return str(a / b)
+        return None
+
     async def _do_chat(
         conn: McpConnection | None,
         q: str,
@@ -900,8 +1158,13 @@ async def _run(
         message_history: list[dict],
         system_prompt_override: str | None = None,
     ) -> str:
+        local = _local_math_answer(q)
+        if local is not None:
+            return local
+        request_id = uuid.uuid4().hex
         q = expand_at_refs(q, workspace_root)
         sys_prompt = system_prompt_override or _SYSTEM
+        last_system_prompt[0] = sys_prompt
         memory_block = (
             build_dynamic_memory_context(
                 q,
@@ -918,6 +1181,88 @@ async def _run(
                 + "\n\n--- Retrieved memory (query-specific) ---\n\n"
                 + memory_block
             )
+        plan_exec_verify = os.environ.get("OLLAMACODE_PLAN_EXECUTE_VERIFY", "0") == "1"
+        if plan_exec_verify and _should_plan_exec_verify(q):
+            plan_model = os.environ.get("OLLAMACODE_PLAN_MODEL", "").strip() or current_model
+            verify_model = os.environ.get("OLLAMACODE_VERIFY_MODEL", "").strip() or current_model
+            if not quiet:
+                print("[OllamaCode] Planning...", file=sys.stderr, flush=True)
+            plan = await run_agent_loop_no_mcp(
+                plan_model,
+                q,
+                system_prompt=(
+                    sys_prompt
+                    + "\n\nYou are a planner. Produce a concise step-by-step plan (3-8 steps). "
+                    "Do not call tools. Return the plan only."
+                ),
+                message_history=None,
+                provider=provider,
+                timing=timing,
+                request_id=request_id,
+            )
+            plan = (plan or "").strip()
+            exec_prompt = (
+                f"Goal:\n{q}\n\nPlan:\n{plan}\n\n"
+                "Execute the plan step-by-step. Provide the final answer only."
+            )
+            if conn is not None:
+                run_coro = run_agent_loop(
+                    conn,
+                    current_model,
+                    exec_prompt,
+                    system_prompt=sys_prompt,
+                    max_messages=max_messages,
+                    max_tool_rounds=max_tool_rounds,
+                    max_tool_result_chars=max_tool_result_chars,
+                    message_history=message_history if message_history else None,
+                    quiet=quiet,
+                    timing=timing,
+                    allowed_tools=allowed_tools,
+                    blocked_tools=blocked_tools,
+                    confirm_tool_calls=confirm_tool_calls,
+                    before_tool_call=_before_tool_call_cli if confirm_tool_calls else None,
+                    on_tool_start=lambda n, a: _emit_tool_trace("tool_start", n, a),
+                    on_tool_end=lambda n, a, s: _emit_tool_trace("tool_end", n, a, s),
+                    provider=provider,
+                    request_id=request_id,
+                )
+                out = (
+                    await asyncio.wait_for(run_coro, timeout=timeout_seconds)
+                    if timeout_seconds and timeout_seconds > 0
+                    else await run_coro
+                )
+            else:
+                run_coro = run_agent_loop_no_mcp(
+                    current_model,
+                    exec_prompt,
+                    system_prompt=sys_prompt,
+                    message_history=message_history if message_history else None,
+                    provider=provider,
+                    timing=timing,
+                    request_id=request_id,
+                )
+                out = (
+                    await asyncio.wait_for(run_coro, timeout=timeout_seconds)
+                    if timeout_seconds and timeout_seconds > 0
+                    else await run_coro
+                )
+            if not quiet:
+                print("[OllamaCode] Verifying...", file=sys.stderr, flush=True)
+            verify = await run_agent_loop_no_mcp(
+                verify_model,
+                "Review the following answer for correctness and completeness. "
+                "Output only the revised answer, no preamble.\n\n"
+                + (out or ""),
+                system_prompt="You are a verifier. Output only the revised answer.",
+                message_history=None,
+                provider=provider,
+                timing=timing,
+                request_id=request_id,
+            )
+            out = (verify or "").strip()
+            if history_file:
+                _append_history(history_file, q, out)
+            return out
         if conn is not None:
             run_coro = run_agent_loop(
                 conn,
@@ -936,6 +1281,8 @@ async def _run(
                 before_tool_call=_before_tool_call_cli if confirm_tool_calls else None,
                 on_tool_start=lambda n, a: _emit_tool_trace("tool_start", n, a),
                 on_tool_end=lambda n, a, s: _emit_tool_trace("tool_end", n, a, s),
+                provider=provider,
+                request_id=request_id,
             )
             out = (
                 await asyncio.wait_for(run_coro, timeout=timeout_seconds)
@@ -948,6 +1295,9 @@ async def _run(
                 q,
                 system_prompt=sys_prompt,
                 message_history=message_history if message_history else None,
+                provider=provider,
+                timing=timing,
+                request_id=request_id,
             )
             out = (
                 await asyncio.wait_for(run_coro, timeout=timeout_seconds)
@@ -967,6 +1317,9 @@ async def _run(
                 + out,
                 system_prompt="You are a reviewer. Output only the revised reply.",
                 message_history=None,
+                provider=provider,
+                timing=timing,
+                request_id=request_id,
             )
             out = (
                 await asyncio.wait_for(reflect_coro, timeout=timeout_seconds)
@@ -985,9 +1338,26 @@ async def _run(
         message_history: list[dict],
         system_prompt_override: str | None = None,
     ) -> str:
+        local = _local_math_answer(q)
+        if local is not None:
+            print(local, flush=True)
+            return local
+        plan_exec_verify = os.environ.get("OLLAMACODE_PLAN_EXECUTE_VERIFY", "0") == "1"
+        if plan_exec_verify and _should_plan_exec_verify(q):
+            if not quiet:
+                print(
+                    "[OllamaCode] Plan/execute/verify enabled; running non-streamed.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            out = await _do_chat(conn, q, current_model, message_history, system_prompt_override)
+            print(out, flush=True)
+            return out
+        request_id = uuid.uuid4().hex
         buf: list[str] = []
         q_expanded = expand_at_refs(q, workspace_root)
         sys_prompt = system_prompt_override or _SYSTEM
+        last_system_prompt[0] = sys_prompt
         memory_block = (
             build_dynamic_memory_context(
                 q_expanded,
@@ -1029,6 +1399,8 @@ async def _run(
                         on_tool_end=lambda n, a, s: _emit_tool_trace(
                             "tool_end", n, a, s
                         ),
+                        provider=provider,
+                        request_id=request_id,
                     ):
                         print(frag, end="", flush=True)
                         buf.append(frag)
@@ -1053,6 +1425,8 @@ async def _run(
                     else None,
                     on_tool_start=lambda n, a: _emit_tool_trace("tool_start", n, a),
                     on_tool_end=lambda n, a, s: _emit_tool_trace("tool_end", n, a, s),
+                    provider=provider,
+                    request_id=request_id,
                 ):
                     print(frag, end="", flush=True)
                     buf.append(frag)
@@ -1065,6 +1439,9 @@ async def _run(
                         q,
                         system_prompt=sys_prompt,
                         message_history=message_history if message_history else None,
+                        provider=provider,
+                        timing=timing,
+                        request_id=request_id,
                     ):
                         print(frag, end="", flush=True)
                         buf.append(frag)
@@ -1074,6 +1451,9 @@ async def _run(
                     q,
                     system_prompt=sys_prompt,
                     message_history=message_history if message_history else None,
+                    provider=provider,
+                    timing=timing,
+                    request_id=request_id,
                 ):
                     print(frag, end="", flush=True)
                     buf.append(frag)
@@ -1098,18 +1478,33 @@ async def _run(
         current_model: str,
     ) -> None:
         try:
+            model_for = _route_model(q, current_model)
             if stream and not json_output:
-                out = await _do_chat_stream(conn, q, current_model, [])
+                out = await _do_chat_stream(conn, q, model_for, [])
                 out = _strip_and_show_reasoning(out)
-                _maybe_apply_edits(out)
+                await _maybe_apply_edits(out, conn)
+                if voice_out:
+                    try:
+                        from .voice import speak_text
+
+                        speak_text(out)
+                    except Exception as e:
+                        print(f"[OllamaCode] Voice output failed: {e}", file=sys.stderr)
                 return
-            out = await _do_chat(conn, q, current_model, [])
+            out = await _do_chat(conn, q, model_for, [])
             out = _strip_and_show_reasoning(out)
             if json_output:
                 _emit_json_response(out)
             else:
                 print(out)
-            _maybe_apply_edits(out)
+            if voice_out:
+                try:
+                    from .voice import speak_text
+
+                    speak_text(out)
+                except Exception as e:
+                    print(f"[OllamaCode] Voice output failed: {e}", file=sys.stderr)
+            await _maybe_apply_edits(out, conn)
         except asyncio.TimeoutError:
             exit_code_holder[0] = 1
             msg = (
@@ -1124,6 +1519,87 @@ async def _run(
         except Exception:
             exit_code_holder[0] = 1
             raise
+
+    async def _run_evals(conn: McpConnection | None, current_model: str) -> int:
+        eval_path = getattr(args, "eval_file", None) or "evals/basic.json"
+        path = Path(eval_path)
+        if not path.exists():
+            print(f"[OllamaCode] Eval file not found: {eval_path}", file=sys.stderr)
+            return 1
+        try:
+            cases = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"[OllamaCode] Failed to parse eval file: {e}", file=sys.stderr)
+            return 1
+        if not isinstance(cases, list):
+            print("[OllamaCode] Eval file must be a JSON list.", file=sys.stderr)
+            return 1
+        failures = 0
+        total = 0
+        total_time = 0.0
+        failed_names: list[str] = []
+        case_stats: list[dict[str, Any]] = []
+        for i, case in enumerate(cases, 1):
+            if not isinstance(case, dict):
+                failures += 1
+                continue
+            name = case.get("name", f"case_{i}")
+            prompt = case.get("prompt") or ""
+            expect_contains = case.get("expect_contains") or []
+            forbid = case.get("forbid") or []
+            if not prompt:
+                failures += 1
+                print(f"[eval] {name}: missing prompt", file=sys.stderr)
+                continue
+            total += 1
+            t0 = time.perf_counter()
+            out = await _do_chat(conn, prompt, current_model, [])
+            dur = time.perf_counter() - t0
+            total_time += dur
+            ok = True
+            for s in expect_contains:
+                if s and s not in out:
+                    ok = False
+            for s in forbid:
+                if s and s in out:
+                    ok = False
+            if ok:
+                print(f"[eval] {name}: PASS")
+            else:
+                failures += 1
+                failed_names.append(name)
+                print(f"[eval] {name}: FAIL", file=sys.stderr)
+            case_stats.append(
+                {
+                    "name": name,
+                    "duration_s": round(dur, 3),
+                    "ok": ok,
+                }
+            )
+        passed = total - failures
+        pass_rate = (passed / total * 100.0) if total else 0.0
+        avg = (total_time / total) if total else 0.0
+        summary = {
+            "total": total,
+            "passed": passed,
+            "failed": failures,
+            "pass_rate": round(pass_rate, 2),
+            "avg_seconds": round(avg, 3),
+            "failed_cases": failed_names,
+            "cases": case_stats,
+        }
+        if getattr(args, "eval_json", False):
+            print(json.dumps(summary, ensure_ascii=False))
+        else:
+            print(
+                f"[eval] summary: {passed}/{total} passed ({pass_rate:.1f}%), avg {avg:.2f}s",
+                file=sys.stderr,
+            )
+            slowest = sorted(case_stats, key=lambda c: c["duration_s"], reverse=True)[:3]
+            if slowest:
+                lines = ", ".join(f"{c['name']}={c['duration_s']}s" for c in slowest)
+                print(f"[eval] slowest: {lines}", file=sys.stderr)
+        return 0 if failures == 0 else 1
 
     def _edit_edits_in_editor(edits: list[dict]) -> list[dict] | None:
         """Write edits JSON to a temp file, run $EDITOR, read back and return parsed list or None."""
@@ -1200,7 +1676,114 @@ async def _run(
                 break
         return content
 
-    def _maybe_apply_edits(response: str) -> None:
+    last_system_prompt: list[str] = [""]
+
+    async def _maybe_auto_fix_after_checks(
+        conn: McpConnection | None,
+        check_label: str,
+        output: str,
+        *,
+        max_rounds: int,
+    ) -> None:
+        if not auto_check_fix_on_fail or max_rounds <= 0:
+            return
+        for _ in range(max_rounds):
+            prompt = (
+                f"{check_label} failed. Fix the issues. "
+                "Return updates using <<EDITS>> JSON. "
+                "Failure output:\n\n" + output[:6000]
+            )
+            sys_prompt = last_system_prompt[0] or _SYSTEM
+            if conn is not None:
+                fix = await run_agent_loop(
+                    conn,
+                    model,
+                    prompt,
+                    system_prompt=sys_prompt,
+                    max_messages=max_messages,
+                    max_tool_rounds=max_tool_rounds,
+                    max_tool_result_chars=max_tool_result_chars,
+                    message_history=None,
+                    quiet=quiet,
+                    timing=timing,
+                    allowed_tools=allowed_tools,
+                    blocked_tools=blocked_tools,
+                    confirm_tool_calls=confirm_tool_calls,
+                    before_tool_call=_before_tool_call_cli if confirm_tool_calls else None,
+                    provider=provider,
+                )
+            else:
+                fix = await run_agent_loop_no_mcp(
+                    model,
+                    prompt,
+                    system_prompt=sys_prompt,
+                    message_history=None,
+                    provider=provider,
+                    timing=timing,
+                )
+            await _maybe_apply_edits(fix, conn, allow_fix=False)
+            ok, _, output = await _run_post_checks(conn)
+            if ok:
+                break
+
+    async def _run_post_checks(conn: McpConnection | None) -> tuple[bool, str, str]:
+        mode = (auto_check_mode or "test").strip().lower()
+        commands: list[tuple[str, str | None]] = []
+        if mode in ("lint", "linter", "both"):
+            commands.append(("lint", linter_command))
+        if mode in ("test", "tests", "both"):
+            commands.append(("test", test_command))
+        if not commands:
+            return True, "", ""
+        for label, cmd in commands:
+            if not cmd:
+                continue
+            print(f"[OllamaCode] Auto-check: running {label} -> {cmd}", file=sys.stderr)
+            if conn is not None:
+                try:
+                    from .mcp_client import call_tool, tool_result_to_content
+
+                    tool_name = "run_tests" if label == "test" else "run_linter"
+                    result = await call_tool(conn, tool_name, {"command": cmd})
+                    content = tool_result_to_content(result)
+                    if content:
+                        print(content, file=sys.stderr)
+                    if getattr(result, "isError", False):
+                        return False, label, content
+                except Exception:
+                    pass
+            try:
+                result = subprocess.run(
+                    cmd,
+                    shell=True,
+                    cwd=workspace_root,
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                )
+                out = (result.stdout or "").strip()
+                err = (result.stderr or "").strip()
+                combined = "\n".join([out, err]).strip()
+                if out:
+                    print(out, file=sys.stderr)
+                if err:
+                    print(err, file=sys.stderr)
+                print(
+                    f"[OllamaCode] Auto-check {label} exit {result.returncode}",
+                    file=sys.stderr,
+                )
+                if result.returncode != 0:
+                    return False, label, combined
+            except Exception as e:
+                return False, label, str(e)
+        return True, "", ""
+
+    async def _maybe_apply_edits(
+        response: str,
+        conn: McpConnection | None,
+        *,
+        allow_fix: bool = True,
+    ) -> None:
         if not apply_edits_flag:
             return
         edits = parse_edits(response)
@@ -1243,6 +1826,12 @@ async def _run(
                 n = apply_edits(edits, workspace_root)
                 print(f"[OllamaCode] Applied {n} edit(s).", file=sys.stderr)
                 append_feedback("edit_accepted", True, "user applied suggested edits")
+                if n > 0 and auto_check_after_edits:
+                    ok, label, output = await _run_post_checks(conn)
+                    if not ok and allow_fix:
+                        await _maybe_auto_fix_after_checks(
+                            conn, label, output, max_rounds=auto_check_fix_max_rounds
+                        )
                 return
             if ans in ("n", "no", ""):
                 return
@@ -1259,7 +1848,10 @@ async def _run(
                 continue
             print("[OllamaCode] Choose y, N, or e.", file=sys.stderr)
 
+
     if not use_mcp:
+        if query == "evals":
+            return await _run_evals(None, model)
         if query:
             q = (
                 prepend_file_context(query, file_path, workspace_root, lines_spec)
@@ -1278,6 +1870,9 @@ async def _run(
     else:
         session_ctx = connect_mcp_servers(mcp_servers)
 
+    if query == "evals":
+        async with session_ctx as session:
+            return await _run_evals(session, model)
     if query:
         async with session_ctx as session:
             q = (
@@ -1333,6 +1928,13 @@ def main() -> None:
         msg = run_init(template, dest)
         print(msg, file=sys.stderr if template else sys.stdout)
         return
+    if args.query in ("setup", "wizard"):
+        from .setup_wizard import run_setup_wizard
+
+        workspace = getattr(args, "dest", None) or os.getcwd()
+        run_setup_wizard(workspace_override=workspace)
+        return
+
     if args.query == "tutorial":
         from .tutorial import run_tutorial
 
@@ -1354,13 +1956,170 @@ def main() -> None:
             print(f"[OllamaCode] Install failed: {msg}", file=sys.stderr)
             sys.exit(1)
         return
-    if args.query == "health":
-        from .health import check_ollama, check_toolchain_versions
+    if args.query == "secrets":
+        from .secrets import delete_secret, get_secret, list_secrets, set_secret
 
-        ok, msg = check_ollama()
-        print(msg, file=sys.stderr)
+        action = getattr(args, "secret_action", None) or "list"
+        name = getattr(args, "secret_name", None) or ""
+        value = getattr(args, "secret_value", None) or ""
+
+        if action == "list":
+            names = list_secrets()
+            if names:
+                print("Stored secrets:")
+                for n in names:
+                    print(f"  {n}")
+            else:
+                print("No secrets stored.")
+        elif action == "set":
+            if not name:
+                print("Error: --secret-name is required for 'secrets set'", file=sys.stderr)
+                raise SystemExit(1)
+            if not value:
+                # Prompt interactively if value not given
+                import getpass
+
+                value = getpass.getpass(f"Value for secret '{name}': ")
+            if not value:
+                print("Error: secret value cannot be empty", file=sys.stderr)
+                raise SystemExit(1)
+            try:
+                set_secret(name, value)
+                print(f"Secret '{name}' stored.")
+            except Exception as e:
+                print(f"Error storing secret: {e}", file=sys.stderr)
+                raise SystemExit(1)
+        elif action == "get":
+            if not name:
+                print("Error: --secret-name is required for 'secrets get'", file=sys.stderr)
+                raise SystemExit(1)
+            try:
+                result = get_secret(name)
+            except Exception as e:
+                print(f"Error reading secret: {e}", file=sys.stderr)
+                raise SystemExit(1)
+            if result is None:
+                print(f"Secret '{name}' not found.", file=sys.stderr)
+                raise SystemExit(1)
+            print(result)
+        elif action == "delete":
+            if not name:
+                print("Error: --secret-name is required for 'secrets delete'", file=sys.stderr)
+                raise SystemExit(1)
+            try:
+                removed = delete_secret(name)
+            except Exception as e:
+                print(f"Error deleting secret: {e}", file=sys.stderr)
+                raise SystemExit(1)
+            if removed:
+                print(f"Secret '{name}' deleted.")
+            else:
+                print(f"Secret '{name}' not found.", file=sys.stderr)
+                raise SystemExit(1)
+        return
+
+    if args.query == "repo-map":
+        from .repo_map import write_repo_map
+
+        workspace = os.getcwd()
+        out_path = (
+            getattr(args, "repo_map_output", None)
+            or str(Path(workspace) / ".ollamacode" / "repo_map.md")
+        )
+        max_files = getattr(args, "repo_map_max_files", None) or 200
+        dest = write_repo_map(workspace, out_path, max_files=max_files)
+        print(f"[OllamaCode] Repo map written to {dest}", file=sys.stderr)
+        return
+
+    if args.query == "reindex":
+        workspace = getattr(args, "reindex_workspace", None) or os.getcwd()
+        print(f"Building vector memory index for: {workspace}", file=sys.stderr)
+        try:
+            from .vector_memory import build_vector_index
+
+            result = build_vector_index(workspace)
+            print(
+                f"Indexed {result['indexed_files']} files, {result['chunk_count']} chunks → {result['db_path']}",
+                file=sys.stderr,
+            )
+        except Exception as e:
+            print(f"Reindex failed: {e}", file=sys.stderr)
+            raise SystemExit(1)
+        return
+
+    if args.query == "cron":
+        from .scheduler import load_scheduled_tasks, run_task_now
+
         config = load_config(args.config)
-        merged = merge_config_with_env(config)
+        merged = merge_config_with_env(config, **get_env_config_overrides())
+        workspace = os.getcwd()
+        tasks = load_scheduled_tasks(merged, workspace)
+
+        # Sub-action from --secret-action style, or deduce from remaining argv
+        # Usage: ollamacode cron list | ollamacode cron run <name>
+        # We detect via sys.argv manually since argparse has already consumed "cron".
+        try:
+            cron_idx = next(i for i, a in enumerate(sys.argv) if a == "cron")
+            cron_rest = sys.argv[cron_idx + 1 :]
+        except StopIteration:
+            cron_rest = []
+
+        sub = cron_rest[0] if cron_rest else "list"
+
+        if sub == "list":
+            if not tasks:
+                print("No scheduled tasks configured.")
+                print("Add tasks to ollamacode.yaml (scheduled_tasks:) or HEARTBEAT.md.")
+            else:
+                print(f"Scheduled tasks ({len(tasks)}):")
+                for t in tasks:
+                    name = t.get("name", "?")
+                    desc = t.get("description", "")
+                    interval = t.get("interval")
+                    cron_expr = t.get("cron")
+                    obs = t.get("observability", "noop")
+                    sched = f"every {interval}s" if interval else (f"cron: {cron_expr}" if cron_expr else "no schedule")
+                    line = f"  {name:<30} [{sched}] obs={obs}"
+                    if desc:
+                        line += f"\n    {desc}"
+                    print(line)
+        elif sub == "run":
+            task_name = cron_rest[1] if len(cron_rest) > 1 else ""
+            if not task_name:
+                print("Usage: ollamacode cron run <task-name>", file=sys.stderr)
+                raise SystemExit(1)
+            matching = [t for t in tasks if t.get("name") == task_name]
+            if not matching:
+                print(f"Task '{task_name}' not found. Use 'ollamacode cron list' to see available tasks.", file=sys.stderr)
+                raise SystemExit(1)
+            task = matching[0]
+            model_val = args.model or merged.get("model") or os.environ.get("OLLAMACODE_MODEL", "gpt-oss:20b")
+            print(f"Running task '{task_name}'...", file=sys.stderr)
+            try:
+                output = run_task_now(task, model=model_val, config=merged)
+                print(output)
+            except Exception as e:
+                print(f"Task failed: {e}", file=sys.stderr)
+                raise SystemExit(1)
+        else:
+            print(f"Unknown cron subcommand: {sub!r}. Use 'list' or 'run <name>'.", file=sys.stderr)
+            raise SystemExit(1)
+        return
+
+    if args.query == "health":
+        from .health import check_provider, check_toolchain_versions
+
+        config = load_config(args.config)
+        env_overrides = get_env_config_overrides()
+        if getattr(args, "provider", None):
+            env_overrides["provider_env"] = args.provider
+        if getattr(args, "base_url", None):
+            env_overrides["base_url_env"] = args.base_url
+        if getattr(args, "api_key", None):
+            env_overrides["api_key_env"] = args.api_key
+        merged = merge_config_with_env(config, **env_overrides)
+        ok, msg = check_provider(merged)
+        print(msg, file=sys.stderr)
         checks = merged.get("toolchain_version_checks") or []
         if checks:
             results = check_toolchain_versions(checks, cwd=os.getcwd())
@@ -1405,7 +2164,8 @@ def main() -> None:
             )
             raise SystemExit(1) from e
         port = getattr(args, "port", 8000)
-        run_serve(port=port, config_path=args.config)
+        no_tunnel = getattr(args, "no_tunnel", False)
+        run_serve(port=port, config_path=args.config, no_tunnel=no_tunnel)
         return
     # RLM reads prompt from query or stdin; interactive (no query) uses TUI only.
     use_rlm = getattr(args, "rlm", False)
@@ -1441,7 +2201,8 @@ def main() -> None:
                 file=sys.stderr,
             )
             raise SystemExit(1)
-        _check_ollama_and_model(model, getattr(args, "quiet", False))
+        _rlm_provider = get_provider(merged) if merged.get("provider", "ollama") != "ollama" else None
+        _check_provider_connectivity(_rlm_provider, model, getattr(args, "quiet", False), merged.get("provider", "ollama"))
         if getattr(args, "stream", False):
             from .rlm import run_rlm_loop_stream
 
@@ -1530,7 +2291,8 @@ def main() -> None:
             else entry
             for entry in mcp_servers
         ]
-        _check_ollama_and_model(model, getattr(args, "quiet", False))
+        _protocol_provider = get_provider(merged) if merged.get("provider", "ollama") != "ollama" else None
+        _check_provider_connectivity(_protocol_provider, model, getattr(args, "quiet", False), merged.get("provider", "ollama"))
 
         @contextlib.asynccontextmanager
         async def _session_ctx():
@@ -1586,7 +2348,15 @@ def main() -> None:
         mcp_servers = []
         using_builtin = False
     config = load_config(args.config)
-    merged = merge_config_with_env(config, **get_env_config_overrides())
+    _env_overrides = get_env_config_overrides()
+    # CLI flags for provider/base-url/api-key override env vars
+    if getattr(args, "provider", None):
+        _env_overrides["provider_env"] = args.provider
+    if getattr(args, "base_url", None):
+        _env_overrides["base_url_env"] = args.base_url
+    if getattr(args, "api_key", None):
+        _env_overrides["api_key_env"] = args.api_key
+    merged = merge_config_with_env(config, **_env_overrides)
     model = (
         args.model
         or merged.get("model")
@@ -1617,11 +2387,41 @@ def main() -> None:
             file=sys.stderr,
             flush=True,
         )
+    # Apply sandbox level: --sandbox CLI flag > ollamacode.yaml sandbox_level > env var (default supervised).
+    _sandbox_level = (
+        getattr(args, "sandbox", None)
+        or merged.get("sandbox_level")
+        or os.environ.get("OLLAMACODE_SANDBOX_LEVEL")
+    )
+    if _sandbox_level:
+        os.environ["OLLAMACODE_SANDBOX_LEVEL"] = _sandbox_level
+
+    # Build provider from merged config (Ollama is the default; returns None to preserve old path)
+    _provider_name = merged.get("provider", "ollama")
+    _main_provider: BaseProvider | None = get_provider(merged) if _provider_name != "ollama" else None
     try:
-        _check_ollama_and_model(model, quiet)
+        _check_provider_connectivity(_main_provider, model, quiet, _provider_name)
     except SystemExit:
         raise
     try:
+        # Model-aware timeout defaults for Ollama (unless explicitly set via --timeout).
+        if getattr(args, "timeout", None) is None:
+            model_name = (args.model or merged.get("model") or os.environ.get("OLLAMACODE_MODEL", "")).lower()
+            if any(k in model_name for k in ("70b", "65b", "405b", "120b")):
+                os.environ.setdefault("OLLAMACODE_OLLAMA_TIMEOUT_SECONDS", "180")
+            elif any(k in model_name for k in ("13b", "8b", "7b")):
+                os.environ.setdefault("OLLAMACODE_OLLAMA_TIMEOUT_SECONDS", "120")
+            else:
+                os.environ.setdefault("OLLAMACODE_OLLAMA_TIMEOUT_SECONDS", "150")
+        if getattr(args, "stream_with_tools", False):
+            os.environ["OLLAMACODE_STREAM_WITH_TOOLS"] = "1"
+        if getattr(args, "tool_timeout", None) is not None:
+            os.environ["OLLAMACODE_TOOL_TIMEOUT_SECONDS"] = str(args.tool_timeout)
+        if getattr(args, "tool_budget", None) is not None:
+            os.environ["OLLAMACODE_TOOL_BUDGET_SECONDS"] = str(args.tool_budget)
+        if getattr(args, "run_budget", None) is not None:
+            os.environ["OLLAMACODE_RUN_BUDGET_SECONDS"] = str(args.run_budget)
+
         rules_file = merged.get("rules_file")
         run_timeout = getattr(args, "run_timeout", None)
         coro = _run(
@@ -1680,10 +2480,17 @@ def main() -> None:
             memory_kg_max_results=merged.get("memory_kg_max_results", 4),
             memory_rag_max_results=merged.get("memory_rag_max_results", 4),
             memory_rag_snippet_chars=merged.get("memory_rag_snippet_chars", 220),
+            auto_check_after_edits=merged.get("auto_check_after_edits", False),
+            auto_check_mode=merged.get("auto_check_mode", "test"),
             headless=getattr(args, "headless", False),
             run_timeout=run_timeout,
             autonomous_mode=getattr(args, "autonomous_mode", False),
             subagents=merged.get("subagents") or [],
+            provider=_main_provider,
+            voice_in=getattr(args, "voice_in", False),
+            voice_out=getattr(args, "voice_out", False),
+            voice_seconds=getattr(args, "voice_seconds", 5.0),
+            voice_model=getattr(args, "voice_model", "base"),
         )
         if run_timeout and args.query:
 

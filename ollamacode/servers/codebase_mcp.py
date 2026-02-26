@@ -195,6 +195,121 @@ def grep(
     return "\n---\n".join(results)
 
 
+@mcp.tool()
+def build_repo_map(
+    max_files: int = 200,
+    max_symbols_per_file: int = 6,
+    max_chars_per_file: int = 6000,
+) -> str:
+    """
+    Build a compact repo map with top-level symbols.
+    Returns markdown text (does not write files).
+    """
+    try:
+        from ollamacode.repo_map import build_repo_map as _build
+
+        return _build(
+            str(_root()),
+            max_files=max(1, min(max_files, 2000)),
+            max_symbols_per_file=max(1, min(max_symbols_per_file, 20)),
+            max_chars_per_file=max(1000, min(max_chars_per_file, 20000)),
+        )
+    except Exception as e:
+        return f"Repo map error: {e}"
+
+
+@mcp.tool()
+def build_symbol_index(
+    max_files: int = 400,
+    max_symbols_per_file: int = 20,
+    max_chars_per_file: int = 12000,
+) -> dict[str, list[str]]:
+    """Build a symbol index {path: [symbols...]}. Useful for quick lookup."""
+    try:
+        from ollamacode.repo_map import build_symbol_index as _build
+
+        return _build(
+            str(_root()),
+            max_files=max(1, min(max_files, 5000)),
+            max_symbols_per_file=max(1, min(max_symbols_per_file, 50)),
+            max_chars_per_file=max(1000, min(max_chars_per_file, 30000)),
+        )
+    except Exception as e:
+        return {"error": [str(e)]}
+
+
+@mcp.tool()
+def build_symbol_graph(
+    max_files: int = 400,
+    max_chars_per_file: int = 12000,
+) -> dict[str, dict[str, list[str]]]:
+    """Build a symbol graph with definitions and call references (best-effort)."""
+    try:
+        from ollamacode.symbol_graph import build_symbol_graph as _build
+
+        return _build(
+            str(_root()),
+            max_files=max(1, min(max_files, 5000)),
+            max_chars_per_file=max(1000, min(max_chars_per_file, 30000)),
+        )
+    except Exception as e:
+        return {"error": {"message": str(e)}}
+
+
+@mcp.tool()
+def index_symbols(
+    max_files: int = 400,
+    max_chars_per_file: int = 12000,
+) -> dict[str, int]:
+    """Build persistent symbol index (definitions + references)."""
+    try:
+        from ollamacode.symbol_index import build_symbol_index as _build
+
+        return _build(
+            str(_root()),
+            max_files=max(1, min(max_files, 5000)),
+            max_chars_per_file=max(1000, min(max_chars_per_file, 30000)),
+        )
+    except Exception as e:
+        return {"symbols": 0, "references": 0, "error": str(e)}
+
+
+@mcp.tool()
+def query_symbol_index(name: str, limit: int = 50) -> dict[str, list[dict[str, str | int]]]:
+    """Query persistent symbol index for definitions."""
+    try:
+        from ollamacode.symbol_index import query_symbol as _query
+
+        rows = _query(name, workspace_root=str(_root()), limit=max(1, min(limit, 200)))
+        return {"matches": rows}
+    except Exception as e:
+        return {"matches": [], "error": str(e)}
+
+
+@mcp.tool()
+def find_symbol_references(name: str, limit: int = 100) -> dict[str, list[dict[str, str | int]]]:
+    """Find references to a symbol using persistent index."""
+    try:
+        from ollamacode.symbol_index import find_references as _find
+
+        rows = _find(name, workspace_root=str(_root()), limit=max(1, min(limit, 500)))
+        return {"matches": rows}
+    except Exception as e:
+        return {"matches": [], "error": str(e)}
+
+
+@mcp.tool()
+def refactor_rename(old_name: str, new_name: str, max_files: int = 500) -> dict[str, list[dict]]:
+    """Generate unified-diff edits to rename a symbol across the workspace."""
+    try:
+        from ollamacode.refactor import rename_symbol
+
+        edits = rename_symbol(str(_root()), old_name, new_name, max_files=max_files)
+        return {"edits": edits}
+    except Exception as e:
+        return {"edits": [], "error": str(e)}
+
+
 def main() -> None:
     mcp.run(transport="stdio")
 

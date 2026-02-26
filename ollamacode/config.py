@@ -22,16 +22,27 @@ ENV_CONFIG_SCHEMA: list[tuple[str, str]] = [
     ("OLLAMACODE_MCP_ARGS", "mcp_args_env"),
     ("OLLAMACODE_SYSTEM_EXTRA", "system_extra_env"),
     ("OLLAMACODE_PYTHON", "python_executable"),
+    ("OLLAMACODE_PROVIDER", "provider_env"),
+    ("OLLAMACODE_BASE_URL", "base_url_env"),
+    ("OLLAMACODE_API_KEY", "api_key_env"),
 ]
 
 """Single source of truth for config defaults. Used by merge_config_with_env and load_config."""
 DEFAULT_CONFIG: dict[str, Any] = {
     "model": None,
+    "provider": "ollama",
+    "base_url": None,
+    "api_key": None,
+    "sandbox_level": "supervised",
     "system_prompt_extra": "",
     "max_messages": 0,
     "max_tool_rounds": 20,
     "max_tool_result_chars": 0,
     "max_edits_per_request": 0,
+    "auto_check_after_edits": False,
+    "auto_check_mode": "test",
+    "auto_check_fix_on_fail": False,
+    "auto_check_fix_max_rounds": 1,
     "auto_summarize_after_turns": 0,
     "timing": False,
     "rules_file": None,
@@ -334,6 +345,9 @@ def get_resolved_config(
     mcp_args_env: str | None = None,
     system_extra_env: str | None = None,
     python_executable: str | None = None,
+    provider_env: str | None = None,
+    base_url_env: str | None = None,
+    api_key_env: str | None = None,
 ) -> dict[str, Any]:
     """
     Load config from file (if present) and merge with env, returning a dict that
@@ -347,6 +361,9 @@ def get_resolved_config(
         mcp_args_env=mcp_args_env,
         system_extra_env=system_extra_env,
         python_executable=python_executable,
+        provider_env=provider_env,
+        base_url_env=base_url_env,
+        api_key_env=api_key_env,
     )
 
 
@@ -398,6 +415,9 @@ def merge_config_with_env(
     mcp_args_env: str | None = None,
     system_extra_env: str | None = None,
     python_executable: str | None = None,
+    provider_env: str | None = None,
+    base_url_env: str | None = None,
+    api_key_env: str | None = None,
 ) -> dict[str, Any]:
     """
     Merge config with env vars. Env overrides config when set.
@@ -411,6 +431,9 @@ def merge_config_with_env(
     validate_config(config)
     out: dict[str, Any] = dict(DEFAULT_CONFIG)
     out["model"] = model_env or config.get("model", out["model"])
+    out["provider"] = (provider_env or config.get("provider") or out["provider"]).lower().strip()
+    out["base_url"] = base_url_env or config.get("base_url") or out["base_url"]
+    out["api_key"] = api_key_env or config.get("api_key") or out["api_key"]
     out["system_prompt_extra"] = (system_extra_env or "").strip() or (
         (config.get("system_prompt_extra") or "").strip() or out["system_prompt_extra"]
     )

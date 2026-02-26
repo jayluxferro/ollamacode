@@ -49,6 +49,22 @@ from .templates import load_prompt_template
 _approval_pending: dict[str, dict[str, Any]] = {}
 
 
+def _verify_webhook_hmac(body_bytes: bytes, signature_header: str, secret: str) -> bool:
+    """Verify an HMAC-SHA256 webhook signature.
+
+    Expects ``signature_header`` in the form ``sha256=<hex_digest>`` (GitHub style).
+    """
+    import hashlib
+    import hmac
+
+    if not signature_header.startswith("sha256="):
+        return False
+    expected = "sha256=" + hmac.new(
+        secret.encode("utf-8"), body_bytes, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature_header)
+
+
 def _append_dynamic_memory(
     system: str,
     query: str,
@@ -235,6 +251,7 @@ async def _handle_chat(
     )
     if message is None:
         return {"content": "", "error": "message required"}
+    request_id = body.get("requestId") or uuid.uuid4().hex
     tool_errors: list[dict[str, Any]] = []
     try:
         if session is not None:
@@ -250,9 +267,15 @@ async def _handle_chat(
                 tool_errors_out=tool_errors,
                 confirm_tool_calls=confirm_tool_calls,
                 before_tool_call=before_tool_call,
+                request_id=request_id,
             )
         else:
-            out = await run_agent_loop_no_mcp(use_model, message, system_prompt=system)
+            out = await run_agent_loop_no_mcp(
+                use_model,
+                message,
+                system_prompt=system,
+                request_id=request_id,
+            )
         result: dict[str, Any] = {"content": out}
         edits = parse_edits(out)
         if edits:
@@ -289,6 +312,9 @@ def create_app(
     max_tool_result_chars: int = 0,
     workspace_root: str | None = None,
     api_key: str | None = None,
+    scheduled_tasks: list[dict] | None = None,
+    merged_config: dict | None = None,
+    enable_channels: bool = True,
     use_skills: bool = True,
     prompt_template: str | None = None,
     inject_recent_context: bool = True,
@@ -308,8 +334,22 @@ def create_app(
     memory_kg_max_results: int = 4,
     memory_rag_max_results: int = 4,
     memory_rag_snippet_chars: int = 220,
+    rate_limit_rpm: int = 0,
+    rate_limit_tpd: int = 0,
+    webhook_secret: str | None = None,
 ):
-    """Create ASGI app (Starlette) with MCP session in lifespan. If api_key is set, requests must send Authorization: Bearer <key> or X-API-Key: <key>."""
+    """Create ASGI app (Starlette) with MCP session in lifespan.
+
+    Authentication: if api_key is set, requests must send
+    ``Authorization: Bearer <key>`` or ``X-API-Key: <key>``.
+
+    Rate limiting: if rate_limit_rpm > 0, at most that many requests per
+    client IP per minute are allowed; 429 with Retry-After on excess.
+    If rate_limit_tpd > 0, a daily token budget is enforced per IP.
+
+    Webhook HMAC: if webhook_secret is set, POST /chat must include
+    ``X-Hub-Signature-256: sha256=<digest>`` computed over the raw body.
+    """
     root = workspace_root or os.getcwd()
     try:
         from starlette.applications import Starlette
@@ -320,6 +360,27 @@ def create_app(
         raise ImportError(
             "Server requires starlette. Install with: pip install ollamacode[server]"
         ) from e
+
+    from .rate_limit import RateLimiter
+
+    _limiter = RateLimiter(
+        requests_per_minute=rate_limit_rpm,
+        tokens_per_day=rate_limit_tpd,
+    )
+
+    def _check_rate_limit(request: Request) -> "JSONResponse | None":
+        """Return a 429 JSONResponse if the client is rate-limited, else None."""
+        if not _limiter.is_active():
+            return None
+        client_ip = (request.client.host if request.client else None) or "unknown"
+        allowed, retry_after = _limiter.check(client_ip)
+        if not allowed:
+            return JSONResponse(
+                {"error": "rate limit exceeded", "retry_after": retry_after},
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            )
+        return None
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
@@ -333,9 +394,41 @@ def create_app(
             else:
                 ctx = connect_mcp_servers(mcp_servers)
             app.state.session = await ctx.__aenter__()
+        # Start background scheduler if tasks are configured.
+        _scheduler = None
+        if scheduled_tasks:
+            try:
+                from .scheduler import Scheduler
+
+                _scheduler = Scheduler(scheduled_tasks, model=model, config=merged_config or {})
+                _scheduler.start()
+            except Exception as exc:
+                import logging as _log
+
+                _log.getLogger(__name__).warning("Failed to start scheduler: %s", exc)
+        # Start channel adapters (Telegram, Discord) if configured.
+        _channel_handles: list = []
+        if enable_channels and merged_config:
+            try:
+                from .channels import start_channels
+
+                _channel_handles = start_channels(merged_config, model, merged_config)
+            except Exception as exc:
+                import logging as _log
+
+                _log.getLogger(__name__).warning("Failed to start channels: %s", exc)
         try:
             yield
         finally:
+            if _channel_handles:
+                try:
+                    from .channels import stop_channels
+
+                    stop_channels(_channel_handles)
+                except Exception:
+                    pass
+            if _scheduler is not None:
+                _scheduler.stop()
             if ctx is not None:
                 await ctx.__aexit__(None, None, None)
 
@@ -351,10 +444,24 @@ def create_app(
             err = _check_api_key(request, api_key)
             if err is not None:
                 return err
-        try:
-            body = await request.json()
-        except Exception:
-            return JSONResponse({"error": "invalid json"}, status_code=400)
+        rl_err = _check_rate_limit(request)
+        if rl_err is not None:
+            return rl_err
+        # Webhook HMAC verification (optional; for channel integrations).
+        if webhook_secret:
+            raw_body = await request.body()
+            sig = request.headers.get("X-Hub-Signature-256", "")
+            if not _verify_webhook_hmac(raw_body, sig, webhook_secret):
+                return JSONResponse({"error": "invalid webhook signature"}, status_code=403)
+            try:
+                body = json.loads(raw_body)
+            except Exception:
+                return JSONResponse({"error": "invalid json"}, status_code=400)
+        else:
+            try:
+                body = await request.json()
+            except Exception:
+                return JSONResponse({"error": "invalid json"}, status_code=400)
         session: McpConnection | None = getattr(request.app.state, "session", None)
         use_confirm = (
             body.get("confirmToolCalls") or confirm_tool_calls
@@ -500,6 +607,7 @@ def create_app(
                 out["edits"] = edits
             return JSONResponse(out)
         if use_confirm:
+            request_id = body.get("requestId") or uuid.uuid4().hex
             message, use_model, system = _build_chat_system(
                 body,
                 model,
@@ -549,6 +657,7 @@ def create_app(
                     tool_errors_out=tool_errors,
                     confirm_tool_calls=True,
                     before_tool_call=before_tool_call,
+                    request_id=request_id,
                 )
             )
             done, _ = await asyncio.wait(
@@ -616,6 +725,9 @@ def create_app(
             err = _check_api_key(request, api_key)
             if err is not None:
                 return err
+        rl_err = _check_rate_limit(request)
+        if rl_err is not None:
+            return rl_err
         try:
             body = await request.json()
         except Exception:
@@ -693,6 +805,9 @@ def create_app(
             err = _check_api_key(request, api_key)
             if err is not None:
                 return err
+        rl_err = _check_rate_limit(request)
+        if rl_err is not None:
+            return rl_err
         try:
             body = await request.json()
         except Exception:
@@ -773,6 +888,7 @@ def create_app(
             memory_rag_max_results=req_mem_rag,
             memory_rag_snippet_chars=req_mem_chars,
         )
+        request_id = body.get("requestId") or uuid.uuid4().hex
 
         async def generate() -> AsyncIterator[str]:
             session: McpConnection | None = getattr(request.app.state, "session", None)
@@ -790,6 +906,7 @@ def create_app(
                         allowed_tools=allowed_tools,
                         blocked_tools=blocked_tools,
                         confirm_tool_calls=confirm_tool_calls,
+                        request_id=request_id,
                     )
                 else:
                     stream = run_agent_loop_no_mcp_stream(
@@ -797,6 +914,7 @@ def create_app(
                         message,
                         system_prompt=system,
                         message_history=[],
+                        request_id=request_id,
                     )
                 async for chunk in stream:
                     accumulated.append(chunk)
@@ -979,7 +1097,7 @@ def create_app(
 # run_serve unchanged except for imports
 
 
-def run_serve(port: int = 8000, config_path: str | None = None) -> None:
+def run_serve(port: int = 8000, config_path: str | None = None, no_tunnel: bool = False) -> None:
     """Load config, create app, run uvicorn."""
     try:
         import uvicorn
@@ -998,8 +1116,20 @@ def run_serve(port: int = 8000, config_path: str | None = None) -> None:
     workspace_root = os.getcwd()
     serve_config = merged.get("serve") or {}
     api_key = (
-        serve_config.get("api_key") or os.environ.get("OLLAMACODE_SERVE_API_KEY") or ""
+        serve_config.get("api_key")
+        or os.environ.get("OLLAMACODE_SERVE_API_KEY")
+        or os.environ.get("OLLAMACODE_API_KEY")
+        or ""
     ).strip() or None
+    rate_limit_rpm = int(serve_config.get("rate_limit_rpm") or os.environ.get("OLLAMACODE_RATE_LIMIT_RPM") or 0)
+    rate_limit_tpd = int(serve_config.get("rate_limit_tpd") or os.environ.get("OLLAMACODE_RATE_LIMIT_TPD") or 0)
+    webhook_secret = (
+        serve_config.get("webhook_secret") or os.environ.get("OLLAMACODE_WEBHOOK_SECRET") or ""
+    ).strip() or None
+
+    from .scheduler import load_scheduled_tasks
+
+    scheduled = load_scheduled_tasks(merged, workspace_root)
 
     app = create_app(
         model,
@@ -1009,6 +1139,8 @@ def run_serve(port: int = 8000, config_path: str | None = None) -> None:
         max_tool_result_chars,
         workspace_root,
         api_key=api_key,
+        scheduled_tasks=scheduled or None,
+        merged_config=merged,
         use_skills=merged.get("use_skills", True),
         prompt_template=merged.get("prompt_template"),
         inject_recent_context=merged.get("inject_recent_context", True),
@@ -1028,5 +1160,31 @@ def run_serve(port: int = 8000, config_path: str | None = None) -> None:
         memory_kg_max_results=merged.get("memory_kg_max_results", 4),
         memory_rag_max_results=merged.get("memory_rag_max_results", 4),
         memory_rag_snippet_chars=merged.get("memory_rag_snippet_chars", 220),
+        rate_limit_rpm=rate_limit_rpm,
+        rate_limit_tpd=rate_limit_tpd,
+        webhook_secret=webhook_secret,
+        enable_channels=True,
     )
-    uvicorn.run(app, host="127.0.0.1", port=port)
+    # Start tunnel if configured and not disabled.
+    _tunnel_proc = None
+    if not no_tunnel:
+        try:
+            from .tunnel import start_tunnel_from_config
+
+            tunnel_url, _tunnel_proc = start_tunnel_from_config(merged, port)
+            if tunnel_url:
+                print(f"[OllamaCode] Tunnel active: {tunnel_url}", flush=True)
+        except Exception as exc:
+            import logging as _log
+
+            _log.getLogger(__name__).warning("Tunnel error: %s", exc)
+    try:
+        uvicorn.run(app, host="127.0.0.1", port=port)
+    finally:
+        if _tunnel_proc is not None:
+            try:
+                from .tunnel import stop_tunnel
+
+                stop_tunnel(_tunnel_proc)
+            except Exception:
+                pass

@@ -10,6 +10,10 @@ from __future__ import annotations
 
 from typing import Any, Generator
 
+import json
+import os
+import urllib.request
+
 import ollama
 
 
@@ -159,6 +163,54 @@ def _generate_stream_fallback(
             yield (content,)
 
 
+def _raw_stream_chat(
+    model: str, messages: list[dict[str, Any]]
+) -> Generator[tuple[str], None, None]:
+    """Stream via Ollama HTTP API; tolerate empty/partial JSON lines."""
+    base = (
+        os.environ.get("OLLAMACODE_BASE_URL")
+        or os.environ.get("OLLAMA_HOST")
+        or "http://localhost:11434"
+    ).rstrip("/")
+    url = f"{base}/api/chat"
+    body = json.dumps(
+        {"model": model, "messages": messages, "tools": [], "stream": True}
+    ).encode("utf-8")
+    timeout = float(os.environ.get("OLLAMACODE_STREAM_TOTAL_TIMEOUT_SECONDS", "90"))
+    req = urllib.request.Request(
+        url, data=body, headers={"Content-Type": "application/json"}
+    )
+    buffer = ""
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        for raw in resp:
+            line = raw.decode("utf-8", errors="ignore").strip()
+            if not line:
+                continue
+            if line.startswith("data:"):
+                line = line[5:].strip()
+            buffer += line
+            try:
+                chunk = json.loads(buffer)
+            except json.JSONDecodeError:
+                continue
+            buffer = ""
+            msg = (
+                chunk.get("message")
+                if isinstance(chunk, dict)
+                else getattr(chunk, "message", None)
+            )
+            content = _get(msg, "content", "") or "" if msg else ""
+            if content:
+                yield (content,)
+            done = (
+                chunk.get("done")
+                if isinstance(chunk, dict)
+                else getattr(chunk, "done", False)
+            )
+            if done:
+                break
+
+
 def chat_stream_sync(
     model: str,
     messages: list[dict[str, Any]],
@@ -167,6 +219,17 @@ def chat_stream_sync(
     Stream Ollama response (no tools). Try chat stream; on template error, fall back to generate stream.
     Yields (content_fragment,) per chunk.
     """
+    harden = os.environ.get("OLLAMACODE_HARDEN_STREAM", "1") != "0"
+    if harden:
+        try:
+            yield from _raw_stream_chat(model, messages)
+            return
+        except Exception as e:  # noqa: BLE001
+            if is_ollama_template_error(e):
+                system, prompt = _messages_to_system_and_prompt(messages)
+                yield from _generate_stream_fallback(model, prompt, system)
+                return
+            # fall back to client stream
     try:
         stream = ollama.chat(model=model, messages=messages, tools=[], stream=True)
         for chunk in stream:

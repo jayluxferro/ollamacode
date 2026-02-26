@@ -1,5 +1,6 @@
 """
-Agent loop: user message + MCP tools → Ollama chat → tool_calls → MCP call_tool → append results → repeat.
+Agent loop: user message + MCP tools → LLM chat → tool_calls → MCP call_tool → append results → repeat.
+Supports multiple AI providers via the providers/ package (Ollama, OpenAI-compat, Anthropic, ...).
 """
 
 from __future__ import annotations
@@ -12,6 +13,9 @@ import queue
 import sys
 import threading
 import time
+import json as _json
+import difflib as _difflib
+from pathlib import Path
 from collections.abc import AsyncIterator
 from typing import Any, Awaitable, Callable, Literal
 
@@ -22,6 +26,7 @@ from .ollama_client import (
     chat_stream_sync as ollama_chat_stream_with_fallback_sync,
     wrap_ollama_template_error as _wrap_ollama_template_error,
 )
+from .providers.base import BaseProvider
 from .bridge import (
     add_harmony_function_aliases,
     add_tool_aliases_for_ollama,
@@ -31,12 +36,115 @@ from .mcp_client import (
     TOOL_NAME_ALIASES,
     McpConnection,
     call_tool,
+    disable_tool_calls,
     list_tools,
+    reset_tool_calls,
     tool_result_to_content,
 )
 from .state import append_past_error
 
 logger = logging.getLogger(__name__)
+
+# Tool replay/record (deterministic runs)
+_REPLAY_PATH = os.environ.get("OLLAMACODE_TOOL_REPLAY_PATH", "").strip()
+_RECORD_PATH = os.environ.get("OLLAMACODE_TOOL_RECORD_PATH", "").strip()
+_REPLAY_ENTRIES: list[dict[str, Any]] | None = None
+_REPLAY_INDEX = 0
+_REPLAY_LOCK = threading.Lock()
+
+
+def _load_replay_entries() -> list[dict[str, Any]]:
+    global _REPLAY_ENTRIES
+    if _REPLAY_ENTRIES is not None:
+        return _REPLAY_ENTRIES
+    entries: list[dict[str, Any]] = []
+    if _REPLAY_PATH and Path(_REPLAY_PATH).exists():
+        for line in Path(_REPLAY_PATH).read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = _json.loads(line)
+                if isinstance(obj, dict):
+                    entries.append(obj)
+            except Exception:
+                continue
+    _REPLAY_ENTRIES = entries
+    return entries
+
+
+def _next_replay_entry() -> dict[str, Any] | None:
+    global _REPLAY_INDEX
+    if not _REPLAY_PATH:
+        return None
+    entries = _load_replay_entries()
+    with _REPLAY_LOCK:
+        if _REPLAY_INDEX >= len(entries):
+            return None
+        entry = entries[_REPLAY_INDEX]
+        _REPLAY_INDEX += 1
+        return entry
+
+
+def _record_tool_event(
+    name: str,
+    arguments: dict[str, Any],
+    content: str,
+    is_error: bool,
+    hint: str | None,
+    duration_s: float | None = None,
+) -> None:
+    if not _RECORD_PATH:
+        return
+    payload = {
+        "tool": name,
+        "arguments": arguments,
+        "content": content,
+        "is_error": is_error,
+        "hint": hint,
+    }
+    if duration_s is not None:
+        payload["duration_s"] = duration_s
+    try:
+        with open(_RECORD_PATH, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _emit_replay_report() -> None:
+    if not (_REPLAY_PATH and _RECORD_PATH):
+        return
+    if os.environ.get("OLLAMACODE_REPLAY_REPORT", "0") != "1":
+        return
+    try:
+        replay = [json.loads(l) for l in Path(_REPLAY_PATH).read_text(encoding="utf-8").splitlines() if l.strip()]
+        live = [json.loads(l) for l in Path(_RECORD_PATH).read_text(encoding="utf-8").splitlines() if l.strip()]
+    except Exception:
+        return
+    lines: list[str] = ["[replay] report"]
+    for i, (r, l) in enumerate(zip(replay, live), 1):
+        tool = r.get("tool")
+        if tool != l.get("tool"):
+            lines.append(f"  {i}. tool mismatch: replay={tool} live={l.get('tool')}")
+            continue
+        rd = r.get("duration_s")
+        ld = l.get("duration_s")
+        if rd is not None and ld is not None:
+            lines.append(f"  {i}. {tool} duration: replay={rd:.3f}s live={ld:.3f}s Δ={ld-rd:.3f}s")
+        if r.get("content") != l.get("content"):
+            diff = "\n".join(
+                _difflib.unified_diff(
+                    str(r.get("content", "")).splitlines(),
+                    str(l.get("content", "")).splitlines(),
+                    fromfile="replay",
+                    tofile="live",
+                    lineterm="",
+                )
+            )
+            if diff:
+                lines.append("  diff:\n" + "\n".join(diff.splitlines()[:40]))
+    print("\n".join(lines), file=sys.stderr)
 
 # When confirm_tool_calls is True, optional callback before each tool: return "run" | "skip" | ("edit", new_args).
 ToolCallDecision = (
@@ -156,14 +264,35 @@ def _filter_tools_by_policy(
 
 
 def _json_log_event(**kwargs: Any) -> None:
-    """If OLLAMACODE_JSON_LOGS=1, print one JSON object per line to stderr (for profiling/dashboards)."""
-    if os.environ.get("OLLAMACODE_JSON_LOGS", "").strip().lower() not in (
+    """Emit one JSON log line (stderr and/or JSONL file)."""
+    payload = json.dumps(kwargs, ensure_ascii=False)
+    if os.environ.get("OLLAMACODE_JSON_LOGS", "").strip().lower() in (
         "1",
         "true",
         "yes",
     ):
-        return
-    print(json.dumps(kwargs), file=sys.stderr, flush=True)
+        print(payload, file=sys.stderr, flush=True)
+    if (
+        kwargs.get("event") == "trace_summary"
+        and os.environ.get("OLLAMACODE_TRACE_SUMMARY_STDOUT", "0") == "1"
+    ):
+        tool_calls = kwargs.get("tool_calls", 0)
+        tool_errors = kwargs.get("tool_errors", 0)
+        duration_s = kwargs.get("duration_s", 0)
+        print(
+            f"[trace] duration={duration_s}s tools={tool_calls} errors={tool_errors}",
+            file=sys.stdout,
+            flush=True,
+        )
+    jsonl_path = os.environ.get("OLLAMACODE_JSONL_PATH") or os.environ.get(
+        "OLLAMACODE_LOG_JSONL"
+    )
+    if jsonl_path:
+        try:
+            with open(jsonl_path, "a", encoding="utf-8") as f:
+                f.write(payload + "\n")
+        except Exception:
+            pass
 
 
 def _log_tool_event(
@@ -387,28 +516,210 @@ ToolItem = tuple[str, dict[str, Any], str | None]
 ToolResult = tuple[str, dict[str, Any], str, bool, str | None]
 
 
+def _tool_retry_attempts() -> int:
+    raw = os.environ.get("OLLAMACODE_TOOL_RETRY_ATTEMPTS", "").strip()
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        n = 1
+    return max(1, min(n, 3))
+
+
+def _tool_timeout_seconds() -> float | None:
+    raw = os.environ.get("OLLAMACODE_TOOL_TIMEOUT_SECONDS", "").strip()
+    try:
+        val = float(raw) if raw else 60.0
+    except (TypeError, ValueError):
+        val = 60.0
+    return val if val > 0 else None
+
+
+def _tool_budget_seconds() -> float | None:
+    raw = os.environ.get("OLLAMACODE_TOOL_BUDGET_SECONDS", "").strip()
+    try:
+        val = float(raw) if raw else 0.0
+    except (TypeError, ValueError):
+        val = 0.0
+    return val if val > 0 else None
+
+
+def _run_budget_seconds() -> float | None:
+    raw = os.environ.get("OLLAMACODE_RUN_BUDGET_SECONDS", "").strip()
+    try:
+        val = float(raw) if raw else 0.0
+    except (TypeError, ValueError):
+        val = 0.0
+    return val if val > 0 else None
+
+
+def _should_retry_tool_error(content: str) -> bool:
+    c = (content or "").lower()
+    return any(
+        k in c
+        for k in (
+            "timeout",
+            "timed out",
+            "temporarily unavailable",
+            "connection reset",
+            "connection refused",
+            "broken pipe",
+            "try again",
+        )
+    )
+
+
+async def _maybe_recovery_hint(
+    session: McpConnection,
+    name: str,
+    arguments: dict[str, Any],
+    content: str,
+) -> str | None:
+    if os.environ.get("OLLAMACODE_TOOL_RECOVERY", "0") != "1":
+        return None
+    if _REPLAY_PATH:
+        return None
+    path = arguments.get("path") if isinstance(arguments, dict) else None
+    if not path or not isinstance(path, str):
+        return None
+    lowered = (content or "").lower()
+    if "file or path not found" not in lowered and "no such file" not in lowered:
+        return None
+    parent = os.path.dirname(path) or "."
+    try:
+        recovery = await call_tool(session, "list_dir", {"path": parent})
+        recovery_text = tool_result_to_content(recovery)
+        return f"Recovery hint: list_dir({parent}) =>\n{recovery_text}"
+    except Exception:
+        return None
+
+
+def _is_safe_tool_name(name: str) -> bool:
+    """Heuristic: treat read/search/list tools as safe for parallel execution."""
+    n = name.lower()
+    prefixes = ("read_", "list_", "search_", "grep", "glob", "get_", "diff_", "status")
+    return n.startswith(prefixes) or n in ("run_linter", "run_tests")
+
+
+async def _call_tool_with_retry(
+    session: McpConnection,
+    name: str,
+    arguments: dict[str, Any],
+    attempts: int,
+    *,
+    timeout_s: float | None = None,
+    deadline: float | None = None,
+) -> Any:
+    delay = 0.4
+    for i in range(attempts):
+        try:
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("tool budget exceeded")
+                if timeout_s is None:
+                    timeout = remaining
+                else:
+                    timeout = min(timeout_s, remaining)
+            else:
+                timeout = timeout_s
+            if timeout is not None:
+                return await asyncio.wait_for(call_tool(session, name, arguments), timeout)
+            return await call_tool(session, name, arguments)
+        except BaseException as e:
+            if i >= attempts - 1:
+                return e
+            msg = str(e)
+            if not _should_retry_tool_error(msg):
+                return e
+        await asyncio.sleep(delay)
+        delay = min(2.0, delay * 2)
+    return RuntimeError("tool retry attempts exceeded")
+
+
+async def _call_tool_with_retry_timed(
+    session: McpConnection,
+    name: str,
+    arguments: dict[str, Any],
+    attempts: int,
+    *,
+    timeout_s: float | None = None,
+    deadline: float | None = None,
+) -> tuple[Any, float]:
+    t0 = time.perf_counter()
+    result = await _call_tool_with_retry(
+        session, name, arguments, attempts, timeout_s=timeout_s, deadline=deadline
+    )
+    return result, time.perf_counter() - t0
+
+
 async def run_one_tool(
     session: McpConnection,
     name: str,
     arguments: dict[str, Any],
     max_tool_result_chars: int = 0,
+    *,
+    deadline: float | None = None,
+    timeout_s: float | None = None,
+    request_id: str | None = None,
 ) -> tuple[str, bool, str | None]:
     """
     Execute a single MCP tool call and return (content, is_error, hint).
     Content is truncated and includes error hint when is_error.
     """
-    try:
-        result = await call_tool(session, name, arguments)
-    except BaseException as e:
-        content = f"Tool error: {e}"
+    # Replay mode: return recorded tool output deterministically.
+    if _REPLAY_PATH:
+        entry = _next_replay_entry()
+        if entry is None:
+            content = "Tool error: replay exhausted"
+            return content, True, _format_tool_error_hint(content)
+        if entry.get("tool") != name:
+            content = f"Tool error: replay mismatch (expected {entry.get('tool')}, got {name})"
+            return content, True, _format_tool_error_hint(content)
+        content = str(entry.get("content", ""))
+        is_error = bool(entry.get("is_error", False))
+        hint = entry.get("hint")
+        return content, is_error, hint
+    attempts = _tool_retry_attempts()
+    if deadline is not None and time.monotonic() >= deadline:
+        _json_log_event(event="tool_budget_exceeded", tool=name, request_id=request_id)
+        content = "Tool error: tool budget exceeded"
+        is_error = True
+        hint = _format_tool_error_hint(content)
+        if hint:
+            content = content + "\n\n" + hint
+        content = _truncate_tool_result(content, max_tool_result_chars)
+        return content, is_error, hint
+    t0 = time.perf_counter()
+    result = await _call_tool_with_retry(
+        session,
+        name,
+        arguments,
+        attempts,
+        timeout_s=timeout_s,
+        deadline=deadline,
+    )
+    duration_s = time.perf_counter() - t0
+    if isinstance(result, BaseException):
+        content = f"Tool error: {result}"
         is_error = True
     else:
         content = tool_result_to_content(result)
         is_error = getattr(result, "isError", False)
+        if is_error and _should_retry_tool_error(content) and attempts > 1:
+            # One more retry if tool returned an explicit transient error.
+            retry_result = await _call_tool_with_retry(session, name, arguments, 1)
+            if not isinstance(retry_result, BaseException):
+                content = tool_result_to_content(retry_result)
+                is_error = getattr(retry_result, "isError", False)
     hint = _format_tool_error_hint(content) if is_error else None
     if hint:
         content = content + "\n\n" + hint
+    if is_error:
+        recovery = await _maybe_recovery_hint(session, name, arguments, content)
+        if recovery:
+            content = content + "\n\n" + recovery
     content = _truncate_tool_result(content, max_tool_result_chars)
+    _record_tool_event(name, arguments, content, is_error, hint, duration_s=duration_s)
     return content, is_error, hint
 
 
@@ -416,17 +727,110 @@ async def run_tools(
     session: McpConnection,
     items: list[ToolItem],
     max_tool_result_chars: int = 0,
+    *,
+    request_id: str | None = None,
 ) -> list[ToolResult]:
     """
     Execute MCP tool calls in parallel. Items are (name, arguments, parse_err).
     Returns (name, arguments, content, is_error, hint) in same order. Parse errors become synthetic error content.
     """
+    attempts = _tool_retry_attempts()
+    tool_timeout_s = _tool_timeout_seconds()
+    tool_budget_s = _tool_budget_seconds()
+    deadline = time.monotonic() + tool_budget_s if tool_budget_s else None
+    if _REPLAY_PATH:
+        out: list[ToolResult] = []
+        for name, arguments, parse_err in items:
+            if parse_err is not None:
+                content = (
+                    f"Tool arguments could not be parsed: {parse_err}. "
+                    "Please output valid JSON for the arguments."
+                )
+                content = _truncate_tool_result(content, max_tool_result_chars)
+                out.append((name, arguments, content, True, None))
+                continue
+            entry = _next_replay_entry()
+            if entry is None:
+                content = "Tool error: replay exhausted"
+                out.append((name, arguments, content, True, _format_tool_error_hint(content)))
+                continue
+            if entry.get("tool") != name:
+                content = f"Tool error: replay mismatch (expected {entry.get('tool')}, got {name})"
+                out.append((name, arguments, content, True, _format_tool_error_hint(content)))
+                continue
+            content = str(entry.get("content", ""))
+            is_error = bool(entry.get("is_error", False))
+            hint = entry.get("hint")
+            out.append((name, arguments, content, is_error, hint))
+        return out
     successful = [(n, a) for n, a, e in items if e is None]
-    results = await asyncio.gather(
-        *[call_tool(session, n, a) for n, a in successful],
-        return_exceptions=True,
-    )
+    safe_parallel = all(_is_safe_tool_name(n) for n, _, e in items if e is None)
+    results: list[Any] = []
+    durations: list[float] = []
+    if deadline is not None and time.monotonic() >= deadline:
+        _json_log_event(
+            event="tool_budget_exceeded",
+            tool_count=len(items),
+            request_id=request_id,
+        )
+        out: list[ToolResult] = []
+        for name, arguments, parse_err in items:
+            if parse_err is not None:
+                content = (
+                    f"Tool arguments could not be parsed: {parse_err}. "
+                    "Please output valid JSON for the arguments."
+                )
+                content = _truncate_tool_result(content, max_tool_result_chars)
+                out.append((name, arguments, content, True, None))
+            else:
+                content = "Tool error: tool budget exceeded"
+                hint = _format_tool_error_hint(content)
+                if hint:
+                    content = content + "\n\n" + hint
+                content = _truncate_tool_result(content, max_tool_result_chars)
+                out.append((name, arguments, content, True, hint))
+        return out
+    if safe_parallel:
+        timed = await asyncio.gather(
+            *[
+                _call_tool_with_retry_timed(
+                    session,
+                    n,
+                    a,
+                    attempts,
+                    timeout_s=tool_timeout_s,
+                    deadline=deadline,
+                )
+                for n, a in successful
+            ],
+            return_exceptions=True,
+        )
+        for item in timed:
+            if isinstance(item, BaseException):
+                results.append(item)
+                durations.append(0.0)
+            else:
+                res, dur = item
+                results.append(res)
+                durations.append(dur)
+    else:
+        for n, a in successful:
+            if deadline is not None and time.monotonic() >= deadline:
+                results.append(TimeoutError("tool budget exceeded"))
+                durations.append(0.0)
+                continue
+            res, dur = await _call_tool_with_retry_timed(
+                    session,
+                    n,
+                    a,
+                    attempts,
+                    timeout_s=tool_timeout_s,
+                    deadline=deadline,
+            )
+            results.append(res)
+            durations.append(dur)
     res_iter = iter(results)
+    dur_iter = iter(durations)
     out: list[ToolResult] = []
     for name, arguments, parse_err in items:
         if parse_err is not None:
@@ -438,6 +842,7 @@ async def run_tools(
             out.append((name, arguments, content, True, None))
             continue
         result = next(res_iter)
+        dur = next(dur_iter, None)
         if isinstance(result, BaseException):
             content = f"Tool error: {result}"
             is_error = True
@@ -448,6 +853,7 @@ async def run_tools(
         if hint:
             content = content + "\n\n" + hint
         content = _truncate_tool_result(content, max_tool_result_chars)
+        _record_tool_event(name, arguments, content, is_error, hint, duration_s=dur)
         out.append((name, arguments, content, is_error, hint))
     return out
 
@@ -473,6 +879,9 @@ async def run_agent_loop(
     on_tool_start: ToolStartCB | None = None,
     on_tool_end: ToolEndCB | None = None,
     image_paths: list[str] | None = None,
+    provider: BaseProvider | None = None,
+    request_id: str | None = None,
+    disallow_tools: bool = False,
 ) -> str:
     """
     Run one user turn: send message to Ollama with MCP tools; on tool_calls,
@@ -486,6 +895,8 @@ async def run_agent_loop(
     # 1. Get MCP tools and convert to Ollama format; keep MCP server prefix in names (e.g. ollamacode-fs_read_file).
     list_result = await list_tools(session)
     ollama_tools = mcp_tools_to_ollama(list_result.tools)
+    run_start = time.monotonic()
+    run_budget_s = _run_budget_seconds()
     ollama_tools = _filter_tools_by_policy(ollama_tools, allowed_tools, blocked_tools)
     ollama_tools = add_tool_aliases_for_ollama(ollama_tools, TOOL_NAME_ALIASES)
     ollama_tools = add_harmony_function_aliases(ollama_tools)
@@ -493,6 +904,12 @@ async def run_agent_loop(
         ollama_tools = []  # Ollama may require None for no tools; check docs
 
     messages: list[dict[str, Any]] = []
+    if disallow_tools:
+        tool_block = "Tool use is disabled for this phase. Do not call tools."
+        if system_prompt:
+            system_prompt = system_prompt + "\n\n" + tool_block
+        else:
+            system_prompt = tool_block
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     if message_history:
@@ -503,7 +920,33 @@ async def run_agent_loop(
     messages.append(user_msg)
 
     turn_start = time.perf_counter() if timing else None
+    tool_calls_total = 0
+    tool_errors_total = 0
+    disallow_tools_warned = False
+    disable_token = disable_tool_calls() if disallow_tools else None
+
+    def _finish(out: str) -> str:
+        if disable_token is not None:
+            reset_tool_calls(disable_token)
+        if turn_start is not None:
+            _json_log_event(
+                event="trace_summary",
+                request_id=request_id,
+                tool_calls=tool_calls_total,
+                tool_errors=tool_errors_total,
+                duration_s=round(time.perf_counter() - turn_start, 3),
+            )
+        _emit_replay_report()
+        return out
+
     for round_num in range(max_tool_rounds):
+        if run_budget_s and (time.monotonic() - run_start) > run_budget_s:
+            _json_log_event(
+                event="run_budget_exceeded", request_id=request_id, round=round_num + 1
+            )
+            return _finish(
+                "Run budget exceeded. Reduce scope or increase OLLAMACODE_RUN_BUDGET_SECONDS."
+            )
         # 2. Call Ollama (sync in thread); truncate if over max_messages
         if not quiet and not tool_progress_brief:
             logger.info("Sending to model (turn %s)...", round_num + 1)
@@ -512,13 +955,16 @@ async def run_agent_loop(
         )
         t0 = time.perf_counter() if timing else None
         try:
-            response = await ollama_chat_async(model, to_send, ollama_tools)
+            if provider is not None:
+                response = await provider.chat_async(model, to_send, ollama_tools)
+            else:
+                response = await ollama_chat_async(model, to_send, ollama_tools)
         except Exception as e:  # noqa: BLE001
             raise _wrap_ollama_template_error(e)
         if timing and t0 is not None:
             elapsed = time.perf_counter() - t0
-            logger.info("Ollama call: %.2fs", elapsed)
-            _json_log_event(event="ollama", duration_s=round(elapsed, 3))
+            logger.info("LLM call: %.2fs", elapsed)
+            _json_log_event(event="llm", duration_s=round(elapsed, 3), request_id=request_id)
 
         msg = (
             response.get("message")
@@ -526,10 +972,26 @@ async def run_agent_loop(
             else getattr(response, "message", None)
         )
         if msg is None:
-            return "No response from model."
+            return _finish("No response from model.")
 
         content = _get(msg, "content") or ""
         tool_calls = _get(msg, "tool_calls") or []
+        if tool_calls:
+            tool_calls_total += len(tool_calls)
+
+        if disallow_tools and tool_calls:
+            if not disallow_tools_warned:
+                disallow_tools_warned = True
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "Tool calls are disabled for this phase. Reply with plain text only.",
+                    }
+                )
+                continue
+            return _finish(
+                (content or "").strip() or "Tool calls are disabled for this phase."
+            )
 
         # Build assistant message for history (Ollama format: role, content, tool_calls?)
         assistant_msg: dict[str, Any] = {"role": "assistant", "content": content}
@@ -540,9 +1002,12 @@ async def run_agent_loop(
         if not tool_calls:
             if timing and turn_start is not None:
                 logger.info("Turn total: %.2fs", time.perf_counter() - turn_start)
-            return (content or "").strip()
+            return _finish((content or "").strip())
 
         # 3. Execute tool calls via MCP (in parallel when multiple)
+        tool_timeout_s = _tool_timeout_seconds()
+        tool_budget_s = _tool_budget_seconds()
+        tool_deadline = time.monotonic() + tool_budget_s if tool_budget_s else None
         items: list[tuple[str, dict[str, Any], str | None]] = []
         for tc in tool_calls:
             fn = (
@@ -580,8 +1045,8 @@ async def run_agent_loop(
                     if on_tool_start is not None:
                         try:
                             on_tool_start(name, arguments)
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            logger.debug("on_tool_start callback error: %s", _exc)
                     if parse_err is not None:
                         content = f"Tool arguments could not be parsed: {parse_err}. Please output valid JSON for the arguments."
                         content = _truncate_tool_result(content, max_tool_result_chars)
@@ -591,16 +1056,20 @@ async def run_agent_loop(
                         if on_tool_end is not None:
                             try:
                                 on_tool_end(name, arguments, content)
-                            except Exception:
-                                pass
+                            except Exception as _exc:
+                                logger.debug("on_tool_end callback error: %s", _exc)
                         _json_log_event(
                             event="tool",
                             tool=name,
                             result_chars=len(content),
                             is_error=True,
+                            request_id=request_id,
                         )
                         continue
-                    assert before_tool_call is not None
+                    if before_tool_call is None:
+                        raise RuntimeError(
+                            "before_tool_call callback is None but confirm_tool_calls is True"
+                        )
                     decision = await before_tool_call(name, arguments)
                     if decision == "skip":
                         content = "Skipped by user."
@@ -616,13 +1085,14 @@ async def run_agent_loop(
                         if on_tool_end is not None:
                             try:
                                 on_tool_end(name, arguments, "skipped")
-                            except Exception:
-                                pass
+                            except Exception as _exc:
+                                logger.debug("on_tool_end callback error: %s", _exc)
                         _json_log_event(
                             event="tool",
                             tool=name,
                             result_chars=len(content),
                             is_error=False,
+                            request_id=request_id,
                         )
                         continue
                     if isinstance(decision, tuple) and decision[0] == "edit":
@@ -634,7 +1104,13 @@ async def run_agent_loop(
                         else:
                             _log_tool_call(name, arguments)
                     content, is_error, hint = await run_one_tool(
-                        session, name, arguments, max_tool_result_chars
+                        session,
+                        name,
+                        arguments,
+                        max_tool_result_chars,
+                        deadline=tool_deadline,
+                        timeout_s=tool_timeout_s,
+                        request_id=request_id,
                     )
                     if not quiet and not tool_progress_brief:
                         _log_tool_result(name, content, is_error=is_error)
@@ -651,8 +1127,8 @@ async def run_agent_loop(
                                 arguments,
                                 _tool_result_summary(name, content, is_error),
                             )
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            logger.debug("on_tool_end callback error: %s", _exc)
                     if tool_errors_out is not None and is_error:
                         args_summary = _tool_call_one_line(name, arguments)
                         tool_errors_out.append(
@@ -667,35 +1143,35 @@ async def run_agent_loop(
                         )
                         try:
                             append_past_error(name, content[:500], hint or "")
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            logger.debug("append_past_error failed: %s", _exc)
+                    if is_error:
+                        tool_errors_total += 1
                     messages.append(
                         {"role": "tool", "tool_name": name, "content": content}
                     )
-                    if on_tool_end is not None:
-                        try:
-                            on_tool_end(
-                                name,
-                                arguments,
-                                _tool_result_summary(name, content, is_error),
-                            )
-                        except Exception:
-                            pass
                     _json_log_event(
                         event="tool",
                         tool=name,
                         result_chars=len(content),
                         is_error=is_error,
                         **({"error_hint": hint} if hint else {}),
+                        request_id=request_id,
                     )
+                    if is_error:
+                        tool_errors_total += 1
+                    if is_error:
+                        tool_errors_total += 1
             else:
                 for name, arguments, _ in items:
                     if on_tool_start is not None:
                         try:
                             on_tool_start(name, arguments)
-                        except Exception:
-                            pass
-                tool_results = await run_tools(session, items, max_tool_result_chars)
+                        except Exception as _exc:
+                            logger.debug("on_tool_start callback error: %s", _exc)
+                tool_results = await run_tools(
+                    session, items, max_tool_result_chars, request_id=request_id
+                )
                 for name, arguments, content, is_error, hint in tool_results:
                     if not quiet:
                         if tool_progress_brief:
@@ -717,8 +1193,8 @@ async def run_agent_loop(
                                 arguments,
                                 _tool_result_summary(name, content, is_error),
                             )
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            logger.debug("on_tool_end callback error: %s", _exc)
                     if tool_errors_out is not None and is_error:
                         args_summary = _tool_call_one_line(name, arguments)
                         tool_errors_out.append(
@@ -733,45 +1209,95 @@ async def run_agent_loop(
                         )
                         try:
                             append_past_error(name, content[:500], hint or "")
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            logger.debug("append_past_error failed: %s", _exc)
+                    if is_error:
+                        tool_errors_total += 1
                     messages.append(
                         {"role": "tool", "tool_name": name, "content": content}
                     )
-                    if on_tool_end is not None:
-                        try:
-                            on_tool_end(
-                                name,
-                                arguments,
-                                _tool_result_summary(name, content, is_error),
-                            )
-                        except Exception:
-                            pass
                     _json_log_event(
                         event="tool",
                         tool=name,
                         result_chars=len(content),
                         is_error=is_error,
                         **({"error_hint": hint} if hint else {}),
+                        request_id=request_id,
                     )
             if timing and t0_parallel is not None:
                 elapsed = time.perf_counter() - t0_parallel
                 logger.info("Tools: %.2fs", elapsed)
                 _json_log_event(
-                    event="tools", duration_s=round(elapsed, 3), count=len(items)
+                    event="tools", duration_s=round(elapsed, 3), count=len(items), request_id=request_id
                 )
 
     if timing and turn_start is not None:
         turn_elapsed = time.perf_counter() - turn_start
         logger.info("Turn total: %.2fs", turn_elapsed)
-        _json_log_event(event="turn", duration_s=round(turn_elapsed, 3))
-    return "(Max tool rounds reached; stopping.)"
+        _json_log_event(event="turn", duration_s=round(turn_elapsed, 3), request_id=request_id)
+    return _finish("(Max tool rounds reached; stopping.)")
 
 
 def _is_tool_call_parse_error(exc: BaseException) -> bool:
     """True if Ollama failed to parse tool-call JSON (retry often fixes it)."""
     s = str(exc).lower()
     return "error parsing tool call" in s or "invalid character" in s
+
+
+def _is_stream_parse_error(exc: BaseException) -> bool:
+    """True if Ollama stream returned malformed JSON chunk."""
+    s = str(exc).lower()
+    return "jsondecodeerror" in s or "expecting value" in s
+
+
+def _is_json_decode_error(exc: BaseException) -> bool:
+    return isinstance(exc, json.JSONDecodeError) or "expecting value" in str(exc).lower()
+
+
+def _ollama_chat_nonstream_with_retry(
+    model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+) -> Any:
+    """Non-stream Ollama chat with retry/timeout and fallback to no-tools."""
+    timeout_s = float(os.environ.get("OLLAMACODE_OLLAMA_TIMEOUT_SECONDS", "150"))
+
+    def _call(tools_arg: list[dict[str, Any]]) -> Any:
+        result: dict[str, Any] = {"resp": None, "error": None}
+
+        def _run() -> None:
+            try:
+                result["resp"] = ollama.chat(
+                    model=model, messages=messages, tools=tools_arg, stream=False
+                )
+            except Exception as e:  # noqa: BLE001
+                result["error"] = e
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout=timeout_s)
+        if t.is_alive():
+            raise TimeoutError("Ollama chat timed out")
+        if result["error"] is not None:
+            raise result["error"]
+        return result["resp"]
+
+    last_err: Exception | None = None
+    tool_sets = [tools]
+    if tools:
+        tool_sets.append([])  # fallback: retry without tools
+    for tools_arg in tool_sets:
+        for _ in range(2):
+            try:
+                return _call(tools_arg)
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                if isinstance(e, TimeoutError):
+                    break
+                if _is_json_decode_error(e):
+                    continue
+                break
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError("Ollama chat failed")
 
 
 def _stream_into_queue(
@@ -805,8 +1331,24 @@ def _stream_into_queue(
                     q.put((content, done, msg))
                 break
             except Exception as e:
-                if attempt == 0 and _is_tool_call_parse_error(e):
+                if attempt == 0 and (_is_tool_call_parse_error(e) or _is_stream_parse_error(e)):
                     continue  # retry once
+                if _is_stream_parse_error(e):
+                    # Fallback to non-stream response for this turn.
+                    try:
+                        resp = _ollama_chat_nonstream_with_retry(
+                            model=model, messages=messages, tools=tools
+                        )
+                        msg = (
+                            resp.get("message")
+                            if isinstance(resp, dict)
+                            else getattr(resp, "message", None)
+                        )
+                        content = _get(msg, "content", "") or "" if msg else ""
+                        q.put((content, True, msg))
+                    except Exception as e2:
+                        q.put(_wrap_ollama_template_error(e2))
+                    break
                 if _is_tool_call_parse_error(e):
                     err = ValueError(
                         "Model produced invalid tool-call JSON (e.g. extra '}' or ']', or unescaped newlines in strings). "
@@ -841,6 +1383,9 @@ async def run_agent_loop_stream(
     on_tool_start: ToolStartCB | None = None,
     on_tool_end: ToolEndCB | None = None,
     image_paths: list[str] | None = None,
+    provider: BaseProvider | None = None,
+    request_id: str | None = None,
+    disallow_tools: bool = False,
 ) -> AsyncIterator[str]:
     """
     Like run_agent_loop but streams content tokens as they arrive.
@@ -850,11 +1395,19 @@ async def run_agent_loop_stream(
     """
     list_result = await list_tools(session)
     ollama_tools = mcp_tools_to_ollama(list_result.tools)
+    run_start = time.monotonic()
+    run_budget_s = _run_budget_seconds()
     ollama_tools = _filter_tools_by_policy(ollama_tools, allowed_tools, blocked_tools)
     ollama_tools = add_tool_aliases_for_ollama(ollama_tools, TOOL_NAME_ALIASES)
     ollama_tools = add_harmony_function_aliases(ollama_tools) or []
 
     messages: list[dict[str, Any]] = []
+    if disallow_tools:
+        tool_block = "Tool use is disabled for this phase. Do not call tools."
+        if system_prompt:
+            system_prompt = system_prompt + "\n\n" + tool_block
+        else:
+            system_prompt = tool_block
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     if message_history:
@@ -866,7 +1419,31 @@ async def run_agent_loop_stream(
 
     loop = asyncio.get_event_loop()
     turn_start = time.perf_counter() if timing else None
+    tool_calls_total = 0
+    tool_errors_total = 0
+    disallow_tools_warned = False
+    disable_token = disable_tool_calls() if disallow_tools else None
+
+    def _finish() -> None:
+        if disable_token is not None:
+            reset_tool_calls(disable_token)
+        if turn_start is not None:
+            _json_log_event(
+                event="trace_summary",
+                request_id=request_id,
+                tool_calls=tool_calls_total,
+                tool_errors=tool_errors_total,
+                duration_s=round(time.perf_counter() - turn_start, 3),
+            )
+        _emit_replay_report()
     for round_num in range(max_tool_rounds):
+        if run_budget_s and (time.monotonic() - run_start) > run_budget_s:
+            _json_log_event(
+                event="run_budget_exceeded", request_id=request_id, round=round_num + 1
+            )
+            yield "Run budget exceeded. Reduce scope or increase OLLAMACODE_RUN_BUDGET_SECONDS.\n"
+            _finish()
+            return
         if not quiet and not tool_progress_brief:
             logger.info("Sending to model (turn %s)...", round_num + 1)
         q: queue.Queue = queue.Queue()
@@ -874,33 +1451,151 @@ async def run_agent_loop_stream(
             _truncate_messages(messages, max_messages) if max_messages > 0 else messages
         )
         t0 = time.perf_counter() if timing else None
-        thread = threading.Thread(
-            target=_stream_into_queue,
-            args=(q, model, to_send, ollama_tools),
-        )
-        thread.start()
 
-        last_msg = None
-        while True:
-            item = await loop.run_in_executor(None, q.get)
-            if item is None:
-                break
-            if isinstance(item, BaseException):
-                raise item
-            content_frag, done, msg = item
-            if content_frag:
-                yield content_frag
-            last_msg = msg
-        thread.join()
+        if provider is not None:
+            q2: queue.Queue = queue.Queue()
+
+            def _stream_provider() -> None:
+                try:
+                    for (frag,) in provider.chat_stream_sync(model, to_send):
+                        q2.put(frag)
+                except Exception as e:  # noqa: BLE001
+                    q2.put(e)
+                finally:
+                    q2.put(None)
+
+            thread2 = threading.Thread(target=_stream_provider, daemon=True)
+            thread2.start()
+            try:
+                buf: list[str] = []
+                while True:
+                    item = await loop.run_in_executor(None, q2.get)
+                    if item is None:
+                        break
+                    if isinstance(item, BaseException):
+                        raise item
+                    if item:
+                        buf.append(item)
+                        yield item
+                last_msg = {"content": "".join(buf)}
+            except Exception as e:
+                raise _wrap_ollama_template_error(e)
+            finally:
+                thread2.join()
+        else:
+            # Ollama: real token-by-token streaming via background thread + queue
+            stream_with_tools = os.environ.get("OLLAMACODE_STREAM_WITH_TOOLS", "0") == "1"
+            if ollama_tools and not stream_with_tools:
+                # Non-stream path for tools: more reliable than streaming with tool calls.
+                try:
+                    resp = _ollama_chat_nonstream_with_retry(
+                        model=model, messages=to_send, tools=ollama_tools
+                    )
+                    msg = (
+                        resp.get("message")
+                        if isinstance(resp, dict)
+                        else getattr(resp, "message", None)
+                    )
+                    content = _get(msg, "content", "") or "" if msg else ""
+                    if content:
+                        yield content
+                    last_msg = msg or {}
+                except Exception as e:
+                    raise _wrap_ollama_template_error(e)
+            else:
+                thread = threading.Thread(
+                    target=_stream_into_queue,
+                    args=(q, model, to_send, ollama_tools),
+                )
+                thread.daemon = True
+                thread.start()
+                last_msg = None
+                stream_timeout = float(
+                    os.environ.get("OLLAMACODE_STREAM_TIMEOUT_SECONDS", "60")
+                )
+                stream_total_timeout = float(
+                    os.environ.get("OLLAMACODE_STREAM_TOTAL_TIMEOUT_SECONDS", "90")
+                )
+                stream_start = time.monotonic()
+                while True:
+                    if time.monotonic() - stream_start > stream_total_timeout:
+                        # Hard stop: fall back to non-stream response.
+                        try:
+                            resp = _ollama_chat_nonstream_with_retry(
+                                model=model, messages=to_send, tools=ollama_tools
+                            )
+                            msg = (
+                                resp.get("message")
+                                if isinstance(resp, dict)
+                                else getattr(resp, "message", None)
+                            )
+                            content = _get(msg, "content", "") or "" if msg else ""
+                            if content:
+                                yield content
+                            last_msg = msg
+                        except Exception as e:
+                            raise _wrap_ollama_template_error(e)
+                        break
+                    try:
+                        item = await loop.run_in_executor(
+                            None, lambda: q.get(timeout=stream_timeout)
+                        )
+                    except Exception:
+                        # Streaming stalled; fall back to non-stream response.
+                        try:
+                            resp = _ollama_chat_nonstream_with_retry(
+                                model=model, messages=to_send, tools=ollama_tools
+                            )
+                            msg = (
+                                resp.get("message")
+                                if isinstance(resp, dict)
+                                else getattr(resp, "message", None)
+                            )
+                            content = _get(msg, "content", "") or "" if msg else ""
+                            if content:
+                                yield content
+                            last_msg = msg
+                        except Exception as e:
+                            raise _wrap_ollama_template_error(e)
+                        break
+                    if item is None:
+                        break
+                    if isinstance(item, BaseException):
+                        raise item
+                    content_frag, done, msg = item
+                    if content_frag:
+                        yield content_frag
+                    last_msg = msg
+                    if done:
+                        break
+                thread.join()
+                last_msg = last_msg or {}
+
         if timing and t0 is not None:
             elapsed = time.perf_counter() - t0
-            logger.info("Ollama call: %.2fs", elapsed)
-            _json_log_event(event="ollama", duration_s=round(elapsed, 3))
+            logger.info("LLM call: %.2fs", elapsed)
+            _json_log_event(event="llm", duration_s=round(elapsed, 3), request_id=request_id)
 
-        if last_msg is None:
+        if not last_msg:
+            _finish()
             return
         content = _get(last_msg, "content") or ""
         tool_calls = _get(last_msg, "tool_calls") or []
+        if tool_calls:
+            tool_calls_total += len(tool_calls)
+        if disallow_tools and tool_calls:
+            if not disallow_tools_warned:
+                disallow_tools_warned = True
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "Tool calls are disabled for this phase. Reply with plain text only.",
+                    }
+                )
+                continue
+            yield "Tool calls are disabled for this phase.\n"
+            _finish()
+            return
         assistant_msg: dict[str, Any] = {"role": "assistant", "content": content}
         if tool_calls:
             assistant_msg["tool_calls"] = tool_calls
@@ -909,8 +1604,17 @@ async def run_agent_loop_stream(
         if not tool_calls:
             if timing and turn_start is not None:
                 logger.info("Turn total: %.2fs", time.perf_counter() - turn_start)
+                _json_log_event(
+                    event="turn",
+                    duration_s=round(time.perf_counter() - turn_start, 3),
+                    request_id=request_id,
+                )
+            _finish()
             return
 
+        tool_timeout_s = _tool_timeout_seconds()
+        tool_budget_s = _tool_budget_seconds()
+        tool_deadline = time.monotonic() + tool_budget_s if tool_budget_s else None
         items_stream: list[tuple[str, dict[str, Any], str | None]] = []
         for tc in tool_calls:
             fn = (
@@ -940,8 +1644,8 @@ async def run_agent_loop_stream(
                     if on_tool_start is not None:
                         try:
                             on_tool_start(name, arguments)
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            logger.debug("on_tool_start callback error: %s", _exc)
                     if parse_err is not None:
                         content = f"Tool arguments could not be parsed: {parse_err}. Please output valid JSON for the arguments."
                         content = _truncate_tool_result(content, max_tool_result_chars)
@@ -951,16 +1655,20 @@ async def run_agent_loop_stream(
                         if on_tool_end is not None:
                             try:
                                 on_tool_end(name, arguments, content)
-                            except Exception:
-                                pass
+                            except Exception as _exc:
+                                logger.debug("on_tool_end callback error: %s", _exc)
                         _json_log_event(
                             event="tool",
                             tool=name,
                             result_chars=len(content),
                             is_error=True,
+                            request_id=request_id,
                         )
                         continue
-                    assert before_tool_call is not None
+                    if before_tool_call is None:
+                        raise RuntimeError(
+                            "before_tool_call callback is None but confirm_tool_calls is True"
+                        )
                     decision = await before_tool_call(name, arguments)
                     if decision == "skip":
                         content = "Skipped by user."
@@ -976,13 +1684,14 @@ async def run_agent_loop_stream(
                         if on_tool_end is not None:
                             try:
                                 on_tool_end(name, arguments, "skipped")
-                            except Exception:
-                                pass
+                            except Exception as _exc:
+                                logger.debug("on_tool_end callback error: %s", _exc)
                         _json_log_event(
                             event="tool",
                             tool=name,
                             result_chars=len(content),
                             is_error=False,
+                            request_id=request_id,
                         )
                         continue
                     if isinstance(decision, tuple) and decision[0] == "edit":
@@ -993,7 +1702,13 @@ async def run_agent_loop_stream(
                         else:
                             _log_tool_call(name, arguments)
                     content, is_error, hint = await run_one_tool(
-                        session, name, arguments, max_tool_result_chars
+                        session,
+                        name,
+                        arguments,
+                        max_tool_result_chars,
+                        deadline=tool_deadline,
+                        timeout_s=tool_timeout_s,
+                        request_id=request_id,
                     )
                     if not quiet and not tool_progress_brief:
                         _log_tool_result(name, content, is_error=is_error)
@@ -1010,8 +1725,8 @@ async def run_agent_loop_stream(
                                 arguments,
                                 _tool_result_summary(name, content, is_error),
                             )
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            logger.debug("on_tool_end callback error: %s", _exc)
                     messages.append(
                         {"role": "tool", "tool_name": name, "content": content}
                     )
@@ -1021,16 +1736,17 @@ async def run_agent_loop_stream(
                         result_chars=len(content),
                         is_error=is_error,
                         **({"error_hint": hint} if hint else {}),
+                        request_id=request_id,
                     )
             else:
                 for name, arguments, _ in items_stream:
                     if on_tool_start is not None:
                         try:
                             on_tool_start(name, arguments)
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            logger.debug("on_tool_start callback error: %s", _exc)
                 tool_results_stream = await run_tools(
-                    session, items_stream, max_tool_result_chars
+                    session, items_stream, max_tool_result_chars, request_id=request_id
                 )
                 for name, arguments, content, is_error, hint in tool_results_stream:
                     if not quiet:
@@ -1053,8 +1769,8 @@ async def run_agent_loop_stream(
                                 arguments,
                                 _tool_result_summary(name, content, is_error),
                             )
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            logger.debug("on_tool_end callback error: %s", _exc)
                     messages.append(
                         {"role": "tool", "tool_name": name, "content": content}
                     )
@@ -1064,7 +1780,13 @@ async def run_agent_loop_stream(
                         result_chars=len(content),
                         is_error=is_error,
                         **({"error_hint": hint} if hint else {}),
+                        request_id=request_id,
                     )
+                    if is_error:
+                        tool_errors_total += 1
+
+    _finish()
+    return
 
 
 async def run_agent_loop_no_mcp(
@@ -1073,9 +1795,11 @@ async def run_agent_loop_no_mcp(
     *,
     system_prompt: str | None = None,
     message_history: list[dict[str, Any]] | None = None,
+    provider: BaseProvider | None = None,
+    timing: bool = False,
+    request_id: str | None = None,
 ) -> str:
-    """Run one turn with Ollama only (no MCP tools). Returns assistant text.
-    Uses centralised chat-with-fallback (generate API on template error)."""
+    """Run one turn with no MCP tools. Returns assistant text."""
     messages: list[dict[str, Any]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -1083,10 +1807,17 @@ async def run_agent_loop_no_mcp(
         messages.extend(message_history)
     messages.append({"role": "user", "content": user_message})
 
+    t0 = time.perf_counter() if timing else None
     try:
-        response = await ollama_chat_async(model, messages, [])
+        if provider is not None:
+            response = await provider.chat_async(model, messages, [])
+        else:
+            response = await ollama_chat_async(model, messages, [])
     except Exception as e:  # noqa: BLE001
         raise _wrap_ollama_template_error(e)
+    if timing and t0 is not None:
+        elapsed = time.perf_counter() - t0
+        _json_log_event(event="llm", duration_s=round(elapsed, 3), request_id=request_id)
     msg = (
         response.get("message")
         if isinstance(response, dict)
@@ -1121,8 +1852,11 @@ async def run_agent_loop_no_mcp_stream(
     *,
     system_prompt: str | None = None,
     message_history: list[dict[str, Any]] | None = None,
+    provider: BaseProvider | None = None,
+    timing: bool = False,
+    request_id: str | None = None,
 ) -> AsyncIterator[str]:
-    """Stream one turn with Ollama only (no MCP). Yields content fragments."""
+    """Stream one turn with no MCP tools. Yields content fragments."""
     messages: list[dict[str, Any]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -1130,6 +1864,40 @@ async def run_agent_loop_no_mcp_stream(
         messages.extend(message_history)
     messages.append({"role": "user", "content": user_message})
 
+    t0 = time.perf_counter() if timing else None
+    if provider is not None:
+        # Non-Ollama provider: use chat_stream_sync in a background thread
+        q2: queue.Queue = queue.Queue()
+
+        def _stream_provider() -> None:
+            try:
+                for (frag,) in provider.chat_stream_sync(model, messages):
+                    q2.put(frag)
+            except Exception as e:  # noqa: BLE001
+                q2.put(e)
+            finally:
+                q2.put(None)
+
+        thread2 = threading.Thread(target=_stream_provider)
+        thread2.start()
+        loop2 = asyncio.get_event_loop()
+        try:
+            while True:
+                item = await loop2.run_in_executor(None, q2.get)
+                if item is None:
+                    break
+                if isinstance(item, BaseException):
+                    raise item
+                if item:
+                    yield item
+        finally:
+            thread2.join()
+        if timing and t0 is not None:
+            elapsed = time.perf_counter() - t0
+            _json_log_event(event="llm", duration_s=round(elapsed, 3), request_id=request_id)
+        return
+
+    # Ollama path: use existing thread queue
     q: queue.Queue = queue.Queue()
     thread = threading.Thread(
         target=_stream_no_mcp_into_queue, args=(q, model, messages)
@@ -1147,3 +1915,6 @@ async def run_agent_loop_no_mcp_stream(
                 yield item[0]
     finally:
         thread.join()
+        if timing and t0 is not None:
+            elapsed = time.perf_counter() - t0
+            _json_log_event(event="llm", duration_s=round(elapsed, 3), request_id=request_id)

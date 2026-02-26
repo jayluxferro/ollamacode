@@ -4,7 +4,7 @@ A coding assistant powered by **local models** (Ollama) and **MCP** (Model Conte
 
 ## Features
 
-- **Local-only**: Ollama for reasoning and code generation; no cloud API.
+- **Local-first**: Ollama by default; optional multi-provider support (OpenAI-compat, Anthropic, etc.) when configured.
 - **MCP tools**: Connect any MCP server; built-in fs, terminal, codebase, tools, and git when no config is present.
 - **CLI**: One-off queries or interactive chat (TUI).
 - **HTTP & stdio API**: `ollamacode serve` (REST) and `ollamacode protocol` (JSON-RPC over stdin/stdout) for editor integration.
@@ -95,6 +95,11 @@ rules_file: .ollamacode/rules.md
 max_messages: 0
 max_tool_rounds: 20
 include_builtin_servers: true
+provider: ollama            # or openai, anthropic, groq, openrouter, etc.
+base_url: ""                # optional for non-default provider endpoints
+api_key: ""                 # or "secret:<name>" (encrypted secrets)
+embedding_backend: ollama   # or "provider" to use provider embeddings
+sandbox_level: supervised   # readonly | supervised | full
 
 mcp_servers:
   - name: demo
@@ -105,6 +110,29 @@ mcp_servers:
 ```
 
 See [docs/MCP_SERVERS.md](docs/MCP_SERVERS.md) for full options (prompt_template, memory_auto_context, multi_agent, etc.). Custom server types: register an entry point in `ollamacode.mcp_server_types`; see [API](docs/api.md).
+
+**Safety / sandboxing**
+
+Sandbox levels:
+- `readonly`: filesystem read-only; terminal disabled
+- `supervised` (default): filesystem read+write in workspace; terminal allowlist enforced
+- `full`: unrestricted (use with care)
+
+Command gating:
+- `OLLAMACODE_ALLOWED_COMMANDS` allowlist for terminal tools
+- `OLLAMACODE_BLOCK_DANGEROUS_COMMANDS=1` for blocked patterns
+
+**Migration notes**
+
+- New config options:
+  - `embedding_backend`: set to `provider` to use provider embeddings instead of Ollama.
+  - `sandbox_level`: `readonly | supervised | full`.
+  - `auto_check_after_edits`: run lint/tests after applied edits.
+  - `auto_check_mode`: `lint | test | both` (default `test`).
+  - `auto_check_fix_on_fail`: ask the model to fix failing checks (one round).
+  - `auto_check_fix_max_rounds`: max auto-fix iterations (default 1).
+- New env var:
+  - `OLLAMACODE_TOOL_RETRY_ATTEMPTS` (1-3) to control transient tool retries.
 
 ### Built-in MCP (default)
 
@@ -171,7 +199,7 @@ ollamacode/
 └── pyproject.toml
 ```
 
-[Wiki](docs/WIKI.md) · [CHANGELOG](CHANGELOG.md)
+[Wiki](docs/WIKI.md) · [CHANGELOG](docs/CHANGELOG.md) · [Voice](docs/VOICE.md)
 
 ## References
 

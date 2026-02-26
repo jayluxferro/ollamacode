@@ -1,5 +1,5 @@
 """
-Built-in tools MCP server: run_linter, run_tests, run_code_quality, run_coverage, fetch_url.
+Built-in tools MCP server: run_linter, run_tests, run_code_quality, run_coverage, fetch_url, fetch_url_rendered.
 
 Lets the agent run linters (e.g. ruff, eslint) and test commands (e.g. pytest, npm test)
 without extra dependencies; uses subprocess.
@@ -273,6 +273,52 @@ def fetch_url(
         }
     except Exception as e:
         return {"status_code": -1, "body": "", "error": str(e)}
+
+
+@mcp.tool()
+def fetch_url_rendered(
+    url: str,
+    timeout_seconds: int = 30,
+    max_chars: int = 100_000,
+    wait_until: str = "networkidle",
+) -> dict[str, Any]:
+    """
+    Fetch a URL using Playwright (rendered DOM) and return readable text plus HTML.
+
+    url: Full URL to fetch (e.g. https://example.com/page).
+    timeout_seconds: Request timeout (default 30).
+    max_chars: Maximum characters to return for text/html (default 100000).
+    wait_until: Playwright wait condition (default "networkidle").
+    """
+    try:
+        from playwright.sync_api import sync_playwright  # type: ignore[import-not-found]
+    except Exception:
+        return {
+            "status_code": -1,
+            "body": "",
+            "html": "",
+            "error": "Playwright not available. Install browsers with `playwright install`.",
+        }
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(url, wait_until=wait_until, timeout=timeout_seconds * 1000)
+            text = page.inner_text("body")
+            html = page.content()
+            browser.close()
+        if len(text) > max_chars:
+            text = text[:max_chars] + "\n... [truncated]"
+        if len(html) > max_chars:
+            html = html[:max_chars] + "\n... [truncated]"
+        return {
+            "status_code": 200,
+            "body": text,
+            "html": html,
+            "error": None,
+        }
+    except Exception as e:
+        return {"status_code": -1, "body": "", "html": "", "error": str(e)}
 
 
 def main() -> None:

@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import logging
 import multiprocessing
+import os
 import re
 import sys
 import threading
@@ -513,21 +514,35 @@ def truncate(s: str, max_chars: int, suffix: str = "\n... (truncated)") -> str:
 
 
 def _ollama_chat(model: str, messages: list[dict[str, Any]]) -> str:
-    """Sync Ollama chat with generate-API fallback on template error; returns assistant message content."""
-    try:
-        from .ollama_client import chat_sync
+    """Sync Ollama chat with timeout to avoid hanging; returns assistant message content."""
+    timeout_s = float(os.environ.get("OLLAMACODE_RLM_TIMEOUT_SECONDS", "60"))
+    result: dict[str, Any] = {"text": "", "error": None}
 
-        r = chat_sync(model=model, messages=messages, tools=[])
-        msg = r.get("message") if isinstance(r, dict) else getattr(r, "message", None)
-        if msg is None:
-            return ""
-        return (
-            (msg.get("content") or "")
-            if isinstance(msg, dict)
-            else str(getattr(msg, "content", "") or "")
-        )
-    except Exception as e:
-        return f"[Ollama error: {e}]"
+    def _run() -> None:
+        try:
+            from .ollama_client import chat_sync
+
+            r = chat_sync(model=model, messages=messages, tools=[])
+            msg = r.get("message") if isinstance(r, dict) else getattr(r, "message", None)
+            if msg is None:
+                result["text"] = ""
+                return
+            result["text"] = (
+                (msg.get("content") or "")
+                if isinstance(msg, dict)
+                else str(getattr(msg, "content", "") or "")
+            )
+        except Exception as e:
+            result["error"] = e
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=timeout_s)
+    if t.is_alive():
+        return ""
+    if result.get("error") is not None:
+        return f"[Ollama error: {result['error']}]"
+    return str(result.get("text") or "")
 
 
 def run_rlm_loop(

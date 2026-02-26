@@ -1,0 +1,12 @@
+[
+  {
+    "name": "basic_math",
+    "prompt": "What is 2+2?",
+    "expect_contains": ["4"]
+  },
+  {
+    "name": "short_instruction",
+    "prompt": "Reply with the word OK only.",
+    "expect_contains": ["OK"]
+  }
+]

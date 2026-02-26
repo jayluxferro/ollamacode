@@ -1,6 +1,6 @@
 """Unit tests for structured apply-edits (<<EDITS>> JSON), parse_reasoning, parse_review."""
 
-from ollamacode.edits import apply_edits, parse_edits, parse_reasoning, parse_review
+from ollamacode.edits import apply_edits, parse_edits, parse_reasoning, parse_review, apply_unified_diff_filtered
 
 
 def test_parse_edits_empty():
@@ -89,3 +89,62 @@ def test_apply_edits_outside_workspace(tmp_path):
     n = apply_edits(edits, tmp_path)
     assert n == 1
     assert (tmp_path / "ok.txt").read_text() == "ok"
+
+
+def test_apply_edits_unified_diff_fuzzy(tmp_path):
+    (tmp_path / "foo.txt").write_text("line1\nline2\nline3\n")
+    diff = "\n".join(
+        [
+            "diff --git a/foo.txt b/foo.txt",
+            "--- a/foo.txt",
+            "+++ b/foo.txt",
+            "@@ -5,2 +5,2 @@",
+            " line2",
+            "-line3",
+            "+line3-mod",
+            "",
+        ]
+    )
+    edits = [{"path": "ignored.txt", "newText": diff}]
+    n = apply_edits(edits, tmp_path)
+    assert n == 1
+    assert (tmp_path / "foo.txt").read_text() == "line1\nline2\nline3-mod"
+
+
+def test_apply_edits_anchor_insert(tmp_path):
+    path = tmp_path / "anchor.txt"
+    path.write_text("alpha\nbeta\n")
+    edits = [
+        {
+            "path": "anchor.txt",
+            "newText": "X\n",
+            "anchor": "alpha\n",
+            "position": "after",
+        }
+    ]
+    n = apply_edits(edits, tmp_path)
+    assert n == 1
+    assert path.read_text() == "alpha\nX\nbeta\n"
+
+
+def test_apply_unified_diff_filtered(tmp_path):
+    (tmp_path / "f.txt").write_text("a\nb\nc\n")
+    diff = "\n".join(
+        [
+            "diff --git a/f.txt b/f.txt",
+            "--- a/f.txt",
+            "+++ b/f.txt",
+            "@@ -1,1 +1,1 @@",
+            "-a",
+            "+a1",
+            "@@ -3,1 +3,1 @@",
+            "-c",
+            "+c1",
+            "",
+        ]
+    )
+    def include(path, idx, h):
+        return idx == 1
+    n = apply_unified_diff_filtered(diff, tmp_path, include)
+    assert n == 1
+    assert (tmp_path / "f.txt").read_text() == "a\nb\nc1"

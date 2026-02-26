@@ -11,9 +11,12 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shlex
 import subprocess
 import tempfile
+import time
+import base64
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal, cast
@@ -26,6 +29,7 @@ from .agent import (
     run_agent_loop_no_mcp_stream,
     run_agent_loop_stream,
 )
+from .edits import apply_edits, format_edits_diff, parse_edits, apply_unified_diff_filtered
 from .memory import build_dynamic_memory_context
 from .multi_agent import run_multi_agent
 from .context import expand_at_refs
@@ -60,9 +64,16 @@ _SLASH_COMMANDS = [
     "/reset-state",
     "/summary",
     "/auto",
+    "/agents",
+    "/agents_show",
+    "/agents_summary",
+    "/listen",
+    "/say",
     "/commands",
     "/sessions",
     "/search",
+    "/refactor",
+    "/palette",
     "/resume",
     "/session",
     "/branch",
@@ -76,6 +87,8 @@ _SLASH_COMMANDS = [
 _tui_prompt_fn = None
 _tui_prompt_session = None
 _readline_available = False
+_tui_voice_ptt_cb = None
+_tui_ptt_key = os.environ.get("OLLAMACODE_TUI_PTT_KEY", "c-space")
 try:
     import readline  # noqa: F401  # enables arrow keys and history for input() on Unix/macOS
 
@@ -102,19 +115,94 @@ def _readline_slash_completer(text: str, state: int) -> str | None:
     return None
 
 
+# Initialize readline tab-completion once at import time (only when prompt_toolkit is absent).
+if _readline_available and _tui_prompt_session is None:
+    try:
+        readline.set_completer(_readline_slash_completer)  # type: ignore[name-defined]
+        readline.parse_and_bind("tab: complete")
+    except Exception:
+        pass
+
+_symbol_cache: list[str] = []
+_symbol_cache_ts: float = 0.0
+
+
+def _reset_symbol_cache() -> None:
+    global _symbol_cache, _symbol_cache_ts
+    _symbol_cache = []
+    _symbol_cache_ts = 0.0
+
 if _tui_prompt_session is None:
     try:
         from prompt_toolkit import PromptSession  # pyright: ignore[reportMissingImports]
         from prompt_toolkit.history import InMemoryHistory  # pyright: ignore[reportMissingImports]
         from prompt_toolkit.completion import Completer, Completion  # pyright: ignore[reportMissingImports]
+        from prompt_toolkit.key_binding import KeyBindings  # pyright: ignore[reportMissingImports]
+
+        def _load_symbol_suggestions() -> list[str]:
+            """Load symbol names from persistent index (best-effort)."""
+            global _symbol_cache, _symbol_cache_ts
+            now = time.time()
+            if _symbol_cache and now - _symbol_cache_ts < 10:
+                return _symbol_cache
+            try:
+                import sqlite3
+                from .symbol_index import _db_path  # type: ignore
+
+                db = _db_path()
+                if db.exists():
+                    conn = sqlite3.connect(str(db))
+                    try:
+                        cur = conn.execute(
+                            "SELECT DISTINCT name FROM symbols LIMIT 200"
+                        )
+                        _symbol_cache = [r[0] for r in cur.fetchall() if r and r[0]]
+                    finally:
+                        conn.close()
+                else:
+                    _symbol_cache = []
+            except Exception:
+                _symbol_cache = []
+            _symbol_cache_ts = now
+            return _symbol_cache
+
+        def _path_completions(prefix: str) -> list[str]:
+            root = Path(os.environ.get("OLLAMACODE_FS_ROOT") or os.getcwd())
+            if prefix.startswith("@"):
+                prefix = prefix[1:]
+            base = root / prefix
+            try:
+                if base.is_dir():
+                    entries = [p.name + ("/" if p.is_dir() else "") for p in base.iterdir()]
+                    return [f"@{prefix.rstrip('/')}/{e}" for e in entries][:50]
+                parent = base.parent
+                if parent.exists():
+                    entries = [p.name + ("/" if p.is_dir() else "") for p in parent.iterdir()]
+                    return [f"@{parent.relative_to(root)}/{e}" for e in entries][:50]
+            except OSError:
+                return []
+            return []
 
         class _SlashCommandCompleter(Completer):
-            """Complete slash commands when the line contains / (Tab to complete)."""
+            """Complete slash commands, paths (@), and symbols."""
 
             def get_completions(self, document, complete_event):
                 text = document.text_before_cursor
                 idx = text.rfind("/")
                 if idx < 0:
+                    # Path or symbol completion
+                    if text.strip().startswith("@"):
+                        prefix = text.strip()
+                        for c in _path_completions(prefix):
+                            if c.startswith(prefix):
+                                yield Completion(c, start_position=-len(prefix))
+                        return
+                    # Symbol completions (best-effort)
+                    prefix = text.strip()
+                    if prefix:
+                        for s in _load_symbol_suggestions():
+                            if s.startswith(prefix):
+                                yield Completion(s, start_position=-len(prefix))
                     return
                 prefix = text[idx:].lower()
                 if not prefix.startswith("/"):
@@ -123,15 +211,42 @@ if _tui_prompt_session is None:
                     if cmd.startswith(prefix) and cmd != prefix:
                         yield Completion(cmd, start_position=-len(prefix))
 
+        kb_main = KeyBindings()
+
+        @kb_main.add("enter")
+        def _accept(event):
+            event.app.current_buffer.validate_and_handle()
+
+        @kb_main.add("s-enter")
+        def _newline(event):
+            event.app.current_buffer.insert_text("\n")
+
+        @kb_main.add(_tui_ptt_key)
+        def _push_to_talk(event):
+            if _tui_voice_ptt_cb is None:
+                return
+            try:
+                text = _tui_voice_ptt_cb()
+            except Exception:
+                return
+            if text:
+                event.app.current_buffer.insert_text(text)
+                event.app.current_buffer.validate_and_handle()
+
         _tui_prompt_session = PromptSession(
             history=InMemoryHistory(),
             completer=_SlashCommandCompleter(),
+            complete_while_typing=True,
+            multiline=True,
+            key_bindings=kb_main,
         )
     except ImportError:
         pass
 
-# Show only the last N exchanges in the Chat panel so tool output (stderr) stays visible
-_CHAT_PANEL_LAST_N_EXCHANGES = 2
+# Show only the last N exchanges in the Chat panel so tool output (stderr) stays visible.
+# 5 exchanges = 10 messages (user+assistant pairs), which gives useful context without
+# crowding out the tool trace below.
+_CHAT_PANEL_LAST_N_EXCHANGES = 5
 
 # rest of original functions unchanged...
 
@@ -309,11 +424,34 @@ def _handle_tui_slash(
   /reset-state  Clear persistent state (recent files, preferences)
   /summary [N]  Summarize last N turns (default 5)
   /auto         Toggle autonomous mode (no per-tool confirm, more rounds)
+  /agents <N> <task>  Run N concurrent agents (default 3)
+  /agents_show <n|all|summary>  Show last agent outputs (collapsed by default)
+  /agents_summary  Re-summarize last agent outputs
+  /listen [s]  Record from mic for s seconds (default 5) and send as prompt
+  /say <text>  Speak text using local TTS
   /commands     List built-in and custom slash commands
+  /refactor     Refactor helpers: index/rename/extract/move/rollback
+  /palette      Quick command picker
   /subagents    List available subagent types
   /subagent <type> <task>  Run task in a subagent (restricted tools)
   /image <path> [msg]  Attach image to next message (vision models)
-  /quit, /exit  Exit (or Ctrl+C)"""
+  /quit, /exit  Exit (or Ctrl+C)
+
+[dim]Input tips:[/]
+  Tab to autocomplete commands (prompt_toolkit). Shift+Enter adds a newline when available.
+  Set OLLAMACODE_TUI_QUEUE_INPUT=0 to disable input queue while running.
+  Set OLLAMACODE_TUI_SIMPLE=1 to disable Live rendering.
+  Set OLLAMACODE_TUI_AUTO_AGENTS=1 to auto-spawn /agents for larger tasks.
+  Set OLLAMACODE_TUI_AUTO_AGENTS_PLAN=0 to disable planner routing.
+  Set OLLAMACODE_TUI_PLANNER_MODEL=<name> to override planner model.
+  Set OLLAMACODE_TUI_AGENTS_SUMMARY=0 to disable agent summary.
+  Set OLLAMACODE_TUI_AGENTS_SUMMARY_MODEL=<name> to override summary model.
+  Set OLLAMACODE_TUI_AGENTS_SYNTHESIS=0 to disable agent synthesis.
+  Set OLLAMACODE_PLAN_EXECUTE_VERIFY=1 to enable plan/execute/verify.
+  Set OLLAMACODE_TUI_VOICE_OUT=1 to speak assistant replies.
+  Set OLLAMACODE_TUI_PTT_KEY=<key> to change push-to-talk hotkey (default: c-space).
+  Push-to-talk hotkey: Ctrl+Space (configurable)."""
+  Set OLLAMACODE_TUI_VOICE_OUT=1 to speak assistant replies."""
         console.print(RichPanel(help_text, title="Commands", border_style="dim"))
         return "help"
     if cmd == "/model":
@@ -583,6 +721,129 @@ def _handle_tui_slash(
         except Exception as e:
             console.print(f"[dim]Resume failed: {e}[/]")
         return "help"
+    if cmd == "/palette":
+        console.print("[bold]Command palette:[/]")
+        console.print("  1) Refactor: rename symbol")
+        console.print("  2) Build symbol index")
+        console.print("  3) Build repo map")
+        choice = input("Choose number (or empty to cancel): ").strip()
+        if choice == "1":
+            return ("run_prompt", "/refactor rename")
+        if choice == "2":
+            return ("run_prompt", "/refactor index")
+        if choice == "3":
+            return ("run_prompt", "/refactor repo-map")
+        return "help"
+    if cmd == "/refactor":
+        sub = rest.strip().split()
+        if not sub:
+            console.print(
+                "[dim]Usage: /refactor rename <old> <new> | /refactor index|refresh | /refactor repo-map | /refactor extract <file> <start-end> <name> | /refactor move <src> <symbol> <dst>[/]"
+            )
+            return "help"
+        if sub[0] in ("index", "refresh"):
+            try:
+                from .symbol_index import build_symbol_index
+
+                info = build_symbol_index(workspace_root or os.getcwd())
+                console.print(f"[dim]Indexed symbols: {info.get('symbols')} refs: {info.get('references')}[/]")
+                _reset_symbol_cache()
+            except Exception as e:
+                console.print(f"[dim]Symbol index failed: {e}[/]")
+            return "help"
+        if sub[0] == "repo-map":
+            try:
+                from .repo_map import write_repo_map
+
+                out = write_repo_map(workspace_root or os.getcwd(), str(Path(workspace_root or os.getcwd()) / ".ollamacode" / "repo_map.md"))
+                console.print(f"[dim]Repo map written: {out}[/]")
+            except Exception as e:
+                console.print(f"[dim]Repo map failed: {e}[/]")
+            return "help"
+        if sub[0] == "rename":
+            if len(sub) < 3:
+                old = input("Old symbol: ").strip()
+                new = input("New symbol: ").strip()
+            else:
+                old, new = sub[1], sub[2]
+            if not old or not new:
+                console.print("[dim]Symbol names required.[/]")
+                return "help"
+            from .refactor import rename_symbol, save_last_refactor
+
+            edits = rename_symbol(workspace_root or os.getcwd(), old, new)
+            if not edits:
+                console.print("[dim]No changes found.[/]")
+                return "help"
+            console.print(format_edits_diff(edits, workspace_root or os.getcwd()))
+            ans = input("Apply these edits? [y/N]: ").strip().lower()
+            if ans in ("y", "yes"):
+                n = apply_edits(edits, workspace_root or os.getcwd())
+                console.print(f"[dim]Applied {n} edit(s).[/]")
+                # Save diff for rollback (best-effort)
+                for e in edits:
+                    if isinstance(e.get("newText"), str) and "\n@@ " in str(e.get("newText")):
+                        save_last_refactor(str(e.get("newText")))
+            return "help"
+        if sub[0] == "rollback":
+            from .refactor import rollback_last_refactor
+
+            n = rollback_last_refactor(workspace_root or os.getcwd())
+            if n > 0:
+                console.print(f"[dim]Rolled back {n} file(s).[/]")
+            else:
+                console.print("[dim]No rollback applied.[/]")
+            return "help"
+        if sub[0] == "extract":
+            # Usage: /refactor extract path start-end name
+            if len(sub) < 4:
+                file_path = input("File path: ").strip()
+                range_spec = input("Line range (start-end): ").strip()
+                new_name = input("New function name: ").strip()
+            else:
+                file_path, range_spec, new_name = sub[1], sub[2], sub[3]
+            if not file_path or not range_spec or not new_name:
+                console.print("[dim]Missing args for extract.[/]")
+                return "help"
+            try:
+                start_s, end_s = re.split(r"[-:]", range_spec)
+                start_line = int(start_s.strip())
+                end_line = int(end_s.strip())
+            except Exception:
+                console.print("[dim]Invalid range. Use START-END.[/]")
+                return "help"
+            from .refactor import extract_function
+
+            target = str(Path(workspace_root or os.getcwd()) / file_path)
+            out = extract_function(target, start_line, end_line, new_name)
+            if not out:
+                console.print("[dim]Extract failed.[/]")
+                return "help"
+            console.print(f"[dim]Extracted to {out}.[/]")
+            return "help"
+        if sub[0] == "move":
+            # Usage: /refactor move src symbol dst
+            if len(sub) < 4:
+                src_path = input("Source file: ").strip()
+                symbol = input("Symbol name: ").strip()
+                dst_path = input("Target file: ").strip()
+            else:
+                src_path, symbol, dst_path = sub[1], sub[2], sub[3]
+            if not src_path or not symbol or not dst_path:
+                console.print("[dim]Missing args for move.[/]")
+                return "help"
+            from .refactor import move_symbol
+
+            src = str(Path(workspace_root or os.getcwd()) / src_path)
+            dst = str(Path(workspace_root or os.getcwd()) / dst_path)
+            ok = move_symbol(src, symbol, dst)
+            if not ok:
+                console.print("[dim]Move failed.[/]")
+                return "help"
+            console.print(f"[dim]Moved {symbol} to {dst_path}.[/]")
+            return "help"
+        console.print("[dim]Unknown refactor command.[/]")
+        return "help"
     if cmd == "/session":
         if session_ref is None:
             console.print("[dim]Session persistence not active.[/]")
@@ -670,6 +931,44 @@ def _handle_tui_slash(
             )
             return "help"
         return ("run_subagent", stype, task)
+    if cmd == "/agents":
+        # /agents <N> <task> or /agents show <n|all|summary>
+        parts = rest.split(maxsplit=1)
+        if parts and parts[0].lower() == "show":
+            arg = parts[1].strip() if len(parts) > 1 else "summary"
+            return ("show_agents", arg)
+        parts = rest.split(maxsplit=1)
+        n = 3
+        task = ""
+        if parts:
+            if parts[0].isdigit():
+                n = int(parts[0])
+                task = parts[1] if len(parts) > 1 else ""
+            else:
+                task = rest.strip()
+        n = max(1, min(6, n))
+        if not task:
+            console.print("[dim]Usage: /agents <N> <task> (e.g. /agents 3 analyze repo)[/]")
+            return "help"
+        return ("run_agents", n, task)
+    if cmd == "/agents_show":
+        arg = rest.strip() or "summary"
+        return ("show_agents", arg)
+    if cmd == "/agents_summary":
+        return ("agents_summary", "")
+    if cmd == "/listen":
+        secs = 5.0
+        if rest.strip():
+            try:
+                secs = float(rest.strip())
+            except ValueError:
+                secs = 5.0
+        return ("voice_in", secs)
+    if cmd == "/say":
+        if not rest.strip():
+            console.print("[dim]Usage: /say <text>[/]")
+            return "help"
+        return ("voice_out", rest.strip())
     if cmd == "/image":
         # Return special tuple so main loop can set pending_image; we don't have pending_image in slash handler
         rest_stripped = rest.strip()
@@ -680,8 +979,23 @@ def _handle_tui_slash(
             else ""
         )
         if not path_part:
+            # Try clipboard image via pngpaste (macOS). Optional dependency.
+            tmp_dir = Path.home() / ".ollamacode" / "clipboard"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            tmp_path = tmp_dir / f"clipboard_{int(time.time())}.png"
+            try:
+                p = subprocess.run(
+                    ["pngpaste", str(tmp_path)],
+                    capture_output=True,
+                    text=True,
+                )
+                if p.returncode == 0 and tmp_path.exists():
+                    console.print(f"[dim]Clipboard image saved: {tmp_path}[/]")
+                    return ("set_pending_image", str(tmp_path), msg_part.strip())
+            except Exception:
+                pass
             console.print(
-                "[dim]Usage: /image <path> [message]. Attach image to next message.[/]"
+                "[dim]Usage: /image <path> [message]. Attach image to next message. Tip: install pngpaste for clipboard images.[/]"
             )
             return "help"
         return ("set_pending_image", path_part.strip(), msg_part.strip())
@@ -702,6 +1016,18 @@ async def _stream_into_live(
         update_cb("".join(accumulated), False)
     final = "".join(accumulated)
     update_cb(final, True)
+    return final
+
+
+async def _stream_into_console(stream: AsyncIterator[str]) -> str:
+    """Stream to stdout without Rich Live; returns final text."""
+    chunks: list[str] = []
+    async for frag in stream:
+        chunks.append(frag)
+        print(frag, end="", flush=True)
+    final = "".join(chunks)
+    if final and not final.endswith("\n"):
+        print()
     return final
 
 
@@ -738,7 +1064,7 @@ async def run_tui(
     reviewer_model: str | None = None,
     multi_agent_max_iterations: int = 2,
     multi_agent_require_review: bool = True,
-    tui_tool_trace_max: int = 5,
+    tui_tool_trace_max: int = 20,
     tui_tool_log_max: int = 8,
     tui_tool_log_chars: int = 160,
     tui_refresh_hz: int = 5,
@@ -748,12 +1074,14 @@ async def run_tui(
     memory_rag_snippet_chars: int = 220,
     autonomous_mode: bool = False,
     subagents: list[dict[str, Any]] | None = None,
+    provider: "Any" = None,
+    provider_name: str = "ollama",
 ) -> None:
     """Run interactive TUI chat: Rich panels with Markdown, slash commands, multi-line input.
     Requires rich: pip install ollamacode[tui]
     """
     try:
-        from rich.console import Console
+        from rich.console import Console, Group
         from rich.live import Live
         from rich.markdown import Markdown
         from rich.panel import Panel
@@ -762,9 +1090,19 @@ async def run_tui(
             "TUI requires rich. Install with: pip install ollamacode[tui]"
         ) from e
 
-    # Suppress MCP SDK INFO logs (e.g. "Processing request of type ListToolsRequest") so TUI stays clean
-    for _name in ("mcp", "mcp.client", "mcp.server"):
-        logging.getLogger(_name).setLevel(logging.WARNING)
+    # Suppress noisy logs so TUI stays clean.
+    for _name in (
+        "mcp",
+        "mcp.client",
+        "mcp.server",
+        "mcp.server.lowlevel",
+        "mcp.server.lowlevel.server",
+        "httpx",
+        "urllib3",
+    ):
+        logger = logging.getLogger(_name)
+        logger.setLevel(logging.WARNING)
+        logger.propagate = False
 
     console = Console()
     _SYSTEM = (
@@ -862,14 +1200,39 @@ async def run_tui(
 
     loop = asyncio.get_event_loop()
 
+    ptt_seconds = float(os.environ.get("OLLAMACODE_TUI_PTT_SECONDS", "5"))
+
+    def _voice_meter(level: float) -> None:
+        bars = int(max(0.0, min(level, 1.0)) * 20)
+        meter = "█" * bars + " " * (20 - bars)
+        sys.stderr.write(f"\r[voice] [{meter}]")
+        sys.stderr.flush()
+        status["voice_level"] = level
+
+    def _voice_meter_done() -> None:
+        sys.stderr.write("\r[voice] done                  \n")
+        sys.stderr.flush()
+        status["voice_level"] = 0.0
+
+    def _ptt_record() -> str:
+        from .voice import record_and_transcribe
+
+        sys.stderr.write("\r[voice] listening...\n")
+        sys.stderr.flush()
+        text = record_and_transcribe(seconds=ptt_seconds, meter_cb=_voice_meter)
+        _voice_meter_done()
+        return text
+
+    global _tui_voice_ptt_cb
+    _tui_voice_ptt_cb = _ptt_record
+
     def get_input() -> str:
         """Read a single line; Enter sends. Up/Down cycle input history. Tab completes slash commands. Prompt shows current model."""
+        _provider_prefix = f"{provider_name}/" if provider_name and provider_name != "ollama" else ""
+        _prompt = f"You [{_provider_prefix}{model_ref[0]}]: "
         if _tui_prompt_session is not None:
-            return _tui_prompt_session.prompt(f"You [{model_ref[0]}]: ").strip()
-        if _readline_available:
-            readline.set_completer(_readline_slash_completer)  # type: ignore[name-defined]
-            readline.parse_and_bind("tab: complete")
-        return input(f"You [{model_ref[0]}]: ").strip()
+            return _tui_prompt_session.prompt(_prompt).strip()
+        return input(_prompt).strip()
 
     def add_input_history(line: str) -> None:
         """Add a submitted line to input history so Up/Down can recall it (readline path only)."""
@@ -916,12 +1279,222 @@ async def run_tui(
                 pass
         return data if isinstance(data, dict) else None
 
+    def _maybe_apply_edits_tui(response: str) -> None:
+        edits = parse_edits(response)
+        if not edits:
+            return
+        console.print("\n[bold]Proposed edits:[/]")
+        console.print(format_edits_diff(edits, root))
+        while True:
+            choice = input("Apply edits? [a]ll / [s]elect / [n]: ").strip().lower()
+            if choice in ("a", "all", "y", "yes"):
+                n = apply_edits(edits, root)
+                console.print(f"[dim]Applied {n} edit(s).[/]")
+                return
+            if choice in ("n", "no", ""):
+                return
+            if choice in ("s", "select"):
+                # If any unified diff edits exist, offer per-hunk selection.
+                unified_edits = [e for e in edits if isinstance(e.get("newText"), str) and "\n@@ " in str(e.get("newText"))]
+                if unified_edits:
+                    for e in unified_edits:
+                        diff_text = str(e.get("newText") or "")
+                        _interactive_hunk_selector(diff_text, root)
+                    return
+                selected: list[dict[str, Any]] = []
+                seen: set[str] = set()
+                for e in edits:
+                    path = e.get("path") or ""
+                    if path in seen:
+                        continue
+                    seen.add(path)
+                    ans = input(f"Apply edits for {path}? [y/N]: ").strip().lower()
+                    if ans in ("y", "yes"):
+                        selected.extend([x for x in edits if x.get("path") == path])
+                if not selected:
+                    console.print("[dim]No edits selected.[/]")
+                    return
+                n = apply_edits(selected, root)
+                console.print(f"[dim]Applied {n} edit(s).[/]")
+                return
+            console.print("[dim]Choose a/all, s/select, or n.[/]")
+
+    def _interactive_hunk_selector(diff_text: str, workspace: str | Path) -> None:
+        """Interactive per-hunk selector with optional prompt_toolkit key bindings."""
+        try:
+            from .edits import _parse_unified_diff  # type: ignore
+        except Exception:
+            return
+        patches = _parse_unified_diff(diff_text)
+        hunks: list[tuple[str, int, dict[str, Any]]] = []
+        for p in patches:
+            path = p.get("path") or ""
+            for i, h in enumerate(p.get("hunks") or []):
+                hunks.append((path, i, h))
+        if not hunks:
+            return
+        selected: set[int] = set()
+        idx = 0
+
+        def render() -> None:
+            console.print(f"\n[bold]Hunk {idx + 1}/{len(hunks)}[/]")
+            path, i, h = hunks[idx]
+            header = h.get("header") or "@@"
+            console.print(f"[dim]{path} #{i} {header}[/]")
+            from rich.text import Text
+
+            for tag, payload in (h.get("lines") or [])[:60]:
+                prefix = "+" if tag == "+" else "-" if tag == "-" else " "
+                style = "green" if tag == "+" else "red" if tag == "-" else "dim"
+                t = Text(prefix + payload, style=style)
+                console.print(t)
+            console.print(f"[dim]Accepted: {len(selected)}/{len(hunks)}[/]")
+            console.print(
+                "[dim]Commands: j/k (next/prev), y accept, n reject, space toggle, a apply, q quit[/]"
+            )
+
+        # prompt_toolkit path (arrow keys)
+        try:
+            from prompt_toolkit import Application
+            from prompt_toolkit.key_binding import KeyBindings
+            from prompt_toolkit.layout import Layout
+            from prompt_toolkit.layout.controls import FormattedTextControl
+            from prompt_toolkit.layout.containers import Window
+            from prompt_toolkit.styles import Style
+
+            def _render_text():
+                path, i, h = hunks[idx]
+                header = h.get("header") or "@@"
+                body: list[tuple[str, str]] = []
+                for tag, payload in (h.get("lines") or [])[:80]:
+                    prefix = "+" if tag == "+" else "-" if tag == "-" else " "
+                    style = "class:add" if tag == "+" else "class:del" if tag == "-" else "class:ctx"
+                    body.append((style, prefix + payload + "\n"))
+                header_lines: list[tuple[str, str]] = [
+                    ("bold", f"Hunk {idx + 1}/{len(hunks)}\n"),
+                    ("", f"{path} #{i} {header}\n\n"),
+                ]
+                footer = [
+                    ("", "\n"),
+                    ("class:info", f"Accepted: {len(selected)}/{len(hunks)}\n"),
+                    ("class:info", "Up/Down=nav  y=accept  n=reject  Space=toggle  a=apply  q=quit"),
+                ]
+                return header_lines + body + footer
+
+            kb = KeyBindings()
+
+            @kb.add("down")
+            def _down(event):
+                nonlocal idx
+                idx = min(len(hunks) - 1, idx + 1)
+                event.app.invalidate()
+
+            @kb.add("up")
+            def _up(event):
+                nonlocal idx
+                idx = max(0, idx - 1)
+                event.app.invalidate()
+
+            @kb.add(" ")
+            def _toggle(event):
+                if idx in selected:
+                    selected.remove(idx)
+                else:
+                    selected.add(idx)
+                event.app.invalidate()
+
+            @kb.add("y")
+            def _accept_one(event):
+                nonlocal idx
+                if idx not in selected:
+                    selected.add(idx)
+                idx = min(len(hunks) - 1, idx + 1)
+                event.app.invalidate()
+
+            @kb.add("n")
+            def _reject_one(event):
+                nonlocal idx
+                if idx in selected:
+                    selected.remove(idx)
+                idx = min(len(hunks) - 1, idx + 1)
+                event.app.invalidate()
+
+            @kb.add("a")
+            def _apply(event):
+                event.app.exit(result="apply")
+
+            @kb.add("q")
+            def _quit(event):
+                event.app.exit(result="quit")
+
+            control = FormattedTextControl(_render_text, focusable=True)
+            window = Window(content=control)
+            style = Style.from_dict(
+                {
+                    "add": "ansigreen",
+                    "del": "ansired",
+                    "ctx": "ansibrightblack",
+                    "info": "ansicyan",
+                }
+            )
+            app = Application(
+                layout=Layout(window),
+                key_bindings=kb,
+                full_screen=False,
+                style=style,
+            )
+            result = app.run()
+            if result == "quit":
+                return
+        except Exception:
+            # fallback to text prompts
+            while True:
+                render()
+                cmd = input("> ").strip().lower()
+                if cmd in ("j", "down"):
+                    idx = min(len(hunks) - 1, idx + 1)
+                elif cmd in ("k", "up", "p"):
+                    idx = max(0, idx - 1)
+                elif cmd in (" ", "t"):
+                    if idx in selected:
+                        selected.remove(idx)
+                    else:
+                        selected.add(idx)
+                elif cmd in ("y", "yes"):
+                    selected.add(idx)
+                    idx = min(len(hunks) - 1, idx + 1)
+                elif cmd in ("n", "no"):
+                    if idx in selected:
+                        selected.remove(idx)
+                    idx = min(len(hunks) - 1, idx + 1)
+                elif cmd in ("a", "apply"):
+                    break
+                elif cmd in ("q", "quit", ""):
+                    return
+        if not selected:
+            console.print("[dim]No hunks selected.[/]")
+            return
+        want = set(selected)
+
+        def _include(path, hidx, h):
+            return hidx in want
+
+        n = apply_unified_diff_filtered(diff_text, Path(workspace), _include)
+        console.print(f"[dim]Applied {n} hunk(s).[/]")
+
     status: dict[str, Any] = {
         "phase": "idle",
         "has_output": False,
         "done": False,
         "tool": "",
         "accumulated": "",
+        "last_user": "",
+        "agents_running": 0,
+        "agents_done": 0,
+        "agents": [],
+        "agent_outputs": [],
+        "agent_roles": [],
+        "agent_task": "",
     }
     tool_trace: deque[str] = deque(maxlen=tui_tool_trace_max)
     tool_log: deque[str] = deque(maxlen=tui_tool_log_max)
@@ -969,19 +1542,57 @@ async def run_tui(
         console.print("[dim]Choose y (run), N (skip), or e (edit).[/]")
         return await _before_tool_call_tui(tool_name, arguments)  # re-prompt
 
+    queue_inputs = os.environ.get("OLLAMACODE_TUI_QUEUE_INPUT", "1") != "0"
+    use_live = console.is_terminal and os.environ.get("OLLAMACODE_TUI_SIMPLE", "0") != "1"
+    auto_agents = os.environ.get("OLLAMACODE_TUI_AUTO_AGENTS", "0") == "1"
+    auto_agents_plan = os.environ.get("OLLAMACODE_TUI_AUTO_AGENTS_PLAN", "1") != "0"
+    planner_model_override = os.environ.get("OLLAMACODE_TUI_PLANNER_MODEL", "").strip()
+    planner_model = planner_model_override or model_ref[0]
+    plan_exec_verify = os.environ.get("OLLAMACODE_PLAN_EXECUTE_VERIFY", "0") == "1"
+    plan_model = os.environ.get("OLLAMACODE_PLAN_MODEL", "").strip() or model_ref[0]
+    verify_model = os.environ.get("OLLAMACODE_VERIFY_MODEL", "").strip() or model_ref[0]
+    voice_out_enabled = os.environ.get("OLLAMACODE_TUI_VOICE_OUT", "0") == "1"
+    auto_agents_summary = os.environ.get("OLLAMACODE_TUI_AGENTS_SUMMARY", "1") != "0"
+    summary_model_override = os.environ.get(
+        "OLLAMACODE_TUI_AGENTS_SUMMARY_MODEL", ""
+    ).strip()
+    summary_model = summary_model_override or model_ref[0]
+    agents_synthesis = os.environ.get("OLLAMACODE_TUI_AGENTS_SYNTHESIS", "1") != "0"
+    synthesis_model = (
+        os.environ.get("OLLAMACODE_TUI_AGENTS_SYNTHESIS_MODEL", "").strip()
+        or model_ref[0]
+    )
+    agents_structured = os.environ.get("OLLAMACODE_AGENTS_STRUCTURED", "1") != "0"
+    router_enabled = os.environ.get("OLLAMACODE_ROUTER", "0") == "1"
+    router_fast = os.environ.get("OLLAMACODE_MODEL_FAST", "").strip() or model_ref[0]
+    router_strong = os.environ.get("OLLAMACODE_MODEL_STRONG", "").strip() or model_ref[0]
+    try:
+        auto_agents_n = int(os.environ.get("OLLAMACODE_TUI_AUTO_AGENTS_N", "3"))
+    except ValueError:
+        auto_agents_n = 3
+    auto_agents_n = max(2, min(6, auto_agents_n))
+    try:
+        agents_preview_lines = int(
+            os.environ.get("OLLAMACODE_TUI_AGENTS_PREVIEW_LINES", "10")
+        )
+    except ValueError:
+        agents_preview_lines = 10
+    agents_preview_lines = max(3, min(30, agents_preview_lines))
     console.print(
         Panel(
-            "[bold]OllamaCode TUI[/] – [dim]/help[/] for commands. Up/Down = history. Prompt stays active; commands queue. Empty or Ctrl+C to exit.",
+            "[bold]OllamaCode TUI[/] – [dim]/help[/] for commands. Up/Down = history. Empty or Ctrl+C to exit.",
             title="OllamaCode",
             border_style="green",
         )
     )
+    if queue_inputs:
+        console.print("[dim]Input queue enabled (OLLAMACODE_TUI_QUEUE_INPUT=1).[/]")
     if show_semantic_hint:
         console.print(
             "[dim]Tip: For semantic codebase search, add a semantic MCP server to config. See docs/MCP_SERVERS.md.[/]"
         )
 
-    # Producer: always reading input; consumer: processes one command at a time (like cursor-cli).
+    # Producer: optionally reads input continuously; consumer: processes one command at a time.
     input_queue: asyncio.Queue[str | None] = asyncio.Queue()
 
     async def input_producer() -> None:
@@ -1001,32 +1612,172 @@ async def run_tui(
 
     async def get_next_line() -> str | None:
         """Get next user line from queue (None = quit)."""
+        if not queue_inputs:
+            try:
+                return await loop.run_in_executor(None, get_input)
+            except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
+                return None
         return await input_queue.get()
 
+    def _should_auto_agents(text: str) -> bool:
+        if not text or text.strip().startswith("/"):
+            return False
+        words = len(text.split())
+        if words >= 10:
+            return True
+        lowered = text.lower()
+        keywords = (
+            "analyze",
+            "audit",
+            "review",
+            "regression",
+            "optimize",
+            "refactor",
+            "plan",
+            "roadmap",
+            "deep",
+            "thorough",
+        )
+        return any(k in lowered for k in keywords)
+
+    def _should_plan_exec_verify(text: str) -> bool:
+        if not text or text.strip().startswith("/"):
+            return False
+        words = len(text.split())
+        if words >= 12:
+            return True
+        lowered = text.lower()
+        keywords = (
+            "analyze",
+            "audit",
+            "review",
+            "regression",
+            "optimize",
+            "refactor",
+            "plan",
+            "roadmap",
+            "deep",
+            "thorough",
+            "migrate",
+            "redesign",
+            "performance",
+            "security",
+        )
+        return any(k in lowered for k in keywords)
+
+    def _route_model(text: str, default_model: str) -> str:
+        if not router_enabled:
+            return default_model
+        words = len(text.split())
+        lowered = text.lower()
+        heavy = (
+            "analyze",
+            "audit",
+            "review",
+            "refactor",
+            "regression",
+            "optimize",
+            "roadmap",
+            "security",
+            "performance",
+            "migrate",
+        )
+        if words > 40 or any(k in lowered for k in heavy):
+            return router_strong
+        if words <= 6:
+            return router_fast
+        return default_model
+
+    async def _plan_agents(task: str) -> tuple[int, list[dict[str, str]]]:
+        """Lightweight planner to decide agent count and focus areas."""
+        prompt = (
+            "You are a planner. Decide how many parallel agents (2-6) should be used and their focus.\n"
+            "Return JSON only with keys: count (int), agents (list of {name, focus}).\n"
+            f"Task: {task}"
+        )
+        try:
+            if session is not None:
+                text = await run_agent_loop(
+                    session,
+                    planner_model,
+                    prompt,
+                    system_prompt=_SYSTEM,
+                    message_history=[],
+                    max_tool_rounds=1,
+                    confirm_tool_calls=False,
+                    provider=provider,
+                )
+            else:
+                text = await run_agent_loop_no_mcp(
+                    planner_model,
+                    prompt,
+                    system_prompt=_SYSTEM,
+                    message_history=[],
+                    provider=provider,
+                )
+            raw = text.strip().splitlines()[-1].strip()
+            data = json.loads(raw)
+            count = int(data.get("count", auto_agents_n))
+            agents = data.get("agents") or []
+            if not isinstance(agents, list):
+                agents = []
+            count = max(2, min(6, count))
+            roles: list[dict[str, str]] = []
+            for a in agents[:count]:
+                if isinstance(a, dict):
+                    name = str(a.get("name", "")).strip() or "Agent"
+                    focus = str(a.get("focus", "")).strip()
+                    roles.append({"name": name, "focus": focus})
+            if not roles:
+                roles = [
+                    {"name": "Agent A", "focus": "Architecture & risks"},
+                    {"name": "Agent B", "focus": "Tests & regressions"},
+                    {"name": "Agent C", "focus": "UX & TUI polish"},
+                ][:count]
+            return count, roles
+        except Exception:
+            roles = [
+                {"name": "Agent A", "focus": "Architecture & risks"},
+                {"name": "Agent B", "focus": "Tests & regressions"},
+                {"name": "Agent C", "focus": "UX & TUI polish"},
+            ][:auto_agents_n]
+            return auto_agents_n, roles
+
     try:
-        producer_task = asyncio.create_task(input_producer())
+        if queue_inputs:
+            producer_task = asyncio.create_task(input_producer())
         while True:
             line = await get_next_line()
             if line is None:
                 break
             add_input_history(line)
 
-            result = _handle_tui_slash(
-                line,
-                model_ref,
-                history,
-                message_history,
-                console,
-                workspace_root=workspace_root or os.getcwd(),
-                linter_command=linter_command,
-                test_command=test_command,
-                docs_command=docs_command,
-                profile_command=profile_command,
-                autonomous_ref=autonomous_ref,
-                custom_commands=custom_commands_list,
-                session_ref=session_ref if session_ref else None,
-                subagents=subagents,
-            )
+            result = None
+            if auto_agents and _should_auto_agents(line):
+                if auto_agents_plan:
+                    n_plan, roles_plan = await _plan_agents(line)
+                    result = ("run_agents", n_plan, line, roles_plan)
+                    console.print(f"[dim]Auto agents: {n_plan} (planned)[/]")
+                else:
+                    result = ("run_agents", auto_agents_n, line, None)
+                    console.print(f"[dim]Auto agents: {auto_agents_n}[/]")
+            else:
+                result = _handle_tui_slash(
+                    line,
+                    model_ref,
+                    history,
+                    message_history,
+                    console,
+                    workspace_root=workspace_root or os.getcwd(),
+                    linter_command=linter_command,
+                    test_command=test_command,
+                    docs_command=docs_command,
+                    profile_command=profile_command,
+                    autonomous_ref=autonomous_ref,
+                    custom_commands=custom_commands_list,
+                    session_ref=session_ref if session_ref else None,
+                    subagents=subagents,
+                )
             if result == "quit":
                 break
             if isinstance(result, tuple) and result[0] in (
@@ -1077,10 +1828,11 @@ async def run_tui(
                         before_tool_call=_before_tool_call_tui
                         if effective_confirm()
                         else None,
+                        provider=provider,
                     )
                 else:
                     out = await run_agent_loop_no_mcp(
-                        sub_model, task, system_prompt=_SYSTEM, message_history=[]
+                        sub_model, task, system_prompt=_SYSTEM, message_history=[], provider=provider,
                     )
                 history.append((task, out))
                 message_history.append({"role": "user", "content": task})
@@ -1176,6 +1928,181 @@ async def run_tui(
                     continue
                 elif (
                     isinstance(result, tuple)
+                    and len(result) >= 3
+                    and result[0] == "run_agents"
+                ):
+                    roles = None
+                    if len(result) >= 4:
+                        roles = cast(list[dict[str, str]] | None, result[3])
+                    _, n_agents, task = cast(tuple[Any, int, str], result[:3])
+                    n_agents = max(1, min(6, n_agents))
+                    if not roles:
+                        roles = [
+                            {"name": "Agent A", "focus": "Architecture & risks"},
+                            {"name": "Agent B", "focus": "Tests & regressions"},
+                            {"name": "Agent C", "focus": "UX & TUI polish"},
+                        ][:n_agents]
+                    status["agents_running"] = n_agents
+                    status["agents_done"] = 0
+                    status["agent_task"] = task
+                    status["agent_roles"] = roles
+                    status["agent_outputs"] = []
+                    status["agents"] = [
+                        {"name": r.get("name", f"Agent {i+1}"), "state": "running", "note": r.get("focus", "")}
+                        for i, r in enumerate(roles)
+                    ]
+                    console.print(f"[dim]Running {n_agents} agents...[/]")
+
+                    async def _run_one(idx: int) -> str:
+                        role = roles[idx] if idx < len(roles) else {"name": f"Agent {idx+1}", "focus": ""}
+                        label = role.get("name", f"Agent {idx + 1}")
+                        focus = role.get("focus", "")
+                        prompt = f"{task}\n\n(You are {label}. Focus: {focus})"
+                        if agents_structured:
+                            prompt += (
+                                "\n\nReturn Markdown with sections:\n"
+                                "## Summary\n## Findings\n## Risks\n## Next Steps"
+                            )
+                        if session is not None:
+                            return await run_agent_loop(
+                                session,
+                                model_ref[0],
+                                prompt,
+                                system_prompt=_SYSTEM,
+                                message_history=[],
+                                max_tool_rounds=max_tool_rounds,
+                                allowed_tools=allowed_tools,
+                                blocked_tools=blocked_tools,
+                                confirm_tool_calls=False,
+                                provider=provider,
+                            )
+                        return await run_agent_loop_no_mcp(
+                            model_ref[0],
+                            prompt,
+                            system_prompt=_SYSTEM,
+                            message_history=[],
+                            provider=provider,
+                        )
+
+                    async def _wrap(i: int) -> str:
+                        try:
+                            return await _run_one(i)
+                        finally:
+                            status["agents_done"] += 1
+                            if i < len(status["agents"]):
+                                status["agents"][i]["state"] = "done"
+
+                    tasks = [asyncio.create_task(_wrap(i)) for i in range(n_agents)]
+                    results = await asyncio.gather(*tasks)
+                    status["agents_running"] = 0
+                    status["agent_outputs"] = results
+                    summary_text = ""
+                    if auto_agents_summary:
+                        try:
+                            summary_prompt = (
+                                "Summarize the agent outputs into a short executive summary (max 6 bullets) "
+                                "and list key action items (max 5). Respond in Markdown only.\n\n"
+                                f"Task: {task}\n\n"
+                                + "\n\n".join(
+                                    [
+                                        f"[{roles[i].get('name', f'Agent {i+1}')}] {results[i]}"
+                                        for i in range(min(len(results), len(roles)))
+                                    ]
+                                )
+                            )
+                            if session is not None:
+                                summary_text = await run_agent_loop(
+                                    session,
+                                    summary_model,
+                                    summary_prompt,
+                                    system_prompt=_SYSTEM,
+                                    message_history=[],
+                                    max_tool_rounds=1,
+                                    confirm_tool_calls=False,
+                                    provider=provider,
+                                )
+                            else:
+                                summary_text = await run_agent_loop_no_mcp(
+                                    summary_model,
+                                    summary_prompt,
+                                    system_prompt=_SYSTEM,
+                                    message_history=[],
+                                    provider=provider,
+                                )
+                            summary_text = summary_text.strip()
+                        except Exception:
+                            summary_text = ""
+                    synthesis_text = ""
+                    if agents_synthesis:
+                        try:
+                            synthesis_prompt = (
+                                "Synthesize the agent outputs into a single final answer. "
+                                "Explicitly reconcile conflicts. Respond in Markdown with sections:\n"
+                                "## Final Answer\n"
+                                "## Conflicts Resolved (use 'None' if no conflicts)\n\n"
+                                f"Task: {task}\n\n"
+                                + "\n\n".join(
+                                    [
+                                        f"[{roles[i].get('name', f'Agent {i+1}')}] {results[i]}"
+                                        for i in range(min(len(results), len(roles)))
+                                    ]
+                                )
+                            )
+                            if session is not None:
+                                synthesis_text = await run_agent_loop(
+                                    session,
+                                    synthesis_model,
+                                    synthesis_prompt,
+                                    system_prompt=_SYSTEM,
+                                    message_history=[],
+                                    max_tool_rounds=1,
+                                    confirm_tool_calls=False,
+                                    provider=provider,
+                                )
+                            else:
+                                synthesis_text = await run_agent_loop_no_mcp(
+                                    synthesis_model,
+                                    synthesis_prompt,
+                                    system_prompt=_SYSTEM,
+                                    message_history=[],
+                                    provider=provider,
+                                )
+                            synthesis_text = synthesis_text.strip()
+                        except Exception:
+                            synthesis_text = ""
+                    parts = [f"## Agents ({n_agents})"]
+                    if summary_text:
+                        parts.insert(0, f"## Executive Summary\n\n{summary_text}")
+                    if synthesis_text:
+                        parts.insert(0, f"## Final Synthesis\n\n{synthesis_text}")
+                    for i, text in enumerate(results, 1):
+                        name = roles[i - 1].get("name", f"Agent {i}") if roles else f"Agent {i}"
+                        focus = roles[i - 1].get("focus", "") if roles else ""
+                        header = f"### {name}"
+                        if focus:
+                            header += f" — {focus}"
+                        preview_lines = text.strip().splitlines()
+                        preview = "\n".join(preview_lines[:agents_preview_lines])
+                        parts.append(f"{header}\n\n{preview}")
+                        if len(preview_lines) > agents_preview_lines:
+                            parts.append(f"[dim]… use /agents_show {i} for full output[/]")
+                    combined = "\n\n".join(parts)
+                    history.append((task, combined))
+                    message_history.append({"role": "user", "content": task})
+                    message_history.append({"role": "assistant", "content": combined})
+                    if session_ref:
+                        try:
+                            from .sessions import save_session
+
+                            save_session(session_ref[0], None, message_history)
+                        except Exception:
+                            pass
+                    console.print(
+                        Panel(Markdown(combined), title="Agents", border_style="cyan")
+                    )
+                    continue
+                elif (
+                    isinstance(result, tuple)
                     and len(result) >= 2
                     and result[0] == "copy_last"
                 ):
@@ -1197,6 +2124,138 @@ async def run_tui(
                                 "[dim]Clipboard unavailable. Install pbcopy/wl-copy/xclip/xsel.[/]"
                             )
                     continue
+                elif (
+                    isinstance(result, tuple)
+                    and len(result) >= 2
+                    and result[0] == "show_agents"
+                ):
+                    arg = cast(str, result[1]).strip().lower()
+                    outputs = status.get("agent_outputs") or []
+                    roles = status.get("agent_roles") or []
+                    task = status.get("agent_task") or ""
+                    if not outputs:
+                        console.print("[dim]No agent outputs yet.[/]")
+                        continue
+                    if arg in ("summary", "sum", "s"):
+                        lines = ["[bold]Agents (summary)[/]"]
+                        if task:
+                            lines.append(f"[dim]Task:[/] {task}")
+                        for i, out in enumerate(outputs, 1):
+                            name = roles[i - 1].get("name", f"Agent {i}") if i - 1 < len(roles) else f"Agent {i}"
+                            focus = roles[i - 1].get("focus", "") if i - 1 < len(roles) else ""
+                            header = f"{name}"
+                            if focus:
+                                header += f" — {focus}"
+                            preview = "\n".join(out.strip().splitlines()[:agents_preview_lines])
+                            lines.append(f"[dim]{header}[/]\n{preview}")
+                        console.print(Panel("\n\n".join(lines), title="Agents", border_style="cyan"))
+                        continue
+                    if arg in ("all", "*"):
+                        combined = []
+                        if task:
+                            combined.append(f"## Task\n\n{task}")
+                        for i, out in enumerate(outputs, 1):
+                            name = roles[i - 1].get("name", f"Agent {i}") if i - 1 < len(roles) else f"Agent {i}"
+                            focus = roles[i - 1].get("focus", "") if i - 1 < len(roles) else ""
+                            header = f"### {name}"
+                            if focus:
+                                header += f" — {focus}"
+                            combined.append(f"{header}\n\n{out.strip()}")
+                        console.print(Panel(Markdown("\n\n".join(combined)), title="Agents", border_style="cyan"))
+                        continue
+                    try:
+                        idx = int(arg)
+                    except ValueError:
+                        console.print("[dim]Usage: /agents_show <n|all|summary>[/]")
+                        continue
+                    if idx < 1 or idx > len(outputs):
+                        console.print("[dim]Agent index out of range.[/]")
+                        continue
+                    name = roles[idx - 1].get("name", f"Agent {idx}") if idx - 1 < len(roles) else f"Agent {idx}"
+                    focus = roles[idx - 1].get("focus", "") if idx - 1 < len(roles) else ""
+                    header = f"{name}"
+                    if focus:
+                        header += f" — {focus}"
+                    body = outputs[idx - 1].strip()
+                    console.print(Panel(Markdown(f"### {header}\n\n{body}"), title="Agent", border_style="cyan"))
+                    continue
+                elif (
+                    isinstance(result, tuple)
+                    and len(result) >= 1
+                    and result[0] == "agents_summary"
+                ):
+                    outputs = status.get("agent_outputs") or []
+                    roles = status.get("agent_roles") or []
+                    task = status.get("agent_task") or ""
+                    if not outputs:
+                        console.print("[dim]No agent outputs yet.[/]")
+                        continue
+                    try:
+                        summary_prompt = (
+                            "Summarize the agent outputs into a short executive summary (max 6 bullets) "
+                            "and list key action items (max 5). Respond in Markdown only.\n\n"
+                            f"Task: {task}\n\n"
+                            + "\n\n".join(
+                                [
+                                    f"[{roles[i].get('name', f'Agent {i+1}')}] {outputs[i]}"
+                                    for i in range(min(len(outputs), len(roles)))
+                                ]
+                            )
+                        )
+                        if session is not None:
+                            summary_text = await run_agent_loop(
+                                session,
+                                summary_model,
+                                summary_prompt,
+                                system_prompt=_SYSTEM,
+                                message_history=[],
+                                max_tool_rounds=1,
+                                confirm_tool_calls=False,
+                                provider=provider,
+                            )
+                        else:
+                            summary_text = await run_agent_loop_no_mcp(
+                                summary_model,
+                                summary_prompt,
+                                system_prompt=_SYSTEM,
+                                message_history=[],
+                                provider=provider,
+                            )
+                        summary_text = summary_text.strip()
+                        console.print(Panel(Markdown(summary_text), title="Executive Summary", border_style="cyan"))
+                    except Exception as e:
+                        console.print(f"[dim]Summary failed: {e}[/]")
+                    continue
+                elif (
+                    isinstance(result, tuple)
+                    and len(result) >= 2
+                    and result[0] == "voice_out"
+                ):
+                    text = cast(str, result[1])
+                    try:
+                        from .voice import speak_text
+
+                        speak_text(text)
+                    except Exception as e:
+                        console.print(f"[dim]Voice output failed: {e}[/]")
+                    continue
+                elif (
+                    isinstance(result, tuple)
+                    and len(result) >= 2
+                    and result[0] == "voice_in"
+                ):
+                    secs = float(result[1])
+                    try:
+                        from .voice import record_and_transcribe
+
+                        console.print("[dim]Listening...[/]")
+                        line = record_and_transcribe(seconds=secs, meter_cb=_voice_meter)
+                        _voice_meter_done()
+                        console.print(f"[dim]Heard:[/] {line}")
+                    except Exception as e:
+                        console.print(f"[dim]Voice input failed: {e}[/]")
+                        continue
+                    # fall through to handle as a normal prompt
                 elif (
                     isinstance(result, tuple)
                     and len(result) >= 2
@@ -1320,11 +2379,12 @@ async def run_tui(
                             prompt,
                             system_prompt=_SYSTEM,
                             message_history=[],
-                            max_tool_rounds=0,
+                            max_tool_rounds=1,
                             confirm_tool_calls=effective_confirm(),
                             before_tool_call=_before_tool_call_tui
                             if effective_confirm()
                             else None,
+                            provider=provider,
                         )
                     else:
                         summary = await run_agent_loop_no_mcp(
@@ -1332,6 +2392,7 @@ async def run_tui(
                             prompt,
                             system_prompt=_SYSTEM,
                             message_history=[],
+                            provider=provider,
                         )
                     summary = summary.strip()
                     message_history[:] = message_history[:-n_msgs] + [
@@ -1348,8 +2409,15 @@ async def run_tui(
                     continue
 
             history.append(("user", line))
+            status["last_user"] = line
             root = workspace_root if workspace_root is not None else os.getcwd()
+            # Handle pasted image data URLs in the input.
+            img_path, cleaned = _extract_pasted_image(line)
+            if img_path:
+                pending_image_ref[0] = (img_path, "")
+                line = cleaned or line
             line_expanded = expand_at_refs(line, root)
+            model_for_turn = _route_model(str(line_expanded), model_ref[0])
             image_paths_list: list[str] = []
             if pending_image_ref[0]:
                 path, msg = cast(tuple[str, str], pending_image_ref[0])
@@ -1365,12 +2433,111 @@ async def run_tui(
                         )
                 except Exception:
                     pass
+            msg_history = [{"role": r, "content": c} for r, c in history[:-1]]
+            if plan_exec_verify and _should_plan_exec_verify(str(line_expanded)):
+                mem_block = (
+                    build_dynamic_memory_context(
+                        cast(str, line_expanded),
+                        kg_max_results=memory_kg_max_results,
+                        rag_max_results=memory_rag_max_results,
+                        rag_snippet_chars=memory_rag_snippet_chars,
+                    )
+                    if memory_auto_context
+                    else ""
+                )
+                sys_prompt = (
+                    _SYSTEM
+                    + "\n\n--- Retrieved memory (query-specific) ---\n\n"
+                    + mem_block
+                    if mem_block
+                    else _SYSTEM
+                )
+                if not quiet:
+                    console.print("[dim]Planning...[/]")
+                plan = await run_agent_loop_no_mcp(
+                    plan_model,
+                    cast(str, line_expanded),
+                    system_prompt=(
+                        sys_prompt
+                        + "\n\nYou are a planner. Produce a concise step-by-step plan (3-8 steps). "
+                        "Do not call tools. Return the plan only."
+                    ),
+                    message_history=None,
+                    provider=provider,
+                )
+                plan = (plan or "").strip()
+                exec_prompt = (
+                    f"Goal:\n{line_expanded}\n\nPlan:\n{plan}\n\n"
+                    "Execute the plan step-by-step. Provide the final answer only."
+                )
+                if not quiet:
+                    console.print("[dim]Executing...[/]")
+                run_start = time.perf_counter()
+                status["tool_calls"] = 0
+                status["tool_errors"] = 0
+                if session is not None:
+                    final = await run_agent_loop(
+                        session,
+                        model_for_turn,
+                        exec_prompt,
+                        system_prompt=sys_prompt,
+                        max_tool_rounds=max_tool_rounds_eff(),
+                        image_paths=image_paths_list if image_paths_list else None,
+                        max_messages=max_messages,
+                        max_tool_result_chars=max_tool_result_chars,
+                        message_history=msg_history if msg_history else None,
+                        quiet=quiet,
+                        timing=timing,
+                        allowed_tools=allowed_tools,
+                        blocked_tools=blocked_tools,
+                        confirm_tool_calls=effective_confirm(),
+                        before_tool_call=_before_tool_call_tui
+                        if effective_confirm()
+                        else None,
+                        provider=provider,
+                    )
+                else:
+                    final = await run_agent_loop_no_mcp(
+                        model_for_turn,
+                        exec_prompt,
+                        system_prompt=sys_prompt,
+                        message_history=msg_history if msg_history else None,
+                        provider=provider,
+                    )
+                if not quiet:
+                    console.print("[dim]Verifying...[/]")
+                verify = await run_agent_loop_no_mcp(
+                    verify_model,
+                    "Review the following answer for correctness and completeness. Output only the revised answer, no preamble.\n\n"
+                    + (final or ""),
+                    system_prompt="You are a verifier. Output only the revised answer.",
+                    message_history=None,
+                    provider=provider,
+                )
+                final = (verify or "").strip()
+                status["last_duration"] = time.perf_counter() - run_start
+                history.append(("assistant", final))
+                message_history.append({"role": "user", "content": line})
+                message_history.append({"role": "assistant", "content": final})
+                _maybe_apply_edits_tui(final)
+                if session_ref:
+                    try:
+                        from .sessions import save_session
+
+                        save_session(session_ref[0], None, message_history)
+                    except Exception:
+                        pass
+                console.print(
+                    Panel(Markdown(final), title="Assistant", border_style="cyan")
+                )
+                continue
             # Keep Live panel to a fixed height so the prompt line stays visible below (during and after agent run).
             live_panel_max_lines = max(10, (console.size.height or 24) - 4)
 
             def _status_line() -> str:
                 spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-                idx = status.get("spinner_i", 0) % len(spinner)
+                # Use wall time so the spinner runs at ~8 fps independent of refresh rate.
+                idx = int(time.monotonic() * 8) % len(spinner)
                 spin = spinner[idx]
                 if status["phase"] == "tool" and status.get("tool"):
                     return f"[dim]{spin} Tool: {status['tool']} (awaiting approval)[/]"
@@ -1382,64 +2549,154 @@ async def run_tui(
                     return f"[dim]{spin} Assistant (thinking...)[/]"
                 return f"[dim]{spin} Assistant (idle)[/]"
 
-            def _tool_trace_block() -> str:
-                if not tool_trace:
-                    return ""
+            def _tool_panel_text() -> str:
+                if not tool_trace and not tool_log:
+                    return "[dim]No tool activity yet.[/]"
+
+                def _shorten(s: str, n: int = 140) -> str:
+                    return s if len(s) <= n else (s[: n - 1] + "…")
+
                 entries = list(tool_trace)
                 if trace_filter:
                     needle = trace_filter.lower()
                     entries = [t for t in entries if needle in t.lower()]
-                if not entries:
-                    return "\n\n[bold]Tool trace[/]\n[dim](no matches)[/]"
                 if compact_mode:
                     entries = entries[: min(3, len(entries))]
-                lines = "\n".join(f"[dim]{t}[/]" for t in entries)
-                return f"\n\n[bold]Tool trace[/]\n{lines}"
-
-            def _tool_log_block() -> str:
-                if not tool_log:
-                    return ""
-                entries = list(tool_log)
+                trace_lines = (
+                    "\n".join(f"[dim]{_shorten(t)}[/]" for t in entries)
+                    if entries
+                    else "[dim](no matches)[/]"
+                )
+                log_entries = list(tool_log)
                 if trace_filter:
                     needle = trace_filter.lower()
-                    entries = [t for t in entries if needle in t.lower()]
-                if not entries:
-                    return "\n\n[bold]Tool log[/]\n[dim](no matches)[/]"
+                    log_entries = [t for t in log_entries if needle in t.lower()]
                 if compact_mode:
-                    entries = entries[: min(3, len(entries))]
-                lines = "\n".join(f"[dim]{t}[/]" for t in entries)
-                return f"\n\n[bold]Tool log[/]\n{lines}"
+                    log_entries = log_entries[: min(3, len(log_entries))]
+                log_lines = (
+                    "\n".join(f"[dim]{_shorten(t)}[/]" for t in log_entries)
+                    if log_entries
+                    else "[dim](no matches)[/]"
+                )
+                return f"[bold]Trace[/]\n{trace_lines}\n\n[bold]Log[/]\n{log_lines}"
+
+            def _safe_single_line(s: str, n: int = 160) -> str:
+                s = " ".join((s or "").split())
+                return s if len(s) <= n else s[: n - 1] + "…"
+
+            def _timeline_text() -> str:
+                phase = status.get("phase", "idle")
+                tool = status.get("tool") or "-"
+                last_user = status.get("last_user") or "-"
+                agents = status.get("agents_running", 0)
+                agents_done = status.get("agents_done", 0)
+                last_duration = status.get("last_duration")
+                tool_calls = status.get("tool_calls", 0)
+                tool_errors = status.get("tool_errors", 0)
+                voice_level = float(status.get("voice_level") or 0.0)
+                agent_line = (
+                    f"[bold]Agents:[/] {agents_done}/{agents} running"
+                    if agents
+                    else "[bold]Agents:[/] -"
+                )
+                summary_line = (
+                    f"[bold]LastRun:[/] {last_duration:.1f}s  "
+                    f"[bold]Tools:[/] {tool_calls}  "
+                    f"[bold]Errors:[/] {tool_errors}"
+                    if isinstance(last_duration, (int, float))
+                    else "[bold]LastRun:[/] -"
+                )
+                voice_line = ""
+                if voice_level > 0:
+                    bars = int(max(0.0, min(voice_level, 1.0)) * 16)
+                    voice_line = f"[bold]Mic:[/] " + ("█" * bars) + (" " * (16 - bars))
+                return (
+                    f"[bold]Phase:[/] {phase}  "
+                    f"[bold]Tool:[/] {tool}  "
+                    f"{agent_line}\n"
+                    f"{summary_line}\n"
+                    f"{voice_line}\n"
+                    f"[bold]Last:[/] {_safe_single_line(last_user, 160)}"
+                )
+
+            def _agents_panel_text() -> str:
+                agents = status.get("agents") or []
+                if not agents:
+                    return "[dim]No agents active.[/]"
+                lines = ["[bold]Agents[/]"]
+                for a in agents:
+                    name = a.get("name", "Agent")
+                    state = a.get("state", "idle")
+                    note = a.get("note", "")
+                    lines.append(f"[dim]{name}[/] [{state}] {note}")
+                lines.append("[dim]Tip: /agents_show <n|all|summary>[/]")
+                return "\n".join(lines)
+
+            def _status_bar_text() -> str:
+                sandbox_level = os.environ.get("OLLAMACODE_SANDBOX_LEVEL", "supervised")
+                session_short = session_ref[0][:8] if session_ref else "none"
+                mode = "auto" if autonomous_ref[0] else "confirm" if effective_confirm() else "manual"
+                tool_state = status.get("tool") or "-"
+                queue_info = ""
+                if queue_inputs:
+                    queue_info = f"  [bold]Queue:[/] {input_queue.qsize()}"
+                budget_info = ""
+                run_budget = os.environ.get("OLLAMACODE_RUN_BUDGET_SECONDS", "").strip()
+                tool_budget = os.environ.get("OLLAMACODE_TOOL_BUDGET_SECONDS", "").strip()
+                tool_timeout = os.environ.get("OLLAMACODE_TOOL_TIMEOUT_SECONDS", "").strip()
+                if run_budget or tool_budget or tool_timeout:
+                    budget_info = (
+                        f"  [bold]Budget:[/] run {run_budget or '-'}s "
+                        f"tool {tool_budget or '-'}s "
+                        f"tmo {tool_timeout or '-'}s"
+                    )
+                return (
+                    f"[bold]Model:[/] {model_ref[0]}  "
+                    f"[bold]Provider:[/] {provider_name}  "
+                    f"[bold]Sandbox:[/] {sandbox_level}  "
+                    f"[bold]Mode:[/] {mode}  "
+                    f"[bold]Session:[/] {session_short}  "
+                    f"[bold]Tool:[/] {tool_state}"
+                    f"{queue_info}"
+                    f"{budget_info}"
+                )
 
             def _render_chat_markdown(accumulated: str, *, done: bool) -> str:
                 limit = 1 if compact_mode else _CHAT_PANEL_LAST_N_EXCHANGES
                 md = _conversation_to_markdown(
                     history, accumulated, limit_exchanges=limit
                 )
-                if done:
-                    pass
-                else:
-                    blocks = _status_line() + _tool_trace_block()
-                    if not compact_mode:
-                        blocks += _tool_log_block()
-                    md = md + "\n\n" + blocks
+                if not done:
+                    md = md + "\n\n" + _status_line()
                 # Truncate so Live only redraws this many lines; prompt stays visible below.
                 lines = md.split("\n")
                 if len(lines) > live_panel_max_lines:
                     md = "\n".join(lines[-live_panel_max_lines:])
                 return md
 
+            def _render_live(accumulated: str, done: bool):
+                chat_md = _render_chat_markdown(accumulated, done=done)
+                panels = [
+                    Panel(_timeline_text(), title="Timeline", border_style="yellow"),
+                    Panel(Markdown(chat_md), title="Chat", border_style="blue"),
+                ]
+                if not compact_mode:
+                    panels.append(Panel(_tool_panel_text(), title="Tools", border_style="magenta"))
+                    panels.append(Panel(_agents_panel_text(), title="Agents", border_style="cyan"))
+                panels.append(Panel(_status_bar_text(), title="Status", border_style="green"))
+                return Group(*panels)
+
             def make_update(accumulated: str, done: bool) -> None:
                 status["accumulated"] = accumulated
                 status["has_output"] = bool(accumulated)
                 status["phase"] = "streaming" if status["has_output"] else "thinking"
                 md = _render_chat_markdown(accumulated, done=done)
-                live.update(Panel(Markdown(md), title="Chat", border_style="blue"))
-
-            msg_history = [{"role": r, "content": c} for r, c in history[:-1]]
+                live.update(_render_live(accumulated, done=done))
 
             def _on_tool_start(name: str, arguments: dict) -> None:
                 status["phase"] = "tool_running"
                 status["tool"] = name
+                status["tool_calls"] = int(status.get("tool_calls", 0)) + 1
                 ts = datetime.now().strftime("%H:%M:%S")
                 tool_trace.appendleft(
                     f"{ts} → {name} {_tool_call_one_line(name, arguments)}"
@@ -1450,6 +2707,8 @@ async def run_tui(
                     "streaming" if status.get("has_output") else "thinking"
                 )
                 status["tool"] = ""
+                if "error" in summary.lower():
+                    status["tool_errors"] = int(status.get("tool_errors", 0)) + 1
                 ts = datetime.now().strftime("%H:%M:%S")
                 tool_trace.appendleft(f"{ts} ✓ {name} {summary}")
                 trimmed = summary[:tui_tool_log_chars] + (
@@ -1477,7 +2736,7 @@ async def run_tui(
                 )
                 stream = run_agent_loop_stream(
                     session,
-                    model_ref[0],
+                    model_for_turn,
                     cast(str, line_expanded),
                     system_prompt=sys_prompt,
                     max_tool_rounds=max_tool_rounds_eff(),
@@ -1496,6 +2755,7 @@ async def run_tui(
                     else None,
                     on_tool_start=_on_tool_start,
                     on_tool_end=_on_tool_end,
+                    provider=provider,
                 )
             else:
                 mem_block = (
@@ -1516,52 +2776,71 @@ async def run_tui(
                     else _SYSTEM
                 )
                 stream = run_agent_loop_no_mcp_stream(
-                    model_ref[0],
+                    model_for_turn,
                     cast(str, line_expanded),
                     system_prompt=sys_prompt,
                     message_history=msg_history,
+                    provider=provider,
                 )
 
             async def _tick():
                 while not status["done"]:
-                    status["spinner_i"] = status.get("spinner_i", 0) + 1
                     md = _render_chat_markdown(
                         status.get("accumulated", ""), done=False
                     )
-                    live.update(Panel(Markdown(md), title="Chat", border_style="blue"))
+                    live.update(_render_live(status.get("accumulated", ""), done=False))
                     await asyncio.sleep(max(0.05, 1.0 / max(1, tui_refresh_hz)))
 
-            with Live(
-                Panel(
-                    Markdown(_render_chat_markdown("", done=True)),
-                    title="Chat",
-                    border_style="blue",
-                ),
-                console=console,
-                refresh_per_second=max(1, tui_refresh_hz),
-                vertical_overflow="visible",
-            ) as live:
-                status["done"] = False
-                status["phase"] = "thinking"
-                status["accumulated"] = ""
-                # Show prompt below Live so user can type next message while agent runs (queued).
-                console.print(f"\nYou [{model_ref[0]}]: ", end="")
-                ticker = asyncio.create_task(_tick())
+            if use_live:
+                with Live(
+                    _render_live("", done=True),
+                    console=console,
+                    refresh_per_second=max(1, tui_refresh_hz),
+                    vertical_overflow="crop",
+                ) as live:
+                    status["done"] = False
+                    status["phase"] = "thinking"
+                    status["accumulated"] = ""
+                    status["tool_calls"] = 0
+                    status["tool_errors"] = 0
+                    run_start = time.perf_counter()
+                    ticker = asyncio.create_task(_tick())
+                    try:
+                        final = await _stream_into_live(stream, make_update)
+                    except Exception as e:  # noqa: BLE001
+                        final = f"**Error:** {e}"
+                        if not quiet:
+                            console.print(f"[red]Stream error:[/] {e}")
+                    finally:
+                        status["done"] = True
+                        status["last_duration"] = time.perf_counter() - run_start
+                        ticker.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await ticker
+            else:
                 try:
-                    final = await _stream_into_live(stream, make_update)
+                    status["tool_calls"] = 0
+                    status["tool_errors"] = 0
+                    run_start = time.perf_counter()
+                    final = await _stream_into_console(stream)
                 except Exception as e:  # noqa: BLE001
-                    final = f"**Error:** {e}"
+                    final = f"Error: {e}"
                     if not quiet:
                         console.print(f"[red]Stream error:[/] {e}")
                 finally:
-                    status["done"] = True
-                    ticker.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await ticker
+                    status["last_duration"] = time.perf_counter() - run_start
 
             history.append(("assistant", final))
             message_history.append({"role": "user", "content": line})
             message_history.append({"role": "assistant", "content": final})
+            _maybe_apply_edits_tui(final)
+            if voice_out_enabled:
+                try:
+                    from .voice import speak_text
+
+                    speak_text(final)
+                except Exception:
+                    pass
             if session_ref:
                 try:
                     from .sessions import save_session
@@ -1569,11 +2848,28 @@ async def run_tui(
                     save_session(session_ref[0], None, message_history)
                 except Exception:
                     pass
-            # Show prompt immediately when agent is done (no need to press Enter first).
-            console.print(f"\nYou [{model_ref[0]}]: ", end="")
     finally:
         if producer_task is not None:
             producer_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             if producer_task is not None:
                 await producer_task
+    def _extract_pasted_image(line: str) -> tuple[str | None, str]:
+        """Detect data URL image paste; save to disk and return (path, cleaned_line)."""
+        if "data:image" not in line:
+            return None, line
+        m = re.search(r"data:image/(png|jpeg|jpg);base64,([A-Za-z0-9+/=]+)", line)
+        if not m:
+            return None, line
+        ext = "jpg" if m.group(1) in ("jpeg", "jpg") else "png"
+        b64 = m.group(2)
+        try:
+            raw = base64.b64decode(b64)
+            tmp_dir = Path.home() / ".ollamacode" / "clipboard"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            path = tmp_dir / f"paste_{int(time.time())}.{ext}"
+            path.write_bytes(raw)
+            cleaned = line.replace(m.group(0), "").strip()
+            return str(path), cleaned
+        except Exception:
+            return None, line
