@@ -64,6 +64,7 @@ class BaseChannel:
 # In-process agent call (no MCP — channel adapters run lightweight)
 # ---------------------------------------------------------------------------
 
+
 def _run_agent(message: str, history: list[dict], model: str, config: dict) -> str:
     """Run the no-MCP agent loop and return the reply."""
     from .agent import run_agent_loop_no_mcp
@@ -112,6 +113,7 @@ def _append_history(user_key: str, role: str, content: str) -> None:
 # Allowlist helpers
 # ---------------------------------------------------------------------------
 
+
 def _is_allowed_user(user_id: int, allowed: list[int] | None) -> bool:
     if not allowed:
         return True  # No allowlist = open
@@ -130,6 +132,7 @@ def _is_allowed_guild(guild_id: int | None, allowed: list[int] | None) -> bool:
 # Telegram channel
 # ---------------------------------------------------------------------------
 
+
 class TelegramChannel(BaseChannel):
     """Webhook-less long-polling Telegram bot adapter.
 
@@ -139,7 +142,13 @@ class TelegramChannel(BaseChannel):
 
     name = "telegram"
 
-    def __init__(self, bot_token: str, allowed_user_ids: list[int] | None, model: str, config: dict) -> None:
+    def __init__(
+        self,
+        bot_token: str,
+        allowed_user_ids: list[int] | None,
+        model: str,
+        config: dict,
+    ) -> None:
         self.bot_token = bot_token
         self.allowed_user_ids = allowed_user_ids
         self.model = model
@@ -156,7 +165,9 @@ class TelegramChannel(BaseChannel):
 
         url = f"{self._base_url}/{method}"
         if params:
-            url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
+            url += "?" + urllib.parse.urlencode(
+                {k: v for k, v in params.items() if v is not None}
+            )
         with urllib.request.urlopen(url, timeout=35) as resp:
             return json.loads(resp.read())
 
@@ -180,7 +191,9 @@ class TelegramChannel(BaseChannel):
     def _poll_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                data = self._api("getUpdates", {"offset": self._offset, "timeout": 30, "limit": 10})
+                data = self._api(
+                    "getUpdates", {"offset": self._offset, "timeout": 30, "limit": 10}
+                )
                 for update in data.get("result", []):
                     self._offset = update["update_id"] + 1
                     self._handle_update(update)
@@ -214,11 +227,13 @@ class TelegramChannel(BaseChannel):
         _append_history(user_key, "assistant", reply)
         # Split long replies
         for i in range(0, len(reply), 4000):
-            self.send(reply[i: i + 4000], chat_id)
+            self.send(reply[i : i + 4000], chat_id)
 
     def start(self) -> None:
         self._stop.clear()
-        self._thread = threading.Thread(target=self._poll_loop, daemon=True, name="ollamacode-telegram")
+        self._thread = threading.Thread(
+            target=self._poll_loop, daemon=True, name="ollamacode-telegram"
+        )
         self._thread.start()
         logger.info("Telegram channel started.")
 
@@ -232,6 +247,7 @@ class TelegramChannel(BaseChannel):
 # ---------------------------------------------------------------------------
 # Discord channel
 # ---------------------------------------------------------------------------
+
 
 class DiscordChannel(BaseChannel):
     """Gateway-based Discord bot adapter using discord.py (optional dependency).
@@ -268,7 +284,9 @@ class DiscordChannel(BaseChannel):
                 "Install with: pip install discord.py"
             )
             return
-        self._thread = threading.Thread(target=self._run_bot, daemon=True, name="ollamacode-discord")
+        self._thread = threading.Thread(
+            target=self._run_bot, daemon=True, name="ollamacode-discord"
+        )
         self._thread.start()
         logger.info("Discord channel started.")
 
@@ -291,7 +309,9 @@ class DiscordChannel(BaseChannel):
             if not _is_allowed_guild(guild_id, self.allowed_guild_ids):
                 return
             if not _is_allowed_user(message.author.id, self.allowed_user_ids):
-                await message.channel.send("Sorry, you are not authorized to use this bot.")
+                await message.channel.send(
+                    "Sorry, you are not authorized to use this bot."
+                )
                 return
             content = message.content.strip()
             # React to command prefix or direct mentions
@@ -300,7 +320,7 @@ class DiscordChannel(BaseChannel):
                 if message.guild is not None:
                     return
             elif self.command_prefix and content.startswith(self.command_prefix):
-                content = content[len(self.command_prefix):].strip()
+                content = content[len(self.command_prefix) :].strip()
 
             if not content:
                 return
@@ -317,7 +337,7 @@ class DiscordChannel(BaseChannel):
             _append_history(user_key, "assistant", reply)
             # Discord max message length = 2000
             for i in range(0, len(reply), 1900):
-                await message.channel.send(reply[i: i + 1900])
+                await message.channel.send(reply[i : i + 1900])
 
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
@@ -333,7 +353,9 @@ class DiscordChannel(BaseChannel):
 
     def stop(self) -> None:
         if self._loop and not self._loop.is_closed():
-            asyncio.run_coroutine_threadsafe(self._loop.shutdown_asyncgens(), self._loop)
+            asyncio.run_coroutine_threadsafe(
+                self._loop.shutdown_asyncgens(), self._loop
+            )
         logger.info("Discord channel stopped.")
 
     def send(self, text: str, channel_id: str | int) -> None:
@@ -345,7 +367,10 @@ class DiscordChannel(BaseChannel):
 # Factory
 # ---------------------------------------------------------------------------
 
-def start_channels(config: dict[str, Any], model: str, merged_config: dict[str, Any]) -> list[BaseChannel]:
+
+def start_channels(
+    config: dict[str, Any], model: str, merged_config: dict[str, Any]
+) -> list[BaseChannel]:
     """Instantiate and start all configured channels from *config*.
 
     Returns the list of started channel handles (pass to :func:`stop_channels`).
@@ -379,10 +404,19 @@ def start_channels(config: dict[str, Any], model: str, merged_config: dict[str, 
             if not token:
                 logger.warning("Discord channel: bot_token is empty")
             else:
-                allowed_guilds = [int(x) for x in (dc_cfg.get("allowed_guild_ids") or [])]
+                allowed_guilds = [
+                    int(x) for x in (dc_cfg.get("allowed_guild_ids") or [])
+                ]
                 allowed_users = [int(x) for x in (dc_cfg.get("allowed_user_ids") or [])]
                 prefix = str(dc_cfg.get("command_prefix") or "!")
-                ch = DiscordChannel(token, allowed_guilds or None, allowed_users or None, prefix, model, merged_config)
+                ch = DiscordChannel(
+                    token,
+                    allowed_guilds or None,
+                    allowed_users or None,
+                    prefix,
+                    model,
+                    merged_config,
+                )
                 ch.start()
                 handles.append(ch)
         except Exception as exc:

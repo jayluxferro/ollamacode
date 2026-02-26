@@ -13,7 +13,6 @@ Voice output:
 
 from __future__ import annotations
 
-import os
 import platform
 import shutil
 import subprocess
@@ -46,7 +45,6 @@ def record_wav(
 ) -> str:
     """Record audio to WAV. Requires sounddevice (pip install sounddevice)."""
     try:
-        import numpy as np  # type: ignore
         import sounddevice as sd  # type: ignore
     except Exception as e:
         raise VoiceError(
@@ -134,7 +132,9 @@ def record_and_transcribe(
     """Record from mic then transcribe; returns text."""
     with tempfile.TemporaryDirectory() as td:
         wav_path = str(Path(td) / "input.wav")
-        record_wav(wav_path, seconds=seconds, sample_rate=sample_rate, meter_cb=meter_cb)
+        record_wav(
+            wav_path, seconds=seconds, sample_rate=sample_rate, meter_cb=meter_cb
+        )
         return transcribe_wav(wav_path, model=model)
 
 
@@ -156,11 +156,12 @@ def speak_text(text: str, *, voice: str | None = None, rate: int | None = None) 
         # PowerShell System.Speech
         rate_expr = f"$s.Rate={rate};" if rate is not None else ""
         voice_expr = f'$s.SelectVoice("{voice}");' if voice else ""
+        escaped_text = text.replace('"', '\\"')
         script = (
             "Add-Type -AssemblyName System.Speech; "
             "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
             f"{voice_expr}{rate_expr}"
-            f'$s.Speak("{text.replace("\"", "\\\"")}");'
+            f'$s.Speak("{escaped_text}");'
         )
         subprocess.run(
             ["powershell", "-NoProfile", "-Command", script],

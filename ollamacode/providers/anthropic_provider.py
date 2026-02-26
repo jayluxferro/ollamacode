@@ -50,14 +50,20 @@ def _to_anthropic_messages(
 
         # tool result message (from MCP tool execution)
         if role == "tool":
-            out.append({
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": m.get("tool_call_id") or m.get("tool_name") or "unknown",
-                    "content": str(content),
-                }],
-            })
+            out.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": m.get("tool_call_id")
+                            or m.get("tool_name")
+                            or "unknown",
+                            "content": str(content),
+                        }
+                    ],
+                }
+            )
             continue
 
         # assistant message — may contain tool_calls
@@ -75,12 +81,14 @@ def _to_anthropic_messages(
                             args = json.loads(args)
                         except Exception:
                             args = {}
-                    blocks.append({
-                        "type": "tool_use",
-                        "id": tc.get("id") or f"toolu_{i:02d}",
-                        "name": fn.get("name") or "",
-                        "input": args,
-                    })
+                    blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": tc.get("id") or f"toolu_{i:02d}",
+                            "name": fn.get("name") or "",
+                            "input": args,
+                        }
+                    )
                 out.append({"role": "assistant", "content": blocks})
                 continue
 
@@ -95,11 +103,14 @@ def _to_anthropic_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for t in tools:
         fn = t.get("function") or {}
-        result.append({
-            "name": fn.get("name") or "",
-            "description": fn.get("description") or "",
-            "input_schema": fn.get("parameters") or {"type": "object", "properties": {}},
-        })
+        result.append(
+            {
+                "name": fn.get("name") or "",
+                "description": fn.get("description") or "",
+                "input_schema": fn.get("parameters")
+                or {"type": "object", "properties": {}},
+            }
+        )
     return result
 
 
@@ -114,12 +125,14 @@ def _normalize_response(response: Any) -> dict[str, Any]:
         if btype == "text":
             text_parts.append(getattr(block, "text", "") or "")
         elif btype == "tool_use":
-            tool_calls.append({
-                "function": {
-                    "name": getattr(block, "name", "") or "",
-                    "arguments": getattr(block, "input", {}) or {},
+            tool_calls.append(
+                {
+                    "function": {
+                        "name": getattr(block, "name", "") or "",
+                        "arguments": getattr(block, "input", {}) or {},
+                    }
                 }
-            })
+            )
 
     content = "".join(text_parts)
     out_msg: dict[str, Any] = {"content": content}
@@ -138,6 +151,7 @@ class AnthropicProvider(BaseProvider):
     def _sync_client(self) -> Any:
         try:
             import anthropic
+
             kwargs: dict[str, Any] = {"api_key": self._api_key}
             if self._base_url:
                 kwargs["base_url"] = self._base_url
@@ -148,6 +162,7 @@ class AnthropicProvider(BaseProvider):
     def _async_client(self) -> Any:
         try:
             import anthropic
+
             kwargs: dict[str, Any] = {"api_key": self._api_key}
             if self._base_url:
                 kwargs["base_url"] = self._base_url
@@ -213,7 +228,10 @@ class AnthropicProvider(BaseProvider):
         try:
             import anthropic
         except ImportError:
-            return False, "The 'anthropic' package is required. Install: pip install anthropic"
+            return (
+                False,
+                "The 'anthropic' package is required. Install: pip install anthropic",
+            )
         try:
             client = anthropic.Anthropic(api_key=self._api_key)
             # Minimal call to verify auth — cheapest available model, 1 token
@@ -225,7 +243,12 @@ class AnthropicProvider(BaseProvider):
             return True, "Anthropic API is reachable."
         except Exception as e:
             msg = str(e).lower()
-            if "401" in msg or "unauthorized" in msg or "authentication" in msg or "api_key" in msg:
+            if (
+                "401" in msg
+                or "unauthorized" in msg
+                or "authentication" in msg
+                or "api_key" in msg
+            ):
                 return False, "Anthropic: invalid or missing API key."
             if "connection" in msg:
                 return False, "Anthropic: connection error."

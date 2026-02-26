@@ -39,12 +39,34 @@ _VM_DIR = Path(os.path.expanduser("~")) / ".ollamacode"
 _VM_DB_PATH = _VM_DIR / "vector_memory.db"
 
 _IGNORE_DIRS = {
-    ".git", ".hg", ".svn", ".venv", "venv", "node_modules",
-    "__pycache__", ".mypy_cache", ".pytest_cache", ".cursor",
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "venv",
+    "node_modules",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".cursor",
 }
 _TEXT_EXTS = {
-    ".md", ".txt", ".rst", ".py", ".ts", ".tsx", ".js", ".jsx",
-    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".sh", ".sql",
+    ".md",
+    ".txt",
+    ".rst",
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".sh",
+    ".sql",
 }
 
 # Embedding dimension cache (set when first embedding is fetched)
@@ -62,6 +84,7 @@ def _sqlite_vec_available() -> bool:
 # ---------------------------------------------------------------------------
 # Chunking
 # ---------------------------------------------------------------------------
+
 
 def _markdown_heading_context(text: str, pos: int) -> str:
     """Return the most recent heading before *pos* in *text*, or ''."""
@@ -87,7 +110,7 @@ def _chunk_text_markdown(
     i = 0
     n = len(t)
     while i < n:
-        chunk = t[i: i + max_chars].strip()
+        chunk = t[i : i + max_chars].strip()
         if chunk:
             heading = _markdown_heading_context(t, i)
             chunks.append({"text": chunk, "heading": heading})
@@ -98,6 +121,7 @@ def _chunk_text_markdown(
 # ---------------------------------------------------------------------------
 # Embeddings
 # ---------------------------------------------------------------------------
+
 
 def _embed_text(text: str, config: dict[str, Any] | None = None) -> list[float] | None:
     """Return an embedding vector for *text*, or None if backend unavailable."""
@@ -143,7 +167,9 @@ def _embed_via_provider(text: str, config: dict[str, Any]) -> list[float]:
     return resp.data[0].embedding
 
 
-def _embed_via_provider_many(texts: list[str], config: dict[str, Any]) -> list[list[float] | None]:
+def _embed_via_provider_many(
+    texts: list[str], config: dict[str, Any]
+) -> list[list[float] | None]:
     """Batch embeddings via OpenAI-compatible client (if supported)."""
     from .providers import get_provider
 
@@ -181,7 +207,9 @@ def _cached_embed(text: str, config_key: str) -> tuple[float, ...] | None:
     return tuple(result) if result is not None else None
 
 
-def _get_embedding(text: str, config: dict[str, Any] | None = None) -> list[float] | None:
+def _get_embedding(
+    text: str, config: dict[str, Any] | None = None
+) -> list[float] | None:
     """Fetch an embedding with LRU caching."""
     key = _embedding_config_key(config)
     if key not in _EMBED_CONFIGS:
@@ -190,7 +218,9 @@ def _get_embedding(text: str, config: dict[str, Any] | None = None) -> list[floa
     return list(cached) if cached is not None else None
 
 
-def _embed_many(texts: list[str], config: dict[str, Any] | None = None) -> list[list[float] | None]:
+def _embed_many(
+    texts: list[str], config: dict[str, Any] | None = None
+) -> list[list[float] | None]:
     """Embed multiple texts; uses provider batch if configured, else per-text with caching."""
     if not texts:
         return []
@@ -220,7 +250,10 @@ def _try_enable_sqlite_vec(conn: sqlite3.Connection) -> None:
 # Cosine similarity (pure Python + optional numpy fast path)
 # ---------------------------------------------------------------------------
 
-def _cosine_sim(a: list[float] | tuple[float, ...], b: list[float] | tuple[float, ...]) -> float:
+
+def _cosine_sim(
+    a: list[float] | tuple[float, ...], b: list[float] | tuple[float, ...]
+) -> float:
     try:
         import numpy as np  # type: ignore[import]
 
@@ -242,6 +275,7 @@ def _cosine_sim(a: list[float] | tuple[float, ...], b: list[float] | tuple[float
 # ---------------------------------------------------------------------------
 # Blob serialisation for float32 vectors
 # ---------------------------------------------------------------------------
+
 
 def _vec_to_blob(vec: list[float] | tuple[float, ...]) -> bytes:
     return struct.pack(f"{len(vec)}f", *vec)
@@ -361,6 +395,7 @@ def _open_db(db_path: Path = _VM_DB_PATH) -> sqlite3.Connection:
 # File iteration
 # ---------------------------------------------------------------------------
 
+
 def _iter_files(root: Path, max_files: int) -> list[Path]:
     out: list[Path] = []
     for p in root.rglob("*"):
@@ -379,6 +414,7 @@ def _iter_files(root: Path, max_files: int) -> list[Path]:
 # ---------------------------------------------------------------------------
 # Build / reindex
 # ---------------------------------------------------------------------------
+
 
 def build_vector_index(
     workspace_root: str,
@@ -438,7 +474,9 @@ def build_vector_index(
                     )
                     if vec:
                         try:
-                            rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                            rowid = conn.execute(
+                                "SELECT last_insert_rowid()"
+                            ).fetchone()[0]
                             _insert_vec(conn, int(rowid), vec)
                         except Exception:
                             pass
@@ -466,6 +504,7 @@ def build_vector_index(
 # ---------------------------------------------------------------------------
 # Query
 # ---------------------------------------------------------------------------
+
 
 def query_vector_memory(
     query: str,
@@ -565,7 +604,10 @@ def query_vector_memory(
             candidate_ids: list[int] | None = None
             if kw_scores:
                 candidate_ids = [
-                    rid for rid, _ in sorted(kw_scores.items(), key=lambda x: x[1], reverse=True)
+                    rid
+                    for rid, _ in sorted(
+                        kw_scores.items(), key=lambda x: x[1], reverse=True
+                    )
                 ][: max_results * 40]
             rows = []
             if candidate_ids:
@@ -603,7 +645,9 @@ def query_vector_memory(
     all_ids = set(kw_scores) | set(vec_scores)
     fused: list[tuple[float, int]] = []
     for rid in all_ids:
-        score = keyword_weight * kw_scores.get(rid, 0.0) + vector_weight * vec_scores.get(rid, 0.0)
+        score = keyword_weight * kw_scores.get(
+            rid, 0.0
+        ) + vector_weight * vec_scores.get(rid, 0.0)
         fused.append((score, rid))
     fused.sort(reverse=True)
     top_ids = [rid for _, rid in fused[:max_results]]
@@ -626,19 +670,22 @@ def query_vector_memory(
         row = id_to_row.get(rid)
         if row is None:
             continue
-        results.append({
-            "path": row["path"],
-            "chunk_index": row["chunk_index"],
-            "heading": row["heading"],
-            "score": round(score, 4),
-            "snippet": row["text"][:500],
-        })
+        results.append(
+            {
+                "path": row["path"],
+                "chunk_index": row["chunk_index"],
+                "heading": row["heading"],
+                "score": round(score, 4),
+                "snippet": row["text"][:500],
+            }
+        )
     return results
 
 
 # ---------------------------------------------------------------------------
 # Backwards-compatible shim (drop-in replacement for rag.py public API)
 # ---------------------------------------------------------------------------
+
 
 def build_local_rag_index(
     workspace_root: str,

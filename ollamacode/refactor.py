@@ -5,7 +5,6 @@ from __future__ import annotations
 import difflib
 import re
 from pathlib import Path
-from typing import Iterable
 
 from .symbol_index import find_references, query_symbol
 from .edits import reverse_unified_diff, apply_unified_diff_filtered
@@ -53,9 +52,7 @@ def _ts_extract_statement_range(
     start_row = start_line - 1
     end_row = end_line - 1
     try:
-        node = root.named_descendant_for_point_range(
-            (start_row, 0), (end_row, 0)
-        )
+        node = root.named_descendant_for_point_range((start_row, 0), (end_row, 0))
     except Exception:
         node = root
     parent = node
@@ -180,16 +177,15 @@ def extract_function(
         if line.strip():
             indent = line[: len(line) - len(line.lstrip())]
             break
-    body = [indent + "    " + l.lstrip() for l in block if l.strip() or l == ""]
+    body = [
+        indent + "    " + block_line.lstrip()
+        for block_line in block
+        if block_line.strip() or block_line == ""
+    ]
     func_lines = [indent + f"def {new_name}():", *body, ""]
     # Replace block with function + call (define before call)
     call_line = indent + f"{new_name}()"
-    new_lines = (
-        lines[: start_line - 1]
-        + func_lines
-        + [call_line]
-        + lines[end_line:]
-    )
+    new_lines = lines[: start_line - 1] + func_lines + [call_line] + lines[end_line:]
     try:
         path.write_text("\n".join(new_lines), encoding="utf-8")
     except OSError:
@@ -225,7 +221,11 @@ def move_symbol(
                     target_node = node
                 elif node.type == "decorated_definition":
                     target_node = next(
-                        (c for c in node.named_children if c.type in ("function_definition", "class_definition")),
+                        (
+                            c
+                            for c in node.named_children
+                            if c.type in ("function_definition", "class_definition")
+                        ),
                         None,
                     )
                 if target_node is None:
@@ -258,7 +258,11 @@ def move_symbol(
             return False
         end_idx = start_idx + 1
         while end_idx < len(lines):
-            if lines[end_idx].startswith(indent) and lines[end_idx].strip() and not lines[end_idx].startswith(indent + " "):
+            if (
+                lines[end_idx].startswith(indent)
+                and lines[end_idx].strip()
+                and not lines[end_idx].startswith(indent + " ")
+            ):
                 break
             end_idx += 1
         func_lines = lines[start_idx:end_idx]
@@ -273,7 +277,9 @@ def move_symbol(
         return False
     try:
         dst.parent.mkdir(parents=True, exist_ok=True)
-        existing = dst.read_text(encoding="utf-8", errors="replace") if dst.exists() else ""
+        existing = (
+            dst.read_text(encoding="utf-8", errors="replace") if dst.exists() else ""
+        )
         sep = "\n\n" if existing and not existing.endswith("\n") else "\n"
         dst.write_text(existing + sep + func_text.strip() + "\n", encoding="utf-8")
     except OSError:
@@ -288,6 +294,7 @@ def move_function(
 ) -> bool:
     """Backward-compatible wrapper for move_symbol (functions/classes)."""
     return move_symbol(source_file, function_name, target_file)
+
 
 def save_last_refactor(diff_text: str) -> str | None:
     """Persist last refactor diff for rollback."""
@@ -310,4 +317,6 @@ def rollback_last_refactor(workspace_root: str) -> int:
     except OSError:
         return 0
     reverse = reverse_unified_diff(diff_text)
-    return apply_unified_diff_filtered(reverse, Path(workspace_root).resolve(), include_hunk=None)
+    return apply_unified_diff_filtered(
+        reverse, Path(workspace_root).resolve(), include_hunk=None
+    )

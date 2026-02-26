@@ -109,7 +109,9 @@ def decrypt(ciphertext: str) -> str:
         ) from exc
 
     if not ciphertext.startswith("v1:"):
-        raise ValueError(f"Unrecognized ciphertext format (expected 'v1:...'), got: {ciphertext[:20]!r}")
+        raise ValueError(
+            f"Unrecognized ciphertext format (expected 'v1:...'), got: {ciphertext[:20]!r}"
+        )
 
     raw = base64.b64decode(ciphertext[3:])
     if len(raw) < 12 + 16:
@@ -122,7 +124,9 @@ def decrypt(ciphertext: str) -> str:
     try:
         plaintext_bytes = aesgcm.decrypt(nonce, ct_with_tag, None)
     except Exception as exc:
-        raise ValueError(f"Decryption failed (wrong key or tampered data): {exc}") from exc
+        raise ValueError(
+            f"Decryption failed (wrong key or tampered data): {exc}"
+        ) from exc
     return plaintext_bytes.decode("utf-8")
 
 
@@ -209,6 +213,8 @@ def resolve_secret(value: str | None) -> str | None:
         name = value[7:]
         resolved = get_secret(name)
         if resolved is None:
-            raise KeyError(f"Secret '{name}' not found. Set it with: ollamacode secrets set {name}")
+            raise KeyError(
+                f"Secret '{name}' not found. Set it with: ollamacode secrets set {name}"
+            )
         return resolved
     return value

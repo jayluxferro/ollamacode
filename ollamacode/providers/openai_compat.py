@@ -107,11 +107,17 @@ def _parse_tool_calls(raw_tcs: list[Any]) -> list[dict[str, Any]]:
     for tc in raw_tcs:
         if tc is None:
             continue
-        fn = getattr(tc, "function", None) or (tc.get("function") if isinstance(tc, dict) else None)
+        fn = getattr(tc, "function", None) or (
+            tc.get("function") if isinstance(tc, dict) else None
+        )
         if fn is None:
             continue
-        name = getattr(fn, "name", None) or (fn.get("name") if isinstance(fn, dict) else "")
-        args_raw = getattr(fn, "arguments", "{}") or (fn.get("arguments", "{}") if isinstance(fn, dict) else "{}")
+        name = getattr(fn, "name", None) or (
+            fn.get("name") if isinstance(fn, dict) else ""
+        )
+        args_raw = getattr(fn, "arguments", "{}") or (
+            fn.get("arguments", "{}") if isinstance(fn, dict) else "{}"
+        )
         try:
             args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
         except Exception:
@@ -131,13 +137,16 @@ class OpenAICompatProvider(BaseProvider):
     ) -> None:
         self._provider_name = provider_name
         self._api_key = api_key
-        self._base_url = base_url or PROVIDER_BASE_URLS.get(provider_name, "https://api.openai.com/v1")
+        self._base_url = base_url or PROVIDER_BASE_URLS.get(
+            provider_name, "https://api.openai.com/v1"
+        )
 
     # ------------------------------------------------------------------ clients
 
     def _async_client(self) -> Any:
         try:
             import openai
+
             return openai.AsyncOpenAI(api_key=self._api_key, base_url=self._base_url)
         except ImportError as e:
             raise RuntimeError(_IMPORT_ERROR_MSG) from e
@@ -145,6 +154,7 @@ class OpenAICompatProvider(BaseProvider):
     def _sync_client(self) -> Any:
         try:
             import openai
+
             return openai.OpenAI(api_key=self._api_key, base_url=self._base_url)
         except ImportError as e:
             raise RuntimeError(_IMPORT_ERROR_MSG) from e
@@ -195,25 +205,40 @@ class OpenAICompatProvider(BaseProvider):
         try:
             import openai
         except ImportError:
-            return False, "The 'openai' package is required. Install: pip install openai"
+            return (
+                False,
+                "The 'openai' package is required. Install: pip install openai",
+            )
         try:
             client = openai.OpenAI(api_key=self._api_key, base_url=self._base_url)
             client.models.list()
             return True, f"{self._provider_name} is reachable."
         except Exception as e:
             msg = str(e).lower()
-            if "401" in msg or "unauthorized" in msg or "authentication" in msg or "api key" in msg:
+            if (
+                "401" in msg
+                or "unauthorized" in msg
+                or "authentication" in msg
+                or "api key" in msg
+            ):
                 return False, f"{self._provider_name}: invalid or missing API key."
             if "connection" in msg or "refused" in msg:
-                return False, f"{self._provider_name}: connection refused. Check base_url."
+                return (
+                    False,
+                    f"{self._provider_name}: connection refused. Check base_url.",
+                )
             # Many providers don't support GET /models — treat as reachable
             if "404" in msg or "not found" in msg or "method not allowed" in msg:
-                return True, f"{self._provider_name}: endpoint reachable (models list not supported)."
+                return (
+                    True,
+                    f"{self._provider_name}: endpoint reachable (models list not supported).",
+                )
             return False, f"{self._provider_name} error: {e}"
 
     def list_models(self) -> list[str]:
         try:
             import openai
+
             client = openai.OpenAI(api_key=self._api_key, base_url=self._base_url)
             resp = client.models.list()
             return [m.id for m in resp.data] if hasattr(resp, "data") else []

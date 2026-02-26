@@ -17,6 +17,7 @@ def check_provider(config: dict[str, Any] | None = None) -> tuple[bool, str]:
     if config:
         try:
             from .providers import get_provider
+
             p = get_provider(config)
             return p.health_check()
         except Exception as e:

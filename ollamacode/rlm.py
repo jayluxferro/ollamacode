@@ -523,7 +523,9 @@ def _ollama_chat(model: str, messages: list[dict[str, Any]]) -> str:
             from .ollama_client import chat_sync
 
             r = chat_sync(model=model, messages=messages, tools=[])
-            msg = r.get("message") if isinstance(r, dict) else getattr(r, "message", None)
+            msg = (
+                r.get("message") if isinstance(r, dict) else getattr(r, "message", None)
+            )
             if msg is None:
                 result["text"] = ""
                 return

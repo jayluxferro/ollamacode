@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import getpass
 import os
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -48,13 +47,18 @@ try:
         _console.print(Panel(f"[bold]{title}[/bold]", expand=False))
 
 except ImportError:
+
     def _print(msg: str, style: str = "") -> None:  # type: ignore[misc]
         print(msg)
 
     def _ask(prompt: str, default: str = "", password: bool = False) -> str:  # type: ignore[misc]
         if password:
             return getpass.getpass(f"{prompt}: ") or default
-        val = input(f"{prompt} [{default}]: ").strip() if default else input(f"{prompt}: ").strip()
+        val = (
+            input(f"{prompt} [{default}]: ").strip()
+            if default
+            else input(f"{prompt}: ").strip()
+        )
         return val or default
 
     def _confirm(prompt: str, default: bool = True) -> bool:  # type: ignore[misc]
@@ -146,7 +150,9 @@ def _step2_provider() -> tuple[str, str, str, str]:
             secret_name = f"{provider}_api_key"
             set_secret(secret_name, api_key)
             secret_ref = f"secret:{secret_name}"
-            _print(f"  API key saved to secrets store as '{secret_name}'.", style="green")
+            _print(
+                f"  API key saved to secrets store as '{secret_name}'.", style="green"
+            )
         except Exception as exc:
             _print(f"  Warning: could not save to secrets store: {exc}")
             secret_ref = api_key
@@ -188,8 +194,13 @@ def _step3_channels() -> dict[str, Any]:
                 token_ref = "secret:telegram_bot_token"
             except Exception:
                 token_ref = token
-            allowed_raw = _ask("Allowed Telegram user IDs (comma-separated, or blank for all)", default="")
-            allowed_ids = [int(x.strip()) for x in allowed_raw.split(",") if x.strip().isdigit()]
+            allowed_raw = _ask(
+                "Allowed Telegram user IDs (comma-separated, or blank for all)",
+                default="",
+            )
+            allowed_ids = [
+                int(x.strip()) for x in allowed_raw.split(",") if x.strip().isdigit()
+            ]
             channels["telegram"] = {
                 "enabled": True,
                 "bot_token": token_ref,
@@ -209,8 +220,12 @@ def _step3_channels() -> dict[str, Any]:
                 token_ref = "secret:discord_bot_token"
             except Exception:
                 token_ref = token
-            guild_raw = _ask("Allowed guild IDs (comma-separated, or blank for all)", default="")
-            guild_ids = [int(x.strip()) for x in guild_raw.split(",") if x.strip().isdigit()]
+            guild_raw = _ask(
+                "Allowed guild IDs (comma-separated, or blank for all)", default=""
+            )
+            guild_ids = [
+                int(x.strip()) for x in guild_raw.split(",") if x.strip().isdigit()
+            ]
             channels["discord"] = {
                 "enabled": True,
                 "bot_token": token_ref,
@@ -236,7 +251,9 @@ def _step4_tunnel() -> dict[str, Any]:
     ttype = tmap.get(choice, "cloudflare")
     tunnel_cfg: dict[str, Any] = {"type": ttype}
     if ttype == "custom":
-        cmd = _ask("Command template (use {port} placeholder)", default="my-tunnel http {port}")
+        cmd = _ask(
+            "Command template (use {port} placeholder)", default="my-tunnel http {port}"
+        )
         tunnel_cfg["command"] = cmd
     _print(f"  Tunnel: {ttype}", style="green")
     return tunnel_cfg
@@ -244,7 +261,9 @@ def _step4_tunnel() -> dict[str, Any]:
 
 def _step5_sandbox() -> str:
     _header("Step 5 — Tool & Sandbox Mode")
-    _print("  supervised  (default) — agent can read/write workspace, run allowlisted commands")
+    _print(
+        "  supervised  (default) — agent can read/write workspace, run allowlisted commands"
+    )
     _print("  full                  — unrestricted (Sovereign mode)")
     _print("  readonly              — agent can only read files; no commands")
     choice = _ask("Sandbox level", default="supervised").strip().lower()
@@ -257,12 +276,18 @@ def _step5_sandbox() -> str:
 def _step6_personalize() -> dict[str, Any]:
     _header("Step 6 — Personalize")
     agent_name = _ask("Agent name (shown in TUI header)", default="OllamaCode")
-    timezone = _ask("Timezone (for cron tasks, e.g. UTC, America/New_York)", default="UTC")
+    timezone = _ask(
+        "Timezone (for cron tasks, e.g. UTC, America/New_York)", default="UTC"
+    )
     style_opts = {"1": "concise", "2": "detailed", "3": "technical"}
     _print("Response style:  1. Concise  2. Detailed  3. Technical")
     style_choice = _ask("Choice", default="1")
     response_style = style_opts.get(style_choice, "concise")
-    return {"agent_name": agent_name, "timezone": timezone, "response_style": response_style}
+    return {
+        "agent_name": agent_name,
+        "timezone": timezone,
+        "response_style": response_style,
+    }
 
 
 def _step7_scaffold(
@@ -290,14 +315,14 @@ def _step7_scaffold(
     if base_url:
         lines.append(f"base_url: {base_url}")
     if api_key_ref:
-        lines.append(f"api_key: \"{api_key_ref}\"")
+        lines.append(f'api_key: "{api_key_ref}"')
 
     lines += [
         "",
         f"sandbox_level: {sandbox}",
         "",
         "# System prompt extras",
-        f"system_prompt_extra: \"You are {personalize.get('agent_name', 'OllamaCode')}, a helpful coding assistant.\"",
+        f'system_prompt_extra: "You are {personalize.get("agent_name", "OllamaCode")}, a helpful coding assistant."',
         "",
         "# Built-in MCP servers (fs, terminal, codebase, git, tools)",
         "include_builtin_servers: true",
@@ -308,7 +333,7 @@ def _step7_scaffold(
         lines.append("tunnel:")
         lines.append(f"  type: {tunnel.get('type', 'cloudflare')}")
         if tunnel.get("command"):
-            lines.append(f"  command: \"{tunnel['command']}\"")
+            lines.append(f'  command: "{tunnel["command"]}"')
         lines.append("")
 
     if channels:
@@ -318,7 +343,7 @@ def _step7_scaffold(
             lines += [
                 "  telegram:",
                 f"    enabled: {str(tg.get('enabled', True)).lower()}",
-                f"    bot_token: \"{tg.get('bot_token', '')}\"",
+                f'    bot_token: "{tg.get("bot_token", "")}"',
             ]
             if tg.get("allowed_user_ids"):
                 ids = ", ".join(str(x) for x in tg["allowed_user_ids"])
@@ -328,8 +353,8 @@ def _step7_scaffold(
             lines += [
                 "  discord:",
                 f"    enabled: {str(dc.get('enabled', True)).lower()}",
-                f"    bot_token: \"{dc.get('bot_token', '')}\"",
-                f"    command_prefix: \"{dc.get('command_prefix', '!')}\"",
+                f'    bot_token: "{dc.get("bot_token", "")}"',
+                f'    command_prefix: "{dc.get("command_prefix", "!")}"',
             ]
             if dc.get("allowed_guild_ids"):
                 ids = ", ".join(str(x) for x in dc["allowed_guild_ids"])
@@ -370,6 +395,7 @@ def _step7_scaffold(
 # Main wizard entry point
 # ---------------------------------------------------------------------------
 
+
 def run_setup_wizard(workspace_override: str | None = None) -> None:
     """Run the interactive setup wizard."""
     _print("\n[bold cyan]Welcome to OllamaCode Setup Wizard[/bold cyan]\n", style="")
@@ -388,8 +414,15 @@ def run_setup_wizard(workspace_override: str | None = None) -> None:
         sandbox = _step5_sandbox()
         personalize = _step6_personalize()
         yaml_path = _step7_scaffold(
-            workspace, provider, base_url, api_key_ref, model,
-            channels, tunnel, sandbox, personalize,
+            workspace,
+            provider,
+            base_url,
+            api_key_ref,
+            model,
+            channels,
+            tunnel,
+            sandbox,
+            personalize,
         )
     except KeyboardInterrupt:
         _print("\n\nSetup aborted.", style="yellow")

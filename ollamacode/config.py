@@ -431,7 +431,9 @@ def merge_config_with_env(
     validate_config(config)
     out: dict[str, Any] = dict(DEFAULT_CONFIG)
     out["model"] = model_env or config.get("model", out["model"])
-    out["provider"] = (provider_env or config.get("provider") or out["provider"]).lower().strip()
+    out["provider"] = (
+        (provider_env or config.get("provider") or out["provider"]).lower().strip()
+    )
     out["base_url"] = base_url_env or config.get("base_url") or out["base_url"]
     out["api_key"] = api_key_env or config.get("api_key") or out["api_key"]
     out["system_prompt_extra"] = (system_extra_env or "").strip() or (

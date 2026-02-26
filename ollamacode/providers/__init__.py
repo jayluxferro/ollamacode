@@ -64,7 +64,12 @@ _PROVIDER_KEY_ENVS: dict[str, str] = {
 
 def _resolve_api_key(provider_name: str, config: dict[str, Any]) -> str:
     """Resolve API key: config (with secret: unwrapping) > OLLAMACODE_API_KEY > provider-specific env var."""
-    raw = config.get("api_key") or os.environ.get("OLLAMACODE_API_KEY") or (_provider_env_key(provider_name)) or ""
+    raw = (
+        config.get("api_key")
+        or os.environ.get("OLLAMACODE_API_KEY")
+        or (_provider_env_key(provider_name))
+        or ""
+    )
     if raw and isinstance(raw, str) and raw.startswith("secret:"):
         try:
             from ..secrets import resolve_secret
@@ -91,9 +96,7 @@ def get_provider(config: dict[str, Any]) -> BaseProvider:
     """
     provider_name = (config.get("provider") or "ollama").lower().strip()
     base_url: str | None = (
-        config.get("base_url")
-        or os.environ.get("OLLAMACODE_BASE_URL")
-        or None
+        config.get("base_url") or os.environ.get("OLLAMACODE_BASE_URL") or None
     )
 
     if provider_name == "ollama":

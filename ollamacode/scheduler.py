@@ -42,6 +42,7 @@ _HEARTBEAT_FILENAME = "HEARTBEAT.md"
 # Minimal 5-field cron parser
 # ---------------------------------------------------------------------------
 
+
 def _field_matches(field: str, value: int) -> bool:
     """Return True if cron *field* matches integer *value*."""
     field = field.strip()
@@ -160,7 +161,9 @@ def parse_heartbeat_md(workspace_root: str) -> list[dict[str, Any]]:
 _METRICS_LOG_PATH = Path.home() / ".ollamacode" / "scheduler_metrics.jsonl"
 
 
-def _emit_event(task_name: str, mode: str, status: str, output: str = "", error: str = "") -> None:
+def _emit_event(
+    task_name: str, mode: str, status: str, output: str = "", error: str = ""
+) -> None:
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     event = {
         "ts": ts,
@@ -185,7 +188,12 @@ def _emit_event(task_name: str, mode: str, status: str, output: str = "", error:
 # Task runner
 # ---------------------------------------------------------------------------
 
-def run_task_now(task: dict[str, Any], model: str = "gpt-oss:20b", config: dict[str, Any] | None = None) -> str:
+
+def run_task_now(
+    task: dict[str, Any],
+    model: str = "gpt-oss:20b",
+    config: dict[str, Any] | None = None,
+) -> str:
     """Run a scheduled task immediately.  Returns the agent's response text."""
     import asyncio
 
@@ -218,6 +226,7 @@ def run_task_now(task: dict[str, Any], model: str = "gpt-oss:20b", config: dict[
 # Scheduler
 # ---------------------------------------------------------------------------
 
+
 class Scheduler:
     """Background daemon thread that fires tasks on interval or cron schedule."""
 
@@ -243,7 +252,9 @@ class Scheduler:
         if self._thread and self._thread.is_alive():
             return
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self._loop, daemon=True, name="ollamacode-scheduler")
+        self._thread = threading.Thread(
+            target=self._loop, daemon=True, name="ollamacode-scheduler"
+        )
         self._thread.start()
         logger.info("Scheduler started with %d task(s).", len(self.tasks))
 
@@ -296,6 +307,7 @@ class Scheduler:
 # ---------------------------------------------------------------------------
 # Config loading helper
 # ---------------------------------------------------------------------------
+
 
 def load_scheduled_tasks(
     config: dict[str, Any],

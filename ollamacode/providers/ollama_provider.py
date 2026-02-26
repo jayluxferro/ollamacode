@@ -25,6 +25,7 @@ class OllamaProvider(BaseProvider):
         tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         import os
+
         if self._base_url:
             os.environ["OLLAMA_HOST"] = self._base_url
         try:
@@ -42,6 +43,7 @@ class OllamaProvider(BaseProvider):
     def health_check(self) -> tuple[bool, str]:
         try:
             import ollama
+
             if self._base_url:
                 client = ollama.Client(host=self._base_url)
                 client.list()
@@ -51,12 +53,16 @@ class OllamaProvider(BaseProvider):
         except Exception as e:
             msg = str(e).lower()
             if "connection" in msg or "refused" in msg or "connect" in msg:
-                return False, "Ollama is not running or not reachable. Start it with: ollama serve"
+                return (
+                    False,
+                    "Ollama is not running or not reachable. Start it with: ollama serve",
+                )
             return False, f"Ollama error: {e}"
 
     def list_models(self) -> list[str]:
         try:
             import ollama
+
             if self._base_url:
                 client = ollama.Client(host=self._base_url)
                 listed = client.list()

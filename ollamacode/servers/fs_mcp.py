@@ -142,7 +142,9 @@ def multi_edit(edits: list[dict]) -> str:
                             lineterm="",
                         )
                     )
-                    results.append(f"[{i}] {path_val}: dry run\n{diff or '(no changes)'}")
+                    results.append(
+                        f"[{i}] {path_val}: dry run\n{diff or '(no changes)'}"
+                    )
                 else:
                     p.write_text(new_val, encoding="utf-8")
                     results.append(f"[{i}] {path_val}: overwrote")
@@ -163,7 +165,9 @@ def multi_edit(edits: list[dict]) -> str:
                             lineterm="",
                         )
                     )
-                    results.append(f"[{i}] {path_val}: dry run\n{diff or '(no changes)'}")
+                    results.append(
+                        f"[{i}] {path_val}: dry run\n{diff or '(no changes)'}"
+                    )
                 else:
                     p.write_text(new_content, encoding="utf-8")
                     results.append(f"[{i}] {path_val}: replaced")

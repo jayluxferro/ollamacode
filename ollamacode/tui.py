@@ -7,6 +7,7 @@ Slash commands, Rich Markdown, multi-line input, conversation history.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -14,9 +15,9 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 import time
-import base64
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal, cast
@@ -29,7 +30,12 @@ from .agent import (
     run_agent_loop_no_mcp_stream,
     run_agent_loop_stream,
 )
-from .edits import apply_edits, format_edits_diff, parse_edits, apply_unified_diff_filtered
+from .edits import (
+    apply_edits,
+    format_edits_diff,
+    parse_edits,
+    apply_unified_diff_filtered,
+)
 from .memory import build_dynamic_memory_context
 from .multi_agent import run_multi_agent
 from .context import expand_at_refs
@@ -80,6 +86,29 @@ _SLASH_COMMANDS = [
     "/quit",
     "/exit",
 ]
+
+
+# Helpers
+def _extract_pasted_image(line: str) -> tuple[str | None, str]:
+    """Detect data URL image paste; save to disk and return (path, cleaned_line)."""
+    if "data:image" not in line:
+        return None, line
+    m = re.search(r"data:image/(png|jpeg|jpg);base64,([A-Za-z0-9+/=]+)", line)
+    if not m:
+        return None, line
+    ext = "jpg" if m.group(1) in ("jpeg", "jpg") else "png"
+    b64 = m.group(2)
+    try:
+        raw = base64.b64decode(b64)
+        tmp_dir = Path.home() / ".ollamacode" / "clipboard"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        path = tmp_dir / f"paste_{int(time.time())}.{ext}"
+        path.write_bytes(raw)
+        cleaned = line.replace(m.group(0), "").strip()
+        return str(path), cleaned
+    except Exception:
+        return None, line
+
 
 # Arrow keys and line editing: readline on Unix/macOS; on Windows use prompt_toolkit when available (pip install ollamacode[tui])
 # Up/Down: readline.add_history_entry() for input(); PromptSession keeps history for prompt_toolkit.
@@ -132,6 +161,7 @@ def _reset_symbol_cache() -> None:
     _symbol_cache = []
     _symbol_cache_ts = 0.0
 
+
 if _tui_prompt_session is None:
     try:
         from prompt_toolkit import PromptSession  # pyright: ignore[reportMissingImports]
@@ -173,11 +203,15 @@ if _tui_prompt_session is None:
             base = root / prefix
             try:
                 if base.is_dir():
-                    entries = [p.name + ("/" if p.is_dir() else "") for p in base.iterdir()]
+                    entries = [
+                        p.name + ("/" if p.is_dir() else "") for p in base.iterdir()
+                    ]
                     return [f"@{prefix.rstrip('/')}/{e}" for e in entries][:50]
                 parent = base.parent
                 if parent.exists():
-                    entries = [p.name + ("/" if p.is_dir() else "") for p in parent.iterdir()]
+                    entries = [
+                        p.name + ("/" if p.is_dir() else "") for p in parent.iterdir()
+                    ]
                     return [f"@{parent.relative_to(root)}/{e}" for e in entries][:50]
             except OSError:
                 return []
@@ -451,7 +485,6 @@ def _handle_tui_slash(
   Set OLLAMACODE_TUI_VOICE_OUT=1 to speak assistant replies.
   Set OLLAMACODE_TUI_PTT_KEY=<key> to change push-to-talk hotkey (default: c-space).
   Push-to-talk hotkey: Ctrl+Space (configurable)."""
-  Set OLLAMACODE_TUI_VOICE_OUT=1 to speak assistant replies."""
         console.print(RichPanel(help_text, title="Commands", border_style="dim"))
         return "help"
     if cmd == "/model":
@@ -746,7 +779,9 @@ def _handle_tui_slash(
                 from .symbol_index import build_symbol_index
 
                 info = build_symbol_index(workspace_root or os.getcwd())
-                console.print(f"[dim]Indexed symbols: {info.get('symbols')} refs: {info.get('references')}[/]")
+                console.print(
+                    f"[dim]Indexed symbols: {info.get('symbols')} refs: {info.get('references')}[/]"
+                )
                 _reset_symbol_cache()
             except Exception as e:
                 console.print(f"[dim]Symbol index failed: {e}[/]")
@@ -755,7 +790,14 @@ def _handle_tui_slash(
             try:
                 from .repo_map import write_repo_map
 
-                out = write_repo_map(workspace_root or os.getcwd(), str(Path(workspace_root or os.getcwd()) / ".ollamacode" / "repo_map.md"))
+                out = write_repo_map(
+                    workspace_root or os.getcwd(),
+                    str(
+                        Path(workspace_root or os.getcwd())
+                        / ".ollamacode"
+                        / "repo_map.md"
+                    ),
+                )
                 console.print(f"[dim]Repo map written: {out}[/]")
             except Exception as e:
                 console.print(f"[dim]Repo map failed: {e}[/]")
@@ -782,7 +824,9 @@ def _handle_tui_slash(
                 console.print(f"[dim]Applied {n} edit(s).[/]")
                 # Save diff for rollback (best-effort)
                 for e in edits:
-                    if isinstance(e.get("newText"), str) and "\n@@ " in str(e.get("newText")):
+                    if isinstance(e.get("newText"), str) and "\n@@ " in str(
+                        e.get("newText")
+                    ):
                         save_last_refactor(str(e.get("newText")))
             return "help"
         if sub[0] == "rollback":
@@ -948,7 +992,9 @@ def _handle_tui_slash(
                 task = rest.strip()
         n = max(1, min(6, n))
         if not task:
-            console.print("[dim]Usage: /agents <N> <task> (e.g. /agents 3 analyze repo)[/]")
+            console.print(
+                "[dim]Usage: /agents <N> <task> (e.g. /agents 3 analyze repo)[/]"
+            )
             return "help"
         return ("run_agents", n, task)
     if cmd == "/agents_show":
@@ -1228,7 +1274,9 @@ async def run_tui(
 
     def get_input() -> str:
         """Read a single line; Enter sends. Up/Down cycle input history. Tab completes slash commands. Prompt shows current model."""
-        _provider_prefix = f"{provider_name}/" if provider_name and provider_name != "ollama" else ""
+        _provider_prefix = (
+            f"{provider_name}/" if provider_name and provider_name != "ollama" else ""
+        )
         _prompt = f"You [{_provider_prefix}{model_ref[0]}]: "
         if _tui_prompt_session is not None:
             return _tui_prompt_session.prompt(_prompt).strip()
@@ -1295,7 +1343,12 @@ async def run_tui(
                 return
             if choice in ("s", "select"):
                 # If any unified diff edits exist, offer per-hunk selection.
-                unified_edits = [e for e in edits if isinstance(e.get("newText"), str) and "\n@@ " in str(e.get("newText"))]
+                unified_edits = [
+                    e
+                    for e in edits
+                    if isinstance(e.get("newText"), str)
+                    and "\n@@ " in str(e.get("newText"))
+                ]
                 if unified_edits:
                     for e in unified_edits:
                         diff_text = str(e.get("newText") or "")
@@ -1368,7 +1421,13 @@ async def run_tui(
                 body: list[tuple[str, str]] = []
                 for tag, payload in (h.get("lines") or [])[:80]:
                     prefix = "+" if tag == "+" else "-" if tag == "-" else " "
-                    style = "class:add" if tag == "+" else "class:del" if tag == "-" else "class:ctx"
+                    style = (
+                        "class:add"
+                        if tag == "+"
+                        else "class:del"
+                        if tag == "-"
+                        else "class:ctx"
+                    )
                     body.append((style, prefix + payload + "\n"))
                 header_lines: list[tuple[str, str]] = [
                     ("bold", f"Hunk {idx + 1}/{len(hunks)}\n"),
@@ -1377,7 +1436,10 @@ async def run_tui(
                 footer = [
                     ("", "\n"),
                     ("class:info", f"Accepted: {len(selected)}/{len(hunks)}\n"),
-                    ("class:info", "Up/Down=nav  y=accept  n=reject  Space=toggle  a=apply  q=quit"),
+                    (
+                        "class:info",
+                        "Up/Down=nav  y=accept  n=reject  Space=toggle  a=apply  q=quit",
+                    ),
                 ]
                 return header_lines + body + footer
 
@@ -1543,7 +1605,9 @@ async def run_tui(
         return await _before_tool_call_tui(tool_name, arguments)  # re-prompt
 
     queue_inputs = os.environ.get("OLLAMACODE_TUI_QUEUE_INPUT", "1") != "0"
-    use_live = console.is_terminal and os.environ.get("OLLAMACODE_TUI_SIMPLE", "0") != "1"
+    use_live = (
+        console.is_terminal and os.environ.get("OLLAMACODE_TUI_SIMPLE", "0") != "1"
+    )
     auto_agents = os.environ.get("OLLAMACODE_TUI_AUTO_AGENTS", "0") == "1"
     auto_agents_plan = os.environ.get("OLLAMACODE_TUI_AUTO_AGENTS_PLAN", "1") != "0"
     planner_model_override = os.environ.get("OLLAMACODE_TUI_PLANNER_MODEL", "").strip()
@@ -1565,7 +1629,9 @@ async def run_tui(
     agents_structured = os.environ.get("OLLAMACODE_AGENTS_STRUCTURED", "1") != "0"
     router_enabled = os.environ.get("OLLAMACODE_ROUTER", "0") == "1"
     router_fast = os.environ.get("OLLAMACODE_MODEL_FAST", "").strip() or model_ref[0]
-    router_strong = os.environ.get("OLLAMACODE_MODEL_STRONG", "").strip() or model_ref[0]
+    router_strong = (
+        os.environ.get("OLLAMACODE_MODEL_STRONG", "").strip() or model_ref[0]
+    )
     try:
         auto_agents_n = int(os.environ.get("OLLAMACODE_TUI_AUTO_AGENTS_N", "3"))
     except ValueError:
@@ -1832,7 +1898,11 @@ async def run_tui(
                     )
                 else:
                     out = await run_agent_loop_no_mcp(
-                        sub_model, task, system_prompt=_SYSTEM, message_history=[], provider=provider,
+                        sub_model,
+                        task,
+                        system_prompt=_SYSTEM,
+                        message_history=[],
+                        provider=provider,
                     )
                 history.append((task, out))
                 message_history.append({"role": "user", "content": task})
@@ -1948,13 +2018,21 @@ async def run_tui(
                     status["agent_roles"] = roles
                     status["agent_outputs"] = []
                     status["agents"] = [
-                        {"name": r.get("name", f"Agent {i+1}"), "state": "running", "note": r.get("focus", "")}
+                        {
+                            "name": r.get("name", f"Agent {i + 1}"),
+                            "state": "running",
+                            "note": r.get("focus", ""),
+                        }
                         for i, r in enumerate(roles)
                     ]
                     console.print(f"[dim]Running {n_agents} agents...[/]")
 
                     async def _run_one(idx: int) -> str:
-                        role = roles[idx] if idx < len(roles) else {"name": f"Agent {idx+1}", "focus": ""}
+                        role = (
+                            roles[idx]
+                            if idx < len(roles)
+                            else {"name": f"Agent {idx + 1}", "focus": ""}
+                        )
                         label = role.get("name", f"Agent {idx + 1}")
                         focus = role.get("focus", "")
                         prompt = f"{task}\n\n(You are {label}. Focus: {focus})"
@@ -2005,7 +2083,7 @@ async def run_tui(
                                 f"Task: {task}\n\n"
                                 + "\n\n".join(
                                     [
-                                        f"[{roles[i].get('name', f'Agent {i+1}')}] {results[i]}"
+                                        f"[{roles[i].get('name', f'Agent {i + 1}')}] {results[i]}"
                                         for i in range(min(len(results), len(roles)))
                                     ]
                                 )
@@ -2043,7 +2121,7 @@ async def run_tui(
                                 f"Task: {task}\n\n"
                                 + "\n\n".join(
                                     [
-                                        f"[{roles[i].get('name', f'Agent {i+1}')}] {results[i]}"
+                                        f"[{roles[i].get('name', f'Agent {i + 1}')}] {results[i]}"
                                         for i in range(min(len(results), len(roles)))
                                     ]
                                 )
@@ -2076,7 +2154,11 @@ async def run_tui(
                     if synthesis_text:
                         parts.insert(0, f"## Final Synthesis\n\n{synthesis_text}")
                     for i, text in enumerate(results, 1):
-                        name = roles[i - 1].get("name", f"Agent {i}") if roles else f"Agent {i}"
+                        name = (
+                            roles[i - 1].get("name", f"Agent {i}")
+                            if roles
+                            else f"Agent {i}"
+                        )
                         focus = roles[i - 1].get("focus", "") if roles else ""
                         header = f"### {name}"
                         if focus:
@@ -2085,7 +2167,9 @@ async def run_tui(
                         preview = "\n".join(preview_lines[:agents_preview_lines])
                         parts.append(f"{header}\n\n{preview}")
                         if len(preview_lines) > agents_preview_lines:
-                            parts.append(f"[dim]… use /agents_show {i} for full output[/]")
+                            parts.append(
+                                f"[dim]… use /agents_show {i} for full output[/]"
+                            )
                     combined = "\n\n".join(parts)
                     history.append((task, combined))
                     message_history.append({"role": "user", "content": task})
@@ -2141,27 +2225,55 @@ async def run_tui(
                         if task:
                             lines.append(f"[dim]Task:[/] {task}")
                         for i, out in enumerate(outputs, 1):
-                            name = roles[i - 1].get("name", f"Agent {i}") if i - 1 < len(roles) else f"Agent {i}"
-                            focus = roles[i - 1].get("focus", "") if i - 1 < len(roles) else ""
+                            name = (
+                                roles[i - 1].get("name", f"Agent {i}")
+                                if i - 1 < len(roles)
+                                else f"Agent {i}"
+                            )
+                            focus = (
+                                roles[i - 1].get("focus", "")
+                                if i - 1 < len(roles)
+                                else ""
+                            )
                             header = f"{name}"
                             if focus:
                                 header += f" — {focus}"
-                            preview = "\n".join(out.strip().splitlines()[:agents_preview_lines])
+                            preview = "\n".join(
+                                out.strip().splitlines()[:agents_preview_lines]
+                            )
                             lines.append(f"[dim]{header}[/]\n{preview}")
-                        console.print(Panel("\n\n".join(lines), title="Agents", border_style="cyan"))
+                        console.print(
+                            Panel(
+                                "\n\n".join(lines), title="Agents", border_style="cyan"
+                            )
+                        )
                         continue
                     if arg in ("all", "*"):
                         combined = []
                         if task:
                             combined.append(f"## Task\n\n{task}")
                         for i, out in enumerate(outputs, 1):
-                            name = roles[i - 1].get("name", f"Agent {i}") if i - 1 < len(roles) else f"Agent {i}"
-                            focus = roles[i - 1].get("focus", "") if i - 1 < len(roles) else ""
+                            name = (
+                                roles[i - 1].get("name", f"Agent {i}")
+                                if i - 1 < len(roles)
+                                else f"Agent {i}"
+                            )
+                            focus = (
+                                roles[i - 1].get("focus", "")
+                                if i - 1 < len(roles)
+                                else ""
+                            )
                             header = f"### {name}"
                             if focus:
                                 header += f" — {focus}"
                             combined.append(f"{header}\n\n{out.strip()}")
-                        console.print(Panel(Markdown("\n\n".join(combined)), title="Agents", border_style="cyan"))
+                        console.print(
+                            Panel(
+                                Markdown("\n\n".join(combined)),
+                                title="Agents",
+                                border_style="cyan",
+                            )
+                        )
                         continue
                     try:
                         idx = int(arg)
@@ -2171,13 +2283,25 @@ async def run_tui(
                     if idx < 1 or idx > len(outputs):
                         console.print("[dim]Agent index out of range.[/]")
                         continue
-                    name = roles[idx - 1].get("name", f"Agent {idx}") if idx - 1 < len(roles) else f"Agent {idx}"
-                    focus = roles[idx - 1].get("focus", "") if idx - 1 < len(roles) else ""
+                    name = (
+                        roles[idx - 1].get("name", f"Agent {idx}")
+                        if idx - 1 < len(roles)
+                        else f"Agent {idx}"
+                    )
+                    focus = (
+                        roles[idx - 1].get("focus", "") if idx - 1 < len(roles) else ""
+                    )
                     header = f"{name}"
                     if focus:
                         header += f" — {focus}"
                     body = outputs[idx - 1].strip()
-                    console.print(Panel(Markdown(f"### {header}\n\n{body}"), title="Agent", border_style="cyan"))
+                    console.print(
+                        Panel(
+                            Markdown(f"### {header}\n\n{body}"),
+                            title="Agent",
+                            border_style="cyan",
+                        )
+                    )
                     continue
                 elif (
                     isinstance(result, tuple)
@@ -2197,7 +2321,7 @@ async def run_tui(
                             f"Task: {task}\n\n"
                             + "\n\n".join(
                                 [
-                                    f"[{roles[i].get('name', f'Agent {i+1}')}] {outputs[i]}"
+                                    f"[{roles[i].get('name', f'Agent {i + 1}')}] {outputs[i]}"
                                     for i in range(min(len(outputs), len(roles)))
                                 ]
                             )
@@ -2222,7 +2346,13 @@ async def run_tui(
                                 provider=provider,
                             )
                         summary_text = summary_text.strip()
-                        console.print(Panel(Markdown(summary_text), title="Executive Summary", border_style="cyan"))
+                        console.print(
+                            Panel(
+                                Markdown(summary_text),
+                                title="Executive Summary",
+                                border_style="cyan",
+                            )
+                        )
                     except Exception as e:
                         console.print(f"[dim]Summary failed: {e}[/]")
                     continue
@@ -2249,7 +2379,9 @@ async def run_tui(
                         from .voice import record_and_transcribe
 
                         console.print("[dim]Listening...[/]")
-                        line = record_and_transcribe(seconds=secs, meter_cb=_voice_meter)
+                        line = record_and_transcribe(
+                            seconds=secs, meter_cb=_voice_meter
+                        )
                         _voice_meter_done()
                         console.print(f"[dim]Heard:[/] {line}")
                     except Exception as e:
@@ -2609,7 +2741,7 @@ async def run_tui(
                 voice_line = ""
                 if voice_level > 0:
                     bars = int(max(0.0, min(voice_level, 1.0)) * 16)
-                    voice_line = f"[bold]Mic:[/] " + ("█" * bars) + (" " * (16 - bars))
+                    voice_line = "[bold]Mic:[/] " + ("█" * bars) + (" " * (16 - bars))
                 return (
                     f"[bold]Phase:[/] {phase}  "
                     f"[bold]Tool:[/] {tool}  "
@@ -2635,15 +2767,25 @@ async def run_tui(
             def _status_bar_text() -> str:
                 sandbox_level = os.environ.get("OLLAMACODE_SANDBOX_LEVEL", "supervised")
                 session_short = session_ref[0][:8] if session_ref else "none"
-                mode = "auto" if autonomous_ref[0] else "confirm" if effective_confirm() else "manual"
+                mode = (
+                    "auto"
+                    if autonomous_ref[0]
+                    else "confirm"
+                    if effective_confirm()
+                    else "manual"
+                )
                 tool_state = status.get("tool") or "-"
                 queue_info = ""
                 if queue_inputs:
                     queue_info = f"  [bold]Queue:[/] {input_queue.qsize()}"
                 budget_info = ""
                 run_budget = os.environ.get("OLLAMACODE_RUN_BUDGET_SECONDS", "").strip()
-                tool_budget = os.environ.get("OLLAMACODE_TOOL_BUDGET_SECONDS", "").strip()
-                tool_timeout = os.environ.get("OLLAMACODE_TOOL_TIMEOUT_SECONDS", "").strip()
+                tool_budget = os.environ.get(
+                    "OLLAMACODE_TOOL_BUDGET_SECONDS", ""
+                ).strip()
+                tool_timeout = os.environ.get(
+                    "OLLAMACODE_TOOL_TIMEOUT_SECONDS", ""
+                ).strip()
                 if run_budget or tool_budget or tool_timeout:
                     budget_info = (
                         f"  [bold]Budget:[/] run {run_budget or '-'}s "
@@ -2681,16 +2823,21 @@ async def run_tui(
                     Panel(Markdown(chat_md), title="Chat", border_style="blue"),
                 ]
                 if not compact_mode:
-                    panels.append(Panel(_tool_panel_text(), title="Tools", border_style="magenta"))
-                    panels.append(Panel(_agents_panel_text(), title="Agents", border_style="cyan"))
-                panels.append(Panel(_status_bar_text(), title="Status", border_style="green"))
+                    panels.append(
+                        Panel(_tool_panel_text(), title="Tools", border_style="magenta")
+                    )
+                    panels.append(
+                        Panel(_agents_panel_text(), title="Agents", border_style="cyan")
+                    )
+                panels.append(
+                    Panel(_status_bar_text(), title="Status", border_style="green")
+                )
                 return Group(*panels)
 
             def make_update(accumulated: str, done: bool) -> None:
                 status["accumulated"] = accumulated
                 status["has_output"] = bool(accumulated)
                 status["phase"] = "streaming" if status["has_output"] else "thinking"
-                md = _render_chat_markdown(accumulated, done=done)
                 live.update(_render_live(accumulated, done=done))
 
             def _on_tool_start(name: str, arguments: dict) -> None:
@@ -2785,9 +2932,6 @@ async def run_tui(
 
             async def _tick():
                 while not status["done"]:
-                    md = _render_chat_markdown(
-                        status.get("accumulated", ""), done=False
-                    )
                     live.update(_render_live(status.get("accumulated", ""), done=False))
                     await asyncio.sleep(max(0.05, 1.0 / max(1, tui_refresh_hz)))
 
@@ -2854,22 +2998,3 @@ async def run_tui(
         with contextlib.suppress(asyncio.CancelledError):
             if producer_task is not None:
                 await producer_task
-    def _extract_pasted_image(line: str) -> tuple[str | None, str]:
-        """Detect data URL image paste; save to disk and return (path, cleaned_line)."""
-        if "data:image" not in line:
-            return None, line
-        m = re.search(r"data:image/(png|jpeg|jpg);base64,([A-Za-z0-9+/=]+)", line)
-        if not m:
-            return None, line
-        ext = "jpg" if m.group(1) in ("jpeg", "jpg") else "png"
-        b64 = m.group(2)
-        try:
-            raw = base64.b64decode(b64)
-            tmp_dir = Path.home() / ".ollamacode" / "clipboard"
-            tmp_dir.mkdir(parents=True, exist_ok=True)
-            path = tmp_dir / f"paste_{int(time.time())}.{ext}"
-            path.write_bytes(raw)
-            cleaned = line.replace(m.group(0), "").strip()
-            return str(path), cleaned
-        except Exception:
-            return None, line

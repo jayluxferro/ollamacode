@@ -24,18 +24,38 @@ logger = logging.getLogger(__name__)
 # Directories that should never be accessible outside 'full' mode.
 _SYSTEM_DIRS: frozenset[str] = frozenset(
     {
-        "/etc", "/usr", "/sbin", "/bin", "/lib", "/lib64",
-        "/proc", "/sys", "/dev", "/boot", "/run",
-        "/private/etc", "/private/var/db",  # macOS equivalents
+        "/etc",
+        "/usr",
+        "/sbin",
+        "/bin",
+        "/lib",
+        "/lib64",
+        "/proc",
+        "/sys",
+        "/dev",
+        "/boot",
+        "/run",
+        "/private/etc",
+        "/private/var/db",  # macOS equivalents
     }
 )
 
 # Sensitive dotfile directory names — block in readonly + supervised.
 _SENSITIVE_DOTDIRS: frozenset[str] = frozenset(
     {
-        ".ssh", ".aws", ".gnupg", ".gpg", ".kube", ".docker",
-        ".netrc", ".bash_history", ".zsh_history", ".npmrc",
-        ".pypirc", ".gitconfig", ".git-credentials",
+        ".ssh",
+        ".aws",
+        ".gnupg",
+        ".gpg",
+        ".kube",
+        ".docker",
+        ".netrc",
+        ".bash_history",
+        ".zsh_history",
+        ".npmrc",
+        ".pypirc",
+        ".gitconfig",
+        ".git-credentials",
     }
 )
 
@@ -59,6 +79,7 @@ def get_sandbox_level() -> SandboxLevel:
 # Violation logging
 # ---------------------------------------------------------------------------
 
+
 def _log_violation(kind: str, detail: str) -> None:
     log_path = Path.home() / ".ollamacode" / "sandbox_violations.log"
     try:
@@ -75,7 +96,10 @@ def _log_violation(kind: str, detail: str) -> None:
 # Filesystem enforcement
 # ---------------------------------------------------------------------------
 
-def check_fs_path(path_str: str, workspace_root: Path, *, allow_write: bool = False) -> None:
+
+def check_fs_path(
+    path_str: str, workspace_root: Path, *, allow_write: bool = False
+) -> None:
     """Raise :class:`PermissionError` if *path_str* violates sandbox policy.
 
     Checks (in order):
@@ -112,7 +136,11 @@ def check_fs_path(path_str: str, workspace_root: Path, *, allow_write: bool = Fa
         # 3. System directory access
         raw_str = str(raw)
         for sys_dir in _SYSTEM_DIRS:
-            if raw_str == sys_dir or raw_str.startswith(sys_dir + "/") or raw_str.startswith(sys_dir + os.sep):
+            if (
+                raw_str == sys_dir
+                or raw_str.startswith(sys_dir + "/")
+                or raw_str.startswith(sys_dir + os.sep)
+            ):
                 _log_violation("system_dir_access", raw_str)
                 raise PermissionError(
                     f"Access to system directory {sys_dir!r} is not allowed (sandbox: {level.value})"
@@ -137,6 +165,7 @@ def check_fs_path(path_str: str, workspace_root: Path, *, allow_write: bool = Fa
 # ---------------------------------------------------------------------------
 # Terminal enforcement
 # ---------------------------------------------------------------------------
+
 
 def check_terminal_command(command: str) -> None:
     """Raise :class:`PermissionError` if running *command* violates sandbox policy.

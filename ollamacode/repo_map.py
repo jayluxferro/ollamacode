@@ -83,7 +83,9 @@ def _extract_symbols_regex(text: str, max_symbols: int = 6) -> list[str]:
     return symbols
 
 
-def _extract_symbols_for_file(text: str, suffix: str, max_symbols: int = 6) -> list[str]:
+def _extract_symbols_for_file(
+    text: str, suffix: str, max_symbols: int = 6
+) -> list[str]:
     """Extract symbols using tree-sitter if available, else regex fallback."""
     try:
         from tree_sitter_languages import get_language  # type: ignore[import-not-found]
@@ -123,7 +125,11 @@ def _extract_symbols_for_file(text: str, suffix: str, max_symbols: int = 6) -> l
                 if child.type == "identifier":
                     symbols.append(child.text.decode("utf-8"))
                     return
-        if node.type in ("function_declaration", "class_declaration", "method_definition"):
+        if node.type in (
+            "function_declaration",
+            "class_declaration",
+            "method_definition",
+        ):
             for child in node.children:
                 if child.type in ("identifier", "property_identifier"):
                     symbols.append(child.text.decode("utf-8"))
@@ -154,7 +160,9 @@ def build_symbol_index(
     for path in files:
         rel = str(path.relative_to(root)).replace("\\", "/")
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")[:max_chars_per_file]
+            text = path.read_text(encoding="utf-8", errors="replace")[
+                :max_chars_per_file
+            ]
         except OSError:
             continue
         symbols = _extract_symbols_for_file(
@@ -182,7 +190,9 @@ def build_repo_map(
     for path in files:
         rel = str(path.relative_to(root)).replace("\\", "/")
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")[:max_chars_per_file]
+            text = path.read_text(encoding="utf-8", errors="replace")[
+                :max_chars_per_file
+            ]
         except OSError:
             continue
         symbols = _extract_symbols_for_file(

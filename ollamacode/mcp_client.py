@@ -264,7 +264,9 @@ async def call_tool(
     """Call a tool by name with optional arguments. Uses get_tool_name for resolution."""
     if _TOOL_CALLS_DISABLED.get():
         return CallToolResult(
-            content=[TextContent(type="text", text="Tool calls are disabled for this phase.")],
+            content=[
+                TextContent(type="text", text="Tool calls are disabled for this phase.")
+            ],
             isError=True,
         )
     args = arguments or {}

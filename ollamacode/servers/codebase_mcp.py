@@ -275,7 +275,9 @@ def index_symbols(
 
 
 @mcp.tool()
-def query_symbol_index(name: str, limit: int = 50) -> dict[str, list[dict[str, str | int]]]:
+def query_symbol_index(
+    name: str, limit: int = 50
+) -> dict[str, list[dict[str, str | int]]]:
     """Query persistent symbol index for definitions."""
     try:
         from ollamacode.symbol_index import query_symbol as _query
@@ -287,7 +289,9 @@ def query_symbol_index(name: str, limit: int = 50) -> dict[str, list[dict[str, s
 
 
 @mcp.tool()
-def find_symbol_references(name: str, limit: int = 100) -> dict[str, list[dict[str, str | int]]]:
+def find_symbol_references(
+    name: str, limit: int = 100
+) -> dict[str, list[dict[str, str | int]]]:
     """Find references to a symbol using persistent index."""
     try:
         from ollamacode.symbol_index import find_references as _find
@@ -299,7 +303,9 @@ def find_symbol_references(name: str, limit: int = 100) -> dict[str, list[dict[s
 
 
 @mcp.tool()
-def refactor_rename(old_name: str, new_name: str, max_files: int = 500) -> dict[str, list[dict]]:
+def refactor_rename(
+    old_name: str, new_name: str, max_files: int = 500
+) -> dict[str, list[dict]]:
     """Generate unified-diff edits to rename a symbol across the workspace."""
     try:
         from ollamacode.refactor import rename_symbol

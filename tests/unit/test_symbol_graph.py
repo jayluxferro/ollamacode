@@ -3,9 +3,7 @@ from ollamacode.symbol_index import build_symbol_index, query_symbol, find_refer
 
 
 def test_symbol_graph_basic(tmp_path) -> None:
-    (tmp_path / "a.py").write_text(
-        "def foo():\n    return 1\n\nfoo()\n"
-    )
+    (tmp_path / "a.py").write_text("def foo():\n    return 1\n\nfoo()\n")
     graph = build_symbol_graph(str(tmp_path), max_files=10)
     assert "foo" in graph["definitions"]
     assert "a.py" in graph["callers"].get("foo", [])

@@ -42,7 +42,9 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _regex_defs_calls(text: str) -> tuple[list[tuple[str, str, int]], list[tuple[str, int]]]:
+def _regex_defs_calls(
+    text: str,
+) -> tuple[list[tuple[str, str, int]], list[tuple[str, int]]]:
     patterns: Iterable[tuple[str, str]] = [
         (r"^\s*def\s+([A-Za-z_][\w]*)\s*\(", "function"),
         (r"^\s*class\s+([A-Za-z_][\w]*)\s*[:\(]", "class"),
@@ -63,7 +65,9 @@ def _regex_defs_calls(text: str) -> tuple[list[tuple[str, str, int]], list[tuple
     return defs, refs
 
 
-def _ts_defs_calls(text: str, suffix: str) -> tuple[list[tuple[str, str, int]], list[tuple[str, int]]] | None:
+def _ts_defs_calls(
+    text: str, suffix: str
+) -> tuple[list[tuple[str, str, int]], list[tuple[str, int]]] | None:
     try:
         from tree_sitter_languages import get_language  # type: ignore[import-not-found]
         from tree_sitter import Parser  # type: ignore[import-not-found]
@@ -95,17 +99,35 @@ def _ts_defs_calls(text: str, suffix: str) -> tuple[list[tuple[str, str, int]], 
         if node.type in ("function_definition", "class_definition"):
             for child in node.children:
                 if child.type == "identifier":
-                    defs.append((child.text.decode("utf-8"), "function" if node.type == "function_definition" else "class", child.start_point[0] + 1))
+                    defs.append(
+                        (
+                            child.text.decode("utf-8"),
+                            "function"
+                            if node.type == "function_definition"
+                            else "class",
+                            child.start_point[0] + 1,
+                        )
+                    )
                     break
-        if node.type in ("function_declaration", "class_declaration", "method_definition"):
+        if node.type in (
+            "function_declaration",
+            "class_declaration",
+            "method_definition",
+        ):
             for child in node.children:
                 if child.type in ("identifier", "property_identifier"):
                     kind = "function" if "function" in node.type else "class"
-                    defs.append((child.text.decode("utf-8"), kind, child.start_point[0] + 1))
+                    defs.append(
+                        (child.text.decode("utf-8"), kind, child.start_point[0] + 1)
+                    )
                     break
         if node.type in ("call", "call_expression", "function_call"):
             for child in node.children:
-                if child.type in ("identifier", "property_identifier", "field_identifier"):
+                if child.type in (
+                    "identifier",
+                    "property_identifier",
+                    "field_identifier",
+                ):
                     refs.append((child.text.decode("utf-8"), child.start_point[0] + 1))
                     break
         for c in node.children:
@@ -136,7 +158,9 @@ def build_symbol_index(
         for path in files:
             rel = str(path.relative_to(root)).replace("\\", "/")
             try:
-                text = path.read_text(encoding="utf-8", errors="replace")[:max_chars_per_file]
+                text = path.read_text(encoding="utf-8", errors="replace")[
+                    :max_chars_per_file
+                ]
             except OSError:
                 continue
             ts = _ts_defs_calls(text, path.suffix)

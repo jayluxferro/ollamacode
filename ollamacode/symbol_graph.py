@@ -66,7 +66,11 @@ def _tree_sitter_calls(text: str, suffix: str) -> list[str] | None:
     def visit(node):
         if node.type in ("call", "call_expression", "function_call", "call_expression"):
             for child in node.children:
-                if child.type in ("identifier", "property_identifier", "field_identifier"):
+                if child.type in (
+                    "identifier",
+                    "property_identifier",
+                    "field_identifier",
+                ):
                     calls.append(child.text.decode("utf-8"))
                     break
         for c in node.children:
@@ -91,7 +95,9 @@ def build_symbol_graph(
     for path in files:
         rel = str(path.relative_to(root)).replace("\\", "/")
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")[:max_chars_per_file]
+            text = path.read_text(encoding="utf-8", errors="replace")[
+                :max_chars_per_file
+            ]
         except OSError:
             continue
         defs = _regex_defs(text)

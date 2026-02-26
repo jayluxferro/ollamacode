@@ -59,9 +59,10 @@ def _verify_webhook_hmac(body_bytes: bytes, signature_header: str, secret: str) 
 
     if not signature_header.startswith("sha256="):
         return False
-    expected = "sha256=" + hmac.new(
-        secret.encode("utf-8"), body_bytes, hashlib.sha256
-    ).hexdigest()
+    expected = (
+        "sha256="
+        + hmac.new(secret.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
+    )
     return hmac.compare_digest(expected, signature_header)
 
 
@@ -400,7 +401,9 @@ def create_app(
             try:
                 from .scheduler import Scheduler
 
-                _scheduler = Scheduler(scheduled_tasks, model=model, config=merged_config or {})
+                _scheduler = Scheduler(
+                    scheduled_tasks, model=model, config=merged_config or {}
+                )
                 _scheduler.start()
             except Exception as exc:
                 import logging as _log
@@ -452,7 +455,9 @@ def create_app(
             raw_body = await request.body()
             sig = request.headers.get("X-Hub-Signature-256", "")
             if not _verify_webhook_hmac(raw_body, sig, webhook_secret):
-                return JSONResponse({"error": "invalid webhook signature"}, status_code=403)
+                return JSONResponse(
+                    {"error": "invalid webhook signature"}, status_code=403
+                )
             try:
                 body = json.loads(raw_body)
             except Exception:
@@ -1097,7 +1102,9 @@ def create_app(
 # run_serve unchanged except for imports
 
 
-def run_serve(port: int = 8000, config_path: str | None = None, no_tunnel: bool = False) -> None:
+def run_serve(
+    port: int = 8000, config_path: str | None = None, no_tunnel: bool = False
+) -> None:
     """Load config, create app, run uvicorn."""
     try:
         import uvicorn
@@ -1121,10 +1128,20 @@ def run_serve(port: int = 8000, config_path: str | None = None, no_tunnel: bool 
         or os.environ.get("OLLAMACODE_API_KEY")
         or ""
     ).strip() or None
-    rate_limit_rpm = int(serve_config.get("rate_limit_rpm") or os.environ.get("OLLAMACODE_RATE_LIMIT_RPM") or 0)
-    rate_limit_tpd = int(serve_config.get("rate_limit_tpd") or os.environ.get("OLLAMACODE_RATE_LIMIT_TPD") or 0)
+    rate_limit_rpm = int(
+        serve_config.get("rate_limit_rpm")
+        or os.environ.get("OLLAMACODE_RATE_LIMIT_RPM")
+        or 0
+    )
+    rate_limit_tpd = int(
+        serve_config.get("rate_limit_tpd")
+        or os.environ.get("OLLAMACODE_RATE_LIMIT_TPD")
+        or 0
+    )
     webhook_secret = (
-        serve_config.get("webhook_secret") or os.environ.get("OLLAMACODE_WEBHOOK_SECRET") or ""
+        serve_config.get("webhook_secret")
+        or os.environ.get("OLLAMACODE_WEBHOOK_SECRET")
+        or ""
     ).strip() or None
 
     from .scheduler import load_scheduled_tasks

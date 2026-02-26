@@ -34,7 +34,6 @@ import json
 import logging
 import re
 import subprocess
-import threading
 import time
 from typing import Any
 
@@ -65,7 +64,10 @@ def _start_process(args: list[str]) -> "subprocess.Popen[str]":
 # Cloudflare
 # ---------------------------------------------------------------------------
 
-def _start_cloudflare(port: int, extra_args: list[str]) -> tuple[str, "subprocess.Popen[str]"]:
+
+def _start_cloudflare(
+    port: int, extra_args: list[str]
+) -> tuple[str, "subprocess.Popen[str]"]:
     """Start ``cloudflared tunnel`` and extract the public URL from its output."""
     cmd = ["cloudflared", "tunnel", "--url", f"http://localhost:{port}"] + extra_args
     proc = _start_process(cmd)
@@ -92,7 +94,10 @@ def _start_cloudflare(port: int, extra_args: list[str]) -> tuple[str, "subproces
 # ngrok
 # ---------------------------------------------------------------------------
 
-def _start_ngrok(port: int, extra_args: list[str]) -> tuple[str, "subprocess.Popen[str]"]:
+
+def _start_ngrok(
+    port: int, extra_args: list[str]
+) -> tuple[str, "subprocess.Popen[str]"]:
     """Start ``ngrok http`` and fetch the public URL from its JSON API."""
     cmd = ["ngrok", "http", str(port)] + extra_args
     proc = _start_process(cmd)
@@ -104,7 +109,9 @@ def _start_ngrok(port: int, extra_args: list[str]) -> tuple[str, "subprocess.Pop
         try:
             import urllib.request
 
-            with urllib.request.urlopen("http://localhost:4040/api/tunnels", timeout=3) as resp:
+            with urllib.request.urlopen(
+                "http://localhost:4040/api/tunnels", timeout=3
+            ) as resp:
                 data = json.loads(resp.read())
             tunnels = data.get("tunnels", [])
             for t in tunnels:
@@ -121,7 +128,9 @@ def _start_ngrok(port: int, extra_args: list[str]) -> tuple[str, "subprocess.Pop
 
     if not url:
         proc.terminate()
-        raise TunnelError("Could not read public URL from ngrok API (http://localhost:4040)")
+        raise TunnelError(
+            "Could not read public URL from ngrok API (http://localhost:4040)"
+        )
     return url, proc
 
 
@@ -129,7 +138,10 @@ def _start_ngrok(port: int, extra_args: list[str]) -> tuple[str, "subprocess.Pop
 # Tailscale
 # ---------------------------------------------------------------------------
 
-def _start_tailscale(port: int, extra_args: list[str]) -> tuple[str, "subprocess.Popen[str]"]:
+
+def _start_tailscale(
+    port: int, extra_args: list[str]
+) -> tuple[str, "subprocess.Popen[str]"]:
     """Start ``tailscale funnel`` and derive the public URL from hostname."""
     cmd = ["tailscale", "funnel", str(port)] + extra_args
     proc = _start_process(cmd)
@@ -150,7 +162,12 @@ def _start_tailscale(port: int, extra_args: list[str]) -> tuple[str, "subprocess
     if not url:
         # Best-effort: derive from tailscale status
         try:
-            r = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=5)
+            r = subprocess.run(
+                ["tailscale", "status", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
             data = json.loads(r.stdout)
             dns = data.get("Self", {}).get("DNSName", "")
             if dns:
@@ -168,7 +185,10 @@ def _start_tailscale(port: int, extra_args: list[str]) -> tuple[str, "subprocess
 # Custom tunnel
 # ---------------------------------------------------------------------------
 
-def _start_custom(port: int, command_template: str, extra_args: list[str]) -> tuple[str, "subprocess.Popen[str]"]:
+
+def _start_custom(
+    port: int, command_template: str, extra_args: list[str]
+) -> tuple[str, "subprocess.Popen[str]"]:
     """Start an arbitrary tunnel command with ``{port}`` substitution.
 
     The public URL must be printed to the process's combined stdout/stderr on
@@ -201,6 +221,7 @@ def _start_custom(port: int, command_template: str, extra_args: list[str]) -> tu
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def start_tunnel(
     tunnel_type: str,
@@ -235,7 +256,9 @@ def start_tunnel(
             raise TunnelError("tunnel.type=custom requires tunnel.command to be set")
         return _start_custom(port, command, extra)
     else:
-        raise TunnelError(f"Unknown tunnel type: {tunnel_type!r}. Choose cloudflare, ngrok, tailscale, or custom.")
+        raise TunnelError(
+            f"Unknown tunnel type: {tunnel_type!r}. Choose cloudflare, ngrok, tailscale, or custom."
+        )
 
 
 def stop_tunnel(process: "subprocess.Popen[str] | None") -> None:
@@ -252,7 +275,9 @@ def stop_tunnel(process: "subprocess.Popen[str] | None") -> None:
             pass
 
 
-def start_tunnel_from_config(config: dict[str, Any], port: int) -> tuple[str | None, "subprocess.Popen[str] | None"]:
+def start_tunnel_from_config(
+    config: dict[str, Any], port: int
+) -> tuple[str | None, "subprocess.Popen[str] | None"]:
     """Read ``tunnel`` section from *config* and start the configured tunnel.
 
     Returns ``(None, None)`` if no tunnel is configured.

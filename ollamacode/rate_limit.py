@@ -63,8 +63,6 @@ class RateLimiter:
         number of seconds the client should wait before retrying.
         """
         now = time.monotonic()
-        wall_now = time.time()
-
         with self._lock:
             # --- requests-per-minute check ---
             if self.requests_per_minute > 0:

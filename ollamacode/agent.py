@@ -118,25 +118,37 @@ def _emit_replay_report() -> None:
     if os.environ.get("OLLAMACODE_REPLAY_REPORT", "0") != "1":
         return
     try:
-        replay = [json.loads(l) for l in Path(_REPLAY_PATH).read_text(encoding="utf-8").splitlines() if l.strip()]
-        live = [json.loads(l) for l in Path(_RECORD_PATH).read_text(encoding="utf-8").splitlines() if l.strip()]
+        replay = [
+            json.loads(line)
+            for line in Path(_REPLAY_PATH).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        live = [
+            json.loads(line)
+            for line in Path(_RECORD_PATH).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
     except Exception:
         return
     lines: list[str] = ["[replay] report"]
-    for i, (r, l) in enumerate(zip(replay, live), 1):
-        tool = r.get("tool")
-        if tool != l.get("tool"):
-            lines.append(f"  {i}. tool mismatch: replay={tool} live={l.get('tool')}")
+    for i, (replay_entry, live_entry) in enumerate(zip(replay, live), 1):
+        tool = replay_entry.get("tool")
+        if tool != live_entry.get("tool"):
+            lines.append(
+                f"  {i}. tool mismatch: replay={tool} live={live_entry.get('tool')}"
+            )
             continue
-        rd = r.get("duration_s")
-        ld = l.get("duration_s")
+        rd = replay_entry.get("duration_s")
+        ld = live_entry.get("duration_s")
         if rd is not None and ld is not None:
-            lines.append(f"  {i}. {tool} duration: replay={rd:.3f}s live={ld:.3f}s Δ={ld-rd:.3f}s")
-        if r.get("content") != l.get("content"):
+            lines.append(
+                f"  {i}. {tool} duration: replay={rd:.3f}s live={ld:.3f}s Δ={ld - rd:.3f}s"
+            )
+        if replay_entry.get("content") != live_entry.get("content"):
             diff = "\n".join(
                 _difflib.unified_diff(
-                    str(r.get("content", "")).splitlines(),
-                    str(l.get("content", "")).splitlines(),
+                    str(replay_entry.get("content", "")).splitlines(),
+                    str(live_entry.get("content", "")).splitlines(),
                     fromfile="replay",
                     tofile="live",
                     lineterm="",
@@ -145,6 +157,7 @@ def _emit_replay_report() -> None:
             if diff:
                 lines.append("  diff:\n" + "\n".join(diff.splitlines()[:40]))
     print("\n".join(lines), file=sys.stderr)
+
 
 # When confirm_tool_calls is True, optional callback before each tool: return "run" | "skip" | ("edit", new_args).
 ToolCallDecision = (
@@ -623,7 +636,9 @@ async def _call_tool_with_retry(
             else:
                 timeout = timeout_s
             if timeout is not None:
-                return await asyncio.wait_for(call_tool(session, name, arguments), timeout)
+                return await asyncio.wait_for(
+                    call_tool(session, name, arguments), timeout
+                )
             return await call_tool(session, name, arguments)
         except BaseException as e:
             if i >= attempts - 1:
@@ -752,11 +767,15 @@ async def run_tools(
             entry = _next_replay_entry()
             if entry is None:
                 content = "Tool error: replay exhausted"
-                out.append((name, arguments, content, True, _format_tool_error_hint(content)))
+                out.append(
+                    (name, arguments, content, True, _format_tool_error_hint(content))
+                )
                 continue
             if entry.get("tool") != name:
                 content = f"Tool error: replay mismatch (expected {entry.get('tool')}, got {name})"
-                out.append((name, arguments, content, True, _format_tool_error_hint(content)))
+                out.append(
+                    (name, arguments, content, True, _format_tool_error_hint(content))
+                )
                 continue
             content = str(entry.get("content", ""))
             is_error = bool(entry.get("is_error", False))
@@ -820,12 +839,12 @@ async def run_tools(
                 durations.append(0.0)
                 continue
             res, dur = await _call_tool_with_retry_timed(
-                    session,
-                    n,
-                    a,
-                    attempts,
-                    timeout_s=tool_timeout_s,
-                    deadline=deadline,
+                session,
+                n,
+                a,
+                attempts,
+                timeout_s=tool_timeout_s,
+                deadline=deadline,
             )
             results.append(res)
             durations.append(dur)
@@ -964,7 +983,9 @@ async def run_agent_loop(
         if timing and t0 is not None:
             elapsed = time.perf_counter() - t0
             logger.info("LLM call: %.2fs", elapsed)
-            _json_log_event(event="llm", duration_s=round(elapsed, 3), request_id=request_id)
+            _json_log_event(
+                event="llm", duration_s=round(elapsed, 3), request_id=request_id
+            )
 
         msg = (
             response.get("message")
@@ -1228,13 +1249,18 @@ async def run_agent_loop(
                 elapsed = time.perf_counter() - t0_parallel
                 logger.info("Tools: %.2fs", elapsed)
                 _json_log_event(
-                    event="tools", duration_s=round(elapsed, 3), count=len(items), request_id=request_id
+                    event="tools",
+                    duration_s=round(elapsed, 3),
+                    count=len(items),
+                    request_id=request_id,
                 )
 
     if timing and turn_start is not None:
         turn_elapsed = time.perf_counter() - turn_start
         logger.info("Turn total: %.2fs", turn_elapsed)
-        _json_log_event(event="turn", duration_s=round(turn_elapsed, 3), request_id=request_id)
+        _json_log_event(
+            event="turn", duration_s=round(turn_elapsed, 3), request_id=request_id
+        )
     return _finish("(Max tool rounds reached; stopping.)")
 
 
@@ -1251,7 +1277,9 @@ def _is_stream_parse_error(exc: BaseException) -> bool:
 
 
 def _is_json_decode_error(exc: BaseException) -> bool:
-    return isinstance(exc, json.JSONDecodeError) or "expecting value" in str(exc).lower()
+    return (
+        isinstance(exc, json.JSONDecodeError) or "expecting value" in str(exc).lower()
+    )
 
 
 def _ollama_chat_nonstream_with_retry(
@@ -1331,7 +1359,9 @@ def _stream_into_queue(
                     q.put((content, done, msg))
                 break
             except Exception as e:
-                if attempt == 0 and (_is_tool_call_parse_error(e) or _is_stream_parse_error(e)):
+                if attempt == 0 and (
+                    _is_tool_call_parse_error(e) or _is_stream_parse_error(e)
+                ):
                     continue  # retry once
                 if _is_stream_parse_error(e):
                     # Fallback to non-stream response for this turn.
@@ -1436,6 +1466,7 @@ async def run_agent_loop_stream(
                 duration_s=round(time.perf_counter() - turn_start, 3),
             )
         _emit_replay_report()
+
     for round_num in range(max_tool_rounds):
         if run_budget_s and (time.monotonic() - run_start) > run_budget_s:
             _json_log_event(
@@ -1484,7 +1515,9 @@ async def run_agent_loop_stream(
                 thread2.join()
         else:
             # Ollama: real token-by-token streaming via background thread + queue
-            stream_with_tools = os.environ.get("OLLAMACODE_STREAM_WITH_TOOLS", "0") == "1"
+            stream_with_tools = (
+                os.environ.get("OLLAMACODE_STREAM_WITH_TOOLS", "0") == "1"
+            )
             if ollama_tools and not stream_with_tools:
                 # Non-stream path for tools: more reliable than streaming with tool calls.
                 try:
@@ -1574,7 +1607,9 @@ async def run_agent_loop_stream(
         if timing and t0 is not None:
             elapsed = time.perf_counter() - t0
             logger.info("LLM call: %.2fs", elapsed)
-            _json_log_event(event="llm", duration_s=round(elapsed, 3), request_id=request_id)
+            _json_log_event(
+                event="llm", duration_s=round(elapsed, 3), request_id=request_id
+            )
 
         if not last_msg:
             _finish()
@@ -1817,7 +1852,9 @@ async def run_agent_loop_no_mcp(
         raise _wrap_ollama_template_error(e)
     if timing and t0 is not None:
         elapsed = time.perf_counter() - t0
-        _json_log_event(event="llm", duration_s=round(elapsed, 3), request_id=request_id)
+        _json_log_event(
+            event="llm", duration_s=round(elapsed, 3), request_id=request_id
+        )
     msg = (
         response.get("message")
         if isinstance(response, dict)
@@ -1894,7 +1931,9 @@ async def run_agent_loop_no_mcp_stream(
             thread2.join()
         if timing and t0 is not None:
             elapsed = time.perf_counter() - t0
-            _json_log_event(event="llm", duration_s=round(elapsed, 3), request_id=request_id)
+            _json_log_event(
+                event="llm", duration_s=round(elapsed, 3), request_id=request_id
+            )
         return
 
     # Ollama path: use existing thread queue
@@ -1917,4 +1956,6 @@ async def run_agent_loop_no_mcp_stream(
         thread.join()
         if timing and t0 is not None:
             elapsed = time.perf_counter() - t0
-            _json_log_event(event="llm", duration_s=round(elapsed, 3), request_id=request_id)
+            _json_log_event(
+                event="llm", duration_s=round(elapsed, 3), request_id=request_id
+            )

@@ -14,6 +14,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -729,9 +730,8 @@ async def _run(
     if voice_in:
         try:
             from .voice import record_and_transcribe
-            query = record_and_transcribe(
-                seconds=voice_seconds, model=voice_model
-            )
+
+            query = record_and_transcribe(seconds=voice_seconds, model=voice_model)
             if not query:
                 print("[OllamaCode] Voice input produced empty text.", file=sys.stderr)
                 return 1
@@ -833,7 +833,9 @@ async def _run(
                         autonomous_mode=autonomous_mode,
                         subagents=subagents or [],
                         provider=provider,
-                        provider_name=provider.name if provider is not None else "ollama",
+                        provider_name=provider.name
+                        if provider is not None
+                        else "ollama",
                     )
             else:
                 await run_tui(
@@ -1183,8 +1185,12 @@ async def _run(
             )
         plan_exec_verify = os.environ.get("OLLAMACODE_PLAN_EXECUTE_VERIFY", "0") == "1"
         if plan_exec_verify and _should_plan_exec_verify(q):
-            plan_model = os.environ.get("OLLAMACODE_PLAN_MODEL", "").strip() or current_model
-            verify_model = os.environ.get("OLLAMACODE_VERIFY_MODEL", "").strip() or current_model
+            plan_model = (
+                os.environ.get("OLLAMACODE_PLAN_MODEL", "").strip() or current_model
+            )
+            verify_model = (
+                os.environ.get("OLLAMACODE_VERIFY_MODEL", "").strip() or current_model
+            )
             if not quiet:
                 print("[OllamaCode] Planning...", file=sys.stderr, flush=True)
             plan = await run_agent_loop_no_mcp(
@@ -1220,7 +1226,9 @@ async def _run(
                     allowed_tools=allowed_tools,
                     blocked_tools=blocked_tools,
                     confirm_tool_calls=confirm_tool_calls,
-                    before_tool_call=_before_tool_call_cli if confirm_tool_calls else None,
+                    before_tool_call=_before_tool_call_cli
+                    if confirm_tool_calls
+                    else None,
                     on_tool_start=lambda n, a: _emit_tool_trace("tool_start", n, a),
                     on_tool_end=lambda n, a, s: _emit_tool_trace("tool_end", n, a, s),
                     provider=provider,
@@ -1251,8 +1259,7 @@ async def _run(
             verify = await run_agent_loop_no_mcp(
                 verify_model,
                 "Review the following answer for correctness and completeness. "
-                "Output only the revised answer, no preamble.\n\n"
-                + (out or ""),
+                "Output only the revised answer, no preamble.\n\n" + (out or ""),
                 system_prompt="You are a verifier. Output only the revised answer.",
                 message_history=None,
                 provider=provider,
@@ -1350,7 +1357,9 @@ async def _run(
                     file=sys.stderr,
                     flush=True,
                 )
-            out = await _do_chat(conn, q, current_model, message_history, system_prompt_override)
+            out = await _do_chat(
+                conn, q, current_model, message_history, system_prompt_override
+            )
             print(out, flush=True)
             return out
         request_id = uuid.uuid4().hex
@@ -1595,7 +1604,9 @@ async def _run(
                 f"[eval] summary: {passed}/{total} passed ({pass_rate:.1f}%), avg {avg:.2f}s",
                 file=sys.stderr,
             )
-            slowest = sorted(case_stats, key=lambda c: c["duration_s"], reverse=True)[:3]
+            slowest = sorted(case_stats, key=lambda c: c["duration_s"], reverse=True)[
+                :3
+            ]
             if slowest:
                 lines = ", ".join(f"{c['name']}={c['duration_s']}s" for c in slowest)
                 print(f"[eval] slowest: {lines}", file=sys.stderr)
@@ -1709,7 +1720,9 @@ async def _run(
                     allowed_tools=allowed_tools,
                     blocked_tools=blocked_tools,
                     confirm_tool_calls=confirm_tool_calls,
-                    before_tool_call=_before_tool_call_cli if confirm_tool_calls else None,
+                    before_tool_call=_before_tool_call_cli
+                    if confirm_tool_calls
+                    else None,
                     provider=provider,
                 )
             else:
@@ -1848,7 +1861,6 @@ async def _run(
                 continue
             print("[OllamaCode] Choose y, N, or e.", file=sys.stderr)
 
-
     if not use_mcp:
         if query == "evals":
             return await _run_evals(None, model)
@@ -1973,7 +1985,10 @@ def main() -> None:
                 print("No secrets stored.")
         elif action == "set":
             if not name:
-                print("Error: --secret-name is required for 'secrets set'", file=sys.stderr)
+                print(
+                    "Error: --secret-name is required for 'secrets set'",
+                    file=sys.stderr,
+                )
                 raise SystemExit(1)
             if not value:
                 # Prompt interactively if value not given
@@ -1991,7 +2006,10 @@ def main() -> None:
                 raise SystemExit(1)
         elif action == "get":
             if not name:
-                print("Error: --secret-name is required for 'secrets get'", file=sys.stderr)
+                print(
+                    "Error: --secret-name is required for 'secrets get'",
+                    file=sys.stderr,
+                )
                 raise SystemExit(1)
             try:
                 result = get_secret(name)
@@ -2004,7 +2022,10 @@ def main() -> None:
             print(result)
         elif action == "delete":
             if not name:
-                print("Error: --secret-name is required for 'secrets delete'", file=sys.stderr)
+                print(
+                    "Error: --secret-name is required for 'secrets delete'",
+                    file=sys.stderr,
+                )
                 raise SystemExit(1)
             try:
                 removed = delete_secret(name)
@@ -2022,9 +2043,8 @@ def main() -> None:
         from .repo_map import write_repo_map
 
         workspace = os.getcwd()
-        out_path = (
-            getattr(args, "repo_map_output", None)
-            or str(Path(workspace) / ".ollamacode" / "repo_map.md")
+        out_path = getattr(args, "repo_map_output", None) or str(
+            Path(workspace) / ".ollamacode" / "repo_map.md"
         )
         max_files = getattr(args, "repo_map_max_files", None) or 200
         dest = write_repo_map(workspace, out_path, max_files=max_files)
@@ -2069,7 +2089,9 @@ def main() -> None:
         if sub == "list":
             if not tasks:
                 print("No scheduled tasks configured.")
-                print("Add tasks to ollamacode.yaml (scheduled_tasks:) or HEARTBEAT.md.")
+                print(
+                    "Add tasks to ollamacode.yaml (scheduled_tasks:) or HEARTBEAT.md."
+                )
             else:
                 print(f"Scheduled tasks ({len(tasks)}):")
                 for t in tasks:
@@ -2078,7 +2100,11 @@ def main() -> None:
                     interval = t.get("interval")
                     cron_expr = t.get("cron")
                     obs = t.get("observability", "noop")
-                    sched = f"every {interval}s" if interval else (f"cron: {cron_expr}" if cron_expr else "no schedule")
+                    sched = (
+                        f"every {interval}s"
+                        if interval
+                        else (f"cron: {cron_expr}" if cron_expr else "no schedule")
+                    )
                     line = f"  {name:<30} [{sched}] obs={obs}"
                     if desc:
                         line += f"\n    {desc}"
@@ -2090,10 +2116,17 @@ def main() -> None:
                 raise SystemExit(1)
             matching = [t for t in tasks if t.get("name") == task_name]
             if not matching:
-                print(f"Task '{task_name}' not found. Use 'ollamacode cron list' to see available tasks.", file=sys.stderr)
+                print(
+                    f"Task '{task_name}' not found. Use 'ollamacode cron list' to see available tasks.",
+                    file=sys.stderr,
+                )
                 raise SystemExit(1)
             task = matching[0]
-            model_val = args.model or merged.get("model") or os.environ.get("OLLAMACODE_MODEL", "gpt-oss:20b")
+            model_val = (
+                args.model
+                or merged.get("model")
+                or os.environ.get("OLLAMACODE_MODEL", "gpt-oss:20b")
+            )
             print(f"Running task '{task_name}'...", file=sys.stderr)
             try:
                 output = run_task_now(task, model=model_val, config=merged)
@@ -2102,7 +2135,10 @@ def main() -> None:
                 print(f"Task failed: {e}", file=sys.stderr)
                 raise SystemExit(1)
         else:
-            print(f"Unknown cron subcommand: {sub!r}. Use 'list' or 'run <name>'.", file=sys.stderr)
+            print(
+                f"Unknown cron subcommand: {sub!r}. Use 'list' or 'run <name>'.",
+                file=sys.stderr,
+            )
             raise SystemExit(1)
         return
 
@@ -2201,8 +2237,17 @@ def main() -> None:
                 file=sys.stderr,
             )
             raise SystemExit(1)
-        _rlm_provider = get_provider(merged) if merged.get("provider", "ollama") != "ollama" else None
-        _check_provider_connectivity(_rlm_provider, model, getattr(args, "quiet", False), merged.get("provider", "ollama"))
+        _rlm_provider = (
+            get_provider(merged)
+            if merged.get("provider", "ollama") != "ollama"
+            else None
+        )
+        _check_provider_connectivity(
+            _rlm_provider,
+            model,
+            getattr(args, "quiet", False),
+            merged.get("provider", "ollama"),
+        )
         if getattr(args, "stream", False):
             from .rlm import run_rlm_loop_stream
 
@@ -2291,8 +2336,17 @@ def main() -> None:
             else entry
             for entry in mcp_servers
         ]
-        _protocol_provider = get_provider(merged) if merged.get("provider", "ollama") != "ollama" else None
-        _check_provider_connectivity(_protocol_provider, model, getattr(args, "quiet", False), merged.get("provider", "ollama"))
+        _protocol_provider = (
+            get_provider(merged)
+            if merged.get("provider", "ollama") != "ollama"
+            else None
+        )
+        _check_provider_connectivity(
+            _protocol_provider,
+            model,
+            getattr(args, "quiet", False),
+            merged.get("provider", "ollama"),
+        )
 
         @contextlib.asynccontextmanager
         async def _session_ctx():
@@ -2398,7 +2452,9 @@ def main() -> None:
 
     # Build provider from merged config (Ollama is the default; returns None to preserve old path)
     _provider_name = merged.get("provider", "ollama")
-    _main_provider: BaseProvider | None = get_provider(merged) if _provider_name != "ollama" else None
+    _main_provider: BaseProvider | None = (
+        get_provider(merged) if _provider_name != "ollama" else None
+    )
     try:
         _check_provider_connectivity(_main_provider, model, quiet, _provider_name)
     except SystemExit:
@@ -2406,7 +2462,11 @@ def main() -> None:
     try:
         # Model-aware timeout defaults for Ollama (unless explicitly set via --timeout).
         if getattr(args, "timeout", None) is None:
-            model_name = (args.model or merged.get("model") or os.environ.get("OLLAMACODE_MODEL", "")).lower()
+            model_name = (
+                args.model
+                or merged.get("model")
+                or os.environ.get("OLLAMACODE_MODEL", "")
+            ).lower()
             if any(k in model_name for k in ("70b", "65b", "405b", "120b")):
                 os.environ.setdefault("OLLAMACODE_OLLAMA_TIMEOUT_SECONDS", "180")
             elif any(k in model_name for k in ("13b", "8b", "7b")):

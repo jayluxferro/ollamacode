@@ -219,7 +219,9 @@ def apply_edits(edits: list[dict[str, Any]], workspace_root: str | Path) -> int:
         try:
             if old_text is None or old_text == "":
                 if anchor:
-                    applied += _apply_anchor_edit(resolved, str(anchor), str(new_text), position)
+                    applied += _apply_anchor_edit(
+                        resolved, str(anchor), str(new_text), position
+                    )
                     continue
                 resolved.parent.mkdir(parents=True, exist_ok=True)
                 resolved.write_text(new_text, encoding="utf-8")
@@ -236,10 +238,14 @@ def apply_edits(edits: list[dict[str, Any]], workspace_root: str | Path) -> int:
     return applied
 
 
-def _apply_anchor_edit(path: Path, anchor: str, new_text: str, position: str = "after") -> int:
+def _apply_anchor_edit(
+    path: Path, anchor: str, new_text: str, position: str = "after"
+) -> int:
     """Insert new_text before/after the first anchor match. Returns 1 if applied."""
     try:
-        current = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+        current = (
+            path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+        )
     except OSError:
         return 0
     idx = current.find(anchor)
@@ -303,7 +309,10 @@ def apply_unified_diff_filtered(
                 continue
         resolved = (workspace_root / rel_path).resolve()
         try:
-            if not resolved.is_relative_to(workspace_root) and resolved != workspace_root:
+            if (
+                not resolved.is_relative_to(workspace_root)
+                and resolved != workspace_root
+            ):
                 continue
         except (ValueError, TypeError):
             continue
@@ -431,7 +440,9 @@ def _parse_hunk(lines: list[str], start: int) -> tuple[dict[str, Any] | None, in
     )
 
 
-def _apply_hunks_to_text(text: str, hunks: list[dict[str, Any]]) -> tuple[str, bool, list[str]]:
+def _apply_hunks_to_text(
+    text: str, hunks: list[dict[str, Any]]
+) -> tuple[str, bool, list[str]]:
     """Apply hunks to text. Returns (new_text, ok, conflicts)."""
     src_lines = text.splitlines(keepends=True)
     out_lines: list[str] = []
@@ -453,15 +464,25 @@ def _apply_hunks_to_text(text: str, hunks: list[dict[str, Any]]) -> tuple[str, b
         out_lines.extend(src_lines[src_idx:target_idx])
         src_idx = target_idx
         for tag, payload in hunk_lines:
-            payload_line = payload + ("\n" if src_idx < len(src_lines) and src_lines[src_idx].endswith("\n") else "")
+            payload_line = payload + (
+                "\n"
+                if src_idx < len(src_lines) and src_lines[src_idx].endswith("\n")
+                else ""
+            )
             if tag == " ":
-                if src_idx >= len(src_lines) or src_lines[src_idx].rstrip("\n") != payload:
+                if (
+                    src_idx >= len(src_lines)
+                    or src_lines[src_idx].rstrip("\n") != payload
+                ):
                     conflicts.append("context line mismatch")
                     return text, False, conflicts
                 out_lines.append(src_lines[src_idx])
                 src_idx += 1
             elif tag == "-":
-                if src_idx >= len(src_lines) or src_lines[src_idx].rstrip("\n") != payload:
+                if (
+                    src_idx >= len(src_lines)
+                    or src_lines[src_idx].rstrip("\n") != payload
+                ):
                     conflicts.append("deletion line mismatch")
                     return text, False, conflicts
                 src_idx += 1
@@ -472,7 +493,9 @@ def _apply_hunks_to_text(text: str, hunks: list[dict[str, Any]]) -> tuple[str, b
     return ("".join(out_lines), True, conflicts)
 
 
-def _hunk_matches_at(src_lines: list[str], idx: int, hunk_lines: list[tuple[str, str]]) -> bool:
+def _hunk_matches_at(
+    src_lines: list[str], idx: int, hunk_lines: list[tuple[str, str]]
+) -> bool:
     """Check if hunk context matches starting at idx (only ' ' and '-' lines)."""
     i = idx
     for tag, payload in hunk_lines:

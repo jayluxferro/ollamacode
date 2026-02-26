@@ -1,6 +1,12 @@
 """Unit tests for structured apply-edits (<<EDITS>> JSON), parse_reasoning, parse_review."""
 
-from ollamacode.edits import apply_edits, parse_edits, parse_reasoning, parse_review, apply_unified_diff_filtered
+from ollamacode.edits import (
+    apply_edits,
+    parse_edits,
+    parse_reasoning,
+    parse_review,
+    apply_unified_diff_filtered,
+)
 
 
 def test_parse_edits_empty():
@@ -143,8 +149,10 @@ def test_apply_unified_diff_filtered(tmp_path):
             "",
         ]
     )
+
     def include(path, idx, h):
         return idx == 1
+
     n = apply_unified_diff_filtered(diff, tmp_path, include)
     assert n == 1
     assert (tmp_path / "f.txt").read_text() == "a\nb\nc1"
