@@ -1593,7 +1593,12 @@ async def _run(
                     skipped += 1
                     print(f"[eval] {name}: SKIP (no backend: {exc})", file=sys.stderr)
                     case_stats.append(
-                        {"name": name, "duration_s": round(dur, 3), "ok": True, "skipped": True}
+                        {
+                            "name": name,
+                            "duration_s": round(dur, 3),
+                            "ok": True,
+                            "skipped": True,
+                        }
                     )
                 else:
                     failures += 1
