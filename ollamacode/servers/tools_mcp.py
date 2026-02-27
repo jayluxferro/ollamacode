@@ -280,7 +280,9 @@ def fetch_url_rendered(
     url: str,
     timeout_seconds: int = 30,
     max_chars: int = 100_000,
-    wait_until: Literal["commit", "domcontentloaded", "load", "networkidle"] = "networkidle",
+    wait_until: Literal[
+        "commit", "domcontentloaded", "load", "networkidle"
+    ] = "networkidle",
 ) -> dict[str, Any]:
     """
     Fetch a URL using Playwright (rendered DOM) and return readable text plus HTML.

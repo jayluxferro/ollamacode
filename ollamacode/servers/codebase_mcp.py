@@ -276,9 +276,7 @@ def index_symbols(
 
 
 @mcp.tool()
-def query_symbol_index(
-    name: str, limit: int = 50
-) -> dict[str, Any]:
+def query_symbol_index(name: str, limit: int = 50) -> dict[str, Any]:
     """Query persistent symbol index for definitions."""
     try:
         from ollamacode.symbol_index import query_symbol as _query
@@ -290,9 +288,7 @@ def query_symbol_index(
 
 
 @mcp.tool()
-def find_symbol_references(
-    name: str, limit: int = 100
-) -> dict[str, Any]:
+def find_symbol_references(name: str, limit: int = 100) -> dict[str, Any]:
     """Find references to a symbol using persistent index."""
     try:
         from ollamacode.symbol_index import find_references as _find

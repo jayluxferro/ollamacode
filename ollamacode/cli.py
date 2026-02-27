@@ -1586,7 +1586,9 @@ async def _run(
                 failures += 1
                 failed_names.append(name)
                 print(f"[eval] {name}: ERROR ({exc})", file=sys.stderr)
-                case_stats.append({"name": name, "duration_s": round(dur, 3), "ok": False})
+                case_stats.append(
+                    {"name": name, "duration_s": round(dur, 3), "ok": False}
+                )
                 continue
             dur = time.perf_counter() - t0
             total_time += dur
@@ -1888,7 +1890,9 @@ async def _run(
 
     if not use_mcp:
         if query == "evals":
-            return await _run_evals(None, model, eval_file=eval_file, eval_json=eval_json)
+            return await _run_evals(
+                None, model, eval_file=eval_file, eval_json=eval_json
+            )
         if query:
             q = (
                 prepend_file_context(query, file_path, workspace_root, lines_spec)
@@ -1909,7 +1913,9 @@ async def _run(
 
     if query == "evals":
         async with session_ctx as session:
-            return await _run_evals(session, model, eval_file=eval_file, eval_json=eval_json)
+            return await _run_evals(
+                session, model, eval_file=eval_file, eval_json=eval_json
+            )
     if query:
         async with session_ctx as session:
             q = (
@@ -2486,9 +2492,19 @@ def main() -> None:
         get_provider(merged) if _provider_name != "ollama" else None
     )
     # Commands that don't need model connectivity at startup
-    _skip_conn_check = args.query in ("evals", "health", "init", "setup", "wizard",
-                                       "secrets", "reindex", "repo-map", "cron",
-                                       "convert-mcp", "tutorial")
+    _skip_conn_check = args.query in (
+        "evals",
+        "health",
+        "init",
+        "setup",
+        "wizard",
+        "secrets",
+        "reindex",
+        "repo-map",
+        "cron",
+        "convert-mcp",
+        "tutorial",
+    )
     if not _skip_conn_check:
         try:
             _check_provider_connectivity(_main_provider, model, quiet, _provider_name)
