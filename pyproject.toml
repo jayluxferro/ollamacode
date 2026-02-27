@@ -13,6 +13,8 @@ dependencies = [
     "pyyaml>=6.0",
     "cryptography>=42.0.0",
     "numpy>=1.26.0",
+    "rich>=13.0.0",
+    "prompt_toolkit>=3.0.0",
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -30,14 +32,6 @@ Repository = "https://github.com/jayluxferro/ollamacode"
 Documentation = "https://github.com/jayluxferro/ollamacode#readme"
 
 [project.optional-dependencies]
-tui = [
-    "rich>=13.0.0",
-    "prompt_toolkit>=3.0.0",
-]
-cli = [
-    "rich>=13.0.0",
-    "prompt_toolkit>=3.0.0",
-]
 docs = [
     "mkdocs>=1.5.0",
     "mkdocstrings[python]>=0.24.0",

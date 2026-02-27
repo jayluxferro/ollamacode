@@ -5,6 +5,7 @@ CLI for OllamaCode: chat with local Ollama + MCP tools.
 from __future__ import annotations
 
 import argparse
+import logging
 import tempfile
 from typing import Any, Literal
 import asyncio
@@ -17,6 +18,8 @@ import sys
 import time
 import uuid
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from .agent import (
     _tool_call_one_line,
@@ -94,7 +97,8 @@ def _check_ollama_and_model(model: str, quiet: bool) -> None:
                 file=sys.stderr,
             )
         else:
-            print(f"Ollama error: {e}", file=sys.stderr)
+            logger.debug("Ollama error: %s", e)
+            print("Ollama error: could not connect.", file=sys.stderr)
         raise SystemExit(1) from e
     models_list = (
         getattr(listed, "models", None)
@@ -609,7 +613,8 @@ async def _run_list_tools(
                 first = desc.splitlines()[0][:80] if desc else ""
                 print(f"{t.name}\t{first}", file=sys.stdout)
     except Exception as e:
-        print(f"[OllamaCode] Failed to list tools: {e}", file=sys.stderr)
+        logger.debug("Failed to list tools: %s", e)
+        print("[OllamaCode] Failed to list tools.", file=sys.stderr)
         raise SystemExit(1) from e
 
 
@@ -736,7 +741,8 @@ async def _run(
                 print("[OllamaCode] Voice input produced empty text.", file=sys.stderr)
                 return 1
         except Exception as e:
-            print(f"[OllamaCode] Voice input failed: {e}", file=sys.stderr)
+            logger.debug("Voice input failed: %s", e)
+            print("[OllamaCode] Voice input failed.", file=sys.stderr)
             return 1
 
     # Inject workspace root so MCP servers (fs, terminal, codebase) run in the directory from which the CLI was started.
@@ -1498,7 +1504,8 @@ async def _run(
 
                         speak_text(out)
                     except Exception as e:
-                        print(f"[OllamaCode] Voice output failed: {e}", file=sys.stderr)
+                        logger.debug("Voice output failed: %s", e)
+                        print("[OllamaCode] Voice output failed.", file=sys.stderr)
                 return
             out = await _do_chat(conn, q, model_for, [])
             out = _strip_and_show_reasoning(out)
@@ -1512,7 +1519,8 @@ async def _run(
 
                     speak_text(out)
                 except Exception as e:
-                    print(f"[OllamaCode] Voice output failed: {e}", file=sys.stderr)
+                    logger.debug("Voice output failed: %s", e)
+                    print("[OllamaCode] Voice output failed.", file=sys.stderr)
             await _maybe_apply_edits(out, conn)
         except asyncio.TimeoutError:
             exit_code_holder[0] = 1
@@ -1538,7 +1546,8 @@ async def _run(
         try:
             cases = json.loads(path.read_text(encoding="utf-8"))
         except Exception as e:
-            print(f"[OllamaCode] Failed to parse eval file: {e}", file=sys.stderr)
+            logger.debug("Failed to parse eval file: %s", e)
+            print("[OllamaCode] Failed to parse eval file.", file=sys.stderr)
             return 1
         if not isinstance(cases, list):
             print("[OllamaCode] Eval file must be a JSON list.", file=sys.stderr)
@@ -2002,7 +2011,8 @@ def main() -> None:
                 set_secret(name, value)
                 print(f"Secret '{name}' stored.")
             except Exception as e:
-                print(f"Error storing secret: {e}", file=sys.stderr)
+                logger.debug("Error storing secret: %s", e)
+                print("Error storing secret.", file=sys.stderr)
                 raise SystemExit(1)
         elif action == "get":
             if not name:
@@ -2014,7 +2024,8 @@ def main() -> None:
             try:
                 result = get_secret(name)
             except Exception as e:
-                print(f"Error reading secret: {e}", file=sys.stderr)
+                logger.debug("Error reading secret: %s", e)
+                print("Error reading secret.", file=sys.stderr)
                 raise SystemExit(1)
             if result is None:
                 print(f"Secret '{name}' not found.", file=sys.stderr)
@@ -2030,7 +2041,8 @@ def main() -> None:
             try:
                 removed = delete_secret(name)
             except Exception as e:
-                print(f"Error deleting secret: {e}", file=sys.stderr)
+                logger.debug("Error deleting secret: %s", e)
+                print("Error deleting secret.", file=sys.stderr)
                 raise SystemExit(1)
             if removed:
                 print(f"Secret '{name}' deleted.")
@@ -2063,7 +2075,8 @@ def main() -> None:
                 file=sys.stderr,
             )
         except Exception as e:
-            print(f"Reindex failed: {e}", file=sys.stderr)
+            logger.debug("Reindex failed: %s", e)
+            print("Reindex failed.", file=sys.stderr)
             raise SystemExit(1)
         return
 
@@ -2132,7 +2145,8 @@ def main() -> None:
                 output = run_task_now(task, model=model_val, config=merged)
                 print(output)
             except Exception as e:
-                print(f"Task failed: {e}", file=sys.stderr)
+                logger.debug("Task failed: %s", e)
+                print("Task failed.", file=sys.stderr)
                 raise SystemExit(1)
         else:
             print(

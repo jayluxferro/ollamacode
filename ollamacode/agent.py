@@ -1181,8 +1181,6 @@ async def run_agent_loop(
                     )
                     if is_error:
                         tool_errors_total += 1
-                    if is_error:
-                        tool_errors_total += 1
             else:
                 for name, arguments, _ in items:
                     if on_tool_start is not None:
@@ -1773,6 +1771,8 @@ async def run_agent_loop_stream(
                         **({"error_hint": hint} if hint else {}),
                         request_id=request_id,
                     )
+                    if is_error:
+                        tool_errors_total += 1
             else:
                 for name, arguments, _ in items_stream:
                     if on_tool_start is not None:

@@ -97,7 +97,9 @@ class RateLimiter:
                     )
                     retry_after = max(1, int((midnight - now_dt).total_seconds()))
                     return False, retry_after
-                self._token_budgets[client_key] = (today, used)
+                # Reset day only — don't store back used (record_tokens handles it).
+                if day_str != today:
+                    self._token_budgets[client_key] = (today, 0)
 
         return True, 0
 

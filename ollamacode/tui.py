@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal, cast
 from collections import deque
 
+logger = logging.getLogger(__name__)
+
 from .agent import (
     _tool_call_one_line,
     run_agent_loop,
@@ -251,8 +253,9 @@ if _tui_prompt_session is None:
         def _accept(event):
             event.app.current_buffer.validate_and_handle()
 
-        @kb_main.add("s-enter")
+        @kb_main.add("escape", "enter")
         def _newline(event):
+            """Alt/Option+Enter inserts a newline (terminals cannot distinguish Shift+Enter)."""
             event.app.current_buffer.insert_text("\n")
 
         @kb_main.add(_tui_ptt_key)
@@ -548,7 +551,8 @@ def _handle_tui_slash(
             msg = clear_state()
             console.print(f"[dim]{msg}[/]")
         except Exception as e:
-            console.print(f"[dim]Failed to clear state: {e}[/]")
+            logger.debug("Failed to clear state: %s", e)
+            console.print("[dim]Failed to clear state.[/]")
         return "help"
     if cmd == "/plan":
         from .state import update_state
@@ -687,7 +691,8 @@ def _handle_tui_slash(
             console.print(t)
             console.print("[dim]Use /resume <id> to load a session.[/]")
         except Exception as e:
-            console.print(f"[dim]Sessions: {e}[/]")
+            logger.debug("Sessions listing failed: %s", e)
+            console.print("[dim]Could not list sessions.[/]")
         return "help"
     if cmd == "/search":
         try:
@@ -713,7 +718,8 @@ def _handle_tui_slash(
             console.print(t)
             console.print("[dim]Use /resume <id> to load a session.[/]")
         except Exception as e:
-            console.print(f"[dim]Search failed: {e}[/]")
+            logger.debug("Session search failed: %s", e)
+            console.print("[dim]Search failed.[/]")
         return "help"
     if cmd == "/resume":
         rid = rest.strip()
@@ -752,7 +758,8 @@ def _handle_tui_slash(
             )
             return ("resume_session", rid)
         except Exception as e:
-            console.print(f"[dim]Resume failed: {e}[/]")
+            logger.debug("Session resume failed: %s", e)
+            console.print("[dim]Resume failed.[/]")
         return "help"
     if cmd == "/palette":
         console.print("[bold]Command palette:[/]")
@@ -784,7 +791,8 @@ def _handle_tui_slash(
                 )
                 _reset_symbol_cache()
             except Exception as e:
-                console.print(f"[dim]Symbol index failed: {e}[/]")
+                logger.debug("Symbol index failed: %s", e)
+                console.print("[dim]Symbol index failed.[/]")
             return "help"
         if sub[0] == "repo-map":
             try:
@@ -800,7 +808,8 @@ def _handle_tui_slash(
                 )
                 console.print(f"[dim]Repo map written: {out}[/]")
             except Exception as e:
-                console.print(f"[dim]Repo map failed: {e}[/]")
+                logger.debug("Repo map failed: %s", e)
+                console.print("[dim]Repo map failed.[/]")
             return "help"
         if sub[0] == "rename":
             if len(sub) < 3:
@@ -909,7 +918,8 @@ def _handle_tui_slash(
                 f"messages: {info.get('message_count', 0)} | updated: {info.get('updated_at', '')[:19]}[/]"
             )
         except Exception as e:
-            console.print(f"[dim]Session: {e}[/]")
+            logger.debug("Session info failed: %s", e)
+            console.print("[dim]Could not retrieve session info.[/]")
         return "help"
     if cmd == "/branch":
         if session_ref is None:
@@ -926,7 +936,8 @@ def _handle_tui_slash(
             console.print(f"[dim]Branched to new session {new_id[:8]}...[/]")
             return ("branch_session", new_id)
         except Exception as e:
-            console.print(f"[dim]Branch failed: {e}[/]")
+            logger.debug("Branch failed: %s", e)
+            console.print("[dim]Branch failed.[/]")
         return "help"
     if cmd == "/subagents":
         if not subagents:
@@ -1056,11 +1067,13 @@ async def _stream_into_live(
     update_cb: Callable[[str, bool], None],
 ) -> str:
     """Consume async stream, call update_cb(accumulated, done) on each fragment, return final text."""
-    accumulated: list[str] = []
+    parts: list[str] = []
     async for frag in stream:
-        accumulated.append(frag)
-        update_cb("".join(accumulated), False)
-    final = "".join(accumulated)
+        parts.append(frag)
+        # Callback only updates status dict (no render), so a join here is fine;
+        # but we defer the join to avoid O(n²) by only joining when _tick reads it.
+        update_cb(frag, False)
+    final = "".join(parts)
     update_cb(final, True)
     return final
 
@@ -1068,9 +1081,35 @@ async def _stream_into_live(
 async def _stream_into_console(stream: AsyncIterator[str]) -> str:
     """Stream to stdout without Rich Live; returns final text."""
     chunks: list[str] = []
-    async for frag in stream:
+    spinner = ["|", "/", "-", "\\"]
+    wait_started = time.perf_counter()
+    showed_wait = False
+    stream_iter = stream.__aiter__()
+    show_wait = sys.stderr.isatty()
+    while True:
+        try:
+            frag = await asyncio.wait_for(stream_iter.__anext__(), timeout=0.1)
+        except asyncio.TimeoutError:
+            if show_wait:
+                elapsed = max(0.0, time.perf_counter() - wait_started)
+                spin = spinner[int(time.monotonic() * 8) % len(spinner)]
+                sys.stderr.write(
+                    f"\r{spin} Assistant (thinking... {elapsed:.1f}s)".ljust(80)
+                )
+                sys.stderr.flush()
+                showed_wait = True
+            continue
+        except StopAsyncIteration:
+            break
+        if showed_wait:
+            sys.stderr.write("\r" + (" " * 80) + "\r")
+            sys.stderr.flush()
+            showed_wait = False
         chunks.append(frag)
         print(frag, end="", flush=True)
+    if showed_wait:
+        sys.stderr.write("\r" + (" " * 80) + "\r")
+        sys.stderr.flush()
     final = "".join(chunks)
     if final and not final.endswith("\n"):
         print()
@@ -1113,7 +1152,7 @@ async def run_tui(
     tui_tool_trace_max: int = 20,
     tui_tool_log_max: int = 8,
     tui_tool_log_chars: int = 160,
-    tui_refresh_hz: int = 5,
+    tui_refresh_hz: int = 12,
     memory_auto_context: bool = True,
     memory_kg_max_results: int = 4,
     memory_rag_max_results: int = 4,
@@ -1131,6 +1170,7 @@ async def run_tui(
         from rich.live import Live
         from rich.markdown import Markdown
         from rich.panel import Panel
+        from rich.text import Text
     except ImportError as e:
         raise ImportError(
             "TUI requires rich. Install with: pip install ollamacode[tui]"
@@ -1233,6 +1273,8 @@ async def run_tui(
 
         session_ref: list[str] = [create_session("")]
     except Exception:
+        logger.debug("Session init failed", exc_info=True)
+        console.print("[yellow]Warning:[/] Session persistence unavailable — conversations will not be saved.")
         session_ref = []
     pending_image_ref: list[tuple[str, str] | None] = [None]
     model_ref = [model]
@@ -1548,6 +1590,7 @@ async def run_tui(
         "phase": "idle",
         "has_output": False,
         "done": False,
+        "waiting_since": None,
         "tool": "",
         "accumulated": "",
         "last_user": "",
@@ -1604,7 +1647,10 @@ async def run_tui(
         console.print("[dim]Choose y (run), N (skip), or e (edit).[/]")
         return await _before_tool_call_tui(tool_name, arguments)  # re-prompt
 
-    queue_inputs = os.environ.get("OLLAMACODE_TUI_QUEUE_INPUT", "1") != "0"
+    queue_inputs_requested = os.environ.get("OLLAMACODE_TUI_QUEUE_INPUT", "1") != "0"
+    # prompt_toolkit does not behave well with background queued reads while Rich Live is rendering.
+    # Keep queueing for plain input(), but force foreground input for prompt_toolkit sessions.
+    queue_inputs = queue_inputs_requested and _tui_prompt_session is None
     use_live = (
         console.is_terminal and os.environ.get("OLLAMACODE_TUI_SIMPLE", "0") != "1"
     )
@@ -1651,8 +1697,6 @@ async def run_tui(
             border_style="green",
         )
     )
-    if queue_inputs:
-        console.print("[dim]Input queue enabled (OLLAMACODE_TUI_QUEUE_INPUT=1).[/]")
     if show_semantic_hint:
         console.print(
             "[dim]Tip: For semantic codebase search, add a semantic MCP server to config. See docs/MCP_SERVERS.md.[/]"
@@ -1672,6 +1716,7 @@ async def run_tui(
                 input_queue.put_nowait(line)
                 # Don't show prompt again for /quit or /exit so user doesn't have to type it twice.
                 if line.strip().lower() in ("/quit", "/exit"):
+                    input_queue.put_nowait(None)
                     return
 
     producer_task: asyncio.Task[None] | None = None
@@ -1801,7 +1846,9 @@ async def run_tui(
                     {"name": "Agent C", "focus": "UX & TUI polish"},
                 ][:count]
             return count, roles
-        except Exception:
+        except Exception as e:
+            logger.debug("Planner failed, using defaults: %s", e)
+            console.print("[dim]Planner returned invalid response, using default agents.[/]")
             roles = [
                 {"name": "Agent A", "focus": "Architecture & risks"},
                 {"name": "Agent B", "focus": "Tests & regressions"},
@@ -1913,7 +1960,7 @@ async def run_tui(
 
                         save_session(session_ref[0], None, message_history)
                     except Exception:
-                        pass
+                        logger.debug("Session save failed", exc_info=True)
                 console.print(
                     Panel(
                         Markdown(out), title=f"Subagent ({stype})", border_style="cyan"
@@ -1987,7 +2034,7 @@ async def run_tui(
 
                             save_session(session_ref[0], None, message_history)
                         except Exception:
-                            pass
+                            logger.debug("Session save failed", exc_info=True)
                     console.print(
                         Panel(
                             Markdown(out.content),
@@ -2180,7 +2227,7 @@ async def run_tui(
 
                             save_session(session_ref[0], None, message_history)
                         except Exception:
-                            pass
+                            logger.debug("Session save failed", exc_info=True)
                     console.print(
                         Panel(Markdown(combined), title="Agents", border_style="cyan")
                     )
@@ -2354,7 +2401,8 @@ async def run_tui(
                             )
                         )
                     except Exception as e:
-                        console.print(f"[dim]Summary failed: {e}[/]")
+                        logger.debug("Summary failed: %s", e)
+                        console.print("[dim]Summary failed.[/]")
                     continue
                 elif (
                     isinstance(result, tuple)
@@ -2367,7 +2415,8 @@ async def run_tui(
 
                         speak_text(text)
                     except Exception as e:
-                        console.print(f"[dim]Voice output failed: {e}[/]")
+                        logger.debug("Voice output failed: %s", e)
+                        console.print("[dim]Voice output failed.[/]")
                     continue
                 elif (
                     isinstance(result, tuple)
@@ -2385,9 +2434,9 @@ async def run_tui(
                         _voice_meter_done()
                         console.print(f"[dim]Heard:[/] {line}")
                     except Exception as e:
-                        console.print(f"[dim]Voice input failed: {e}[/]")
+                        logger.debug("Voice input failed: %s", e)
+                        console.print("[dim]Voice input failed. Please type your message instead.[/]")
                         continue
-                    # fall through to handle as a normal prompt
                 elif (
                     isinstance(result, tuple)
                     and len(result) >= 2
@@ -2484,7 +2533,8 @@ async def run_tui(
                             f"[dim]RAG index built: files={info.get('indexed_files')} chunks={info.get('chunk_count')}[/]"
                         )
                     except Exception as e:
-                        console.print(f"[dim]Failed to build RAG index: {e}[/]")
+                        logger.debug("RAG index build failed: %s", e)
+                        console.print("[dim]Failed to build RAG index.[/]")
                     continue
                 elif (
                     isinstance(result, tuple)
@@ -2564,7 +2614,7 @@ async def run_tui(
                             (msg + "\n\n" + line_expanded) if line_expanded else msg
                         )
                 except Exception:
-                    pass
+                    logger.debug("Image attachment failed", exc_info=True)
             msg_history = [{"role": r, "content": c} for r, c in history[:-1]]
             if plan_exec_verify and _should_plan_exec_verify(str(line_expanded)):
                 mem_block = (
@@ -2658,7 +2708,7 @@ async def run_tui(
 
                         save_session(session_ref[0], None, message_history)
                     except Exception:
-                        pass
+                        logger.debug("Session save failed", exc_info=True)
                 console.print(
                     Panel(Markdown(final), title="Assistant", border_style="cyan")
                 )
@@ -2678,6 +2728,12 @@ async def run_tui(
                 if status["phase"] == "streaming" or status.get("has_output"):
                     return f"[dim]{spin} Assistant (streaming...)[/]"
                 if status["phase"] == "thinking":
+                    waiting_since = status.get("waiting_since")
+                    if isinstance(waiting_since, (int, float)) and not status.get(
+                        "has_output"
+                    ):
+                        elapsed = max(0.0, time.perf_counter() - waiting_since)
+                        return f"[dim]{spin} Assistant (thinking... {elapsed:.1f}s)[/]"
                     return f"[dim]{spin} Assistant (thinking...)[/]"
                 return f"[dim]{spin} Assistant (idle)[/]"
 
@@ -2803,24 +2859,60 @@ async def run_tui(
                     f"{budget_info}"
                 )
 
-            def _render_chat_markdown(accumulated: str, *, done: bool) -> str:
+            # Cache history markdown: key = (len(history), limit); rebuilt only when history changes.
+            _history_md_cache: dict[str, Any] = {"len": -1, "limit": -1, "prefix": "", "body": ""}
+
+            def _build_chat_md_str(accumulated: str) -> str:
+                """Build the chat markdown string (without status line)."""
                 limit = 1 if compact_mode else _CHAT_PANEL_LAST_N_EXCHANGES
-                md = _conversation_to_markdown(
-                    history, accumulated, limit_exchanges=limit
-                )
-                if not done:
-                    md = md + "\n\n" + _status_line()
+                cache = _history_md_cache
+                hlen = len(history)
+                if cache["len"] != hlen or cache["limit"] != limit:
+                    # Rebuild history portion only when conversation changes.
+                    cache["len"] = hlen
+                    cache["limit"] = limit
+                    hist = history
+                    if limit is not None and limit > 0 and hlen > limit * 2:
+                        hist = history[-(limit * 2):]
+                        cache["prefix"] = "*(scroll up for earlier messages)*\n\n"
+                    else:
+                        cache["prefix"] = ""
+                    parts = []
+                    for role, text in hist:
+                        label = "**You**" if role == "user" else "**Assistant**"
+                        parts.append(f"{label}\n\n{text}")
+                    cache["body"] = "\n\n---\n\n".join(parts) if parts else ""
+                # Build final markdown: cached history + streaming suffix.
+                parts_list = []
+                if cache["body"]:
+                    parts_list.append(cache["body"])
+                if accumulated:
+                    parts_list.append("**Assistant** *(streaming)*\n\n" + accumulated)
+                body = "\n\n---\n\n".join(parts_list) if parts_list else "*(no messages yet)*"
+                md = cache["prefix"] + body
                 # Truncate so Live only redraws this many lines; prompt stays visible below.
                 lines = md.split("\n")
                 if len(lines) > live_panel_max_lines:
                     md = "\n".join(lines[-live_panel_max_lines:])
                 return md
 
+            # Cache parsed Markdown object — only re-parse when chat content changes.
+            _md_obj_cache: dict[str, Any] = {"src": None, "obj": None}
+
             def _render_live(accumulated: str, done: bool):
-                chat_md = _render_chat_markdown(accumulated, done=done)
+                chat_src = _build_chat_md_str(accumulated)
+                if _md_obj_cache["src"] != chat_src:
+                    _md_obj_cache["src"] = chat_src
+                    _md_obj_cache["obj"] = Markdown(chat_src)
+                chat_renderable = _md_obj_cache["obj"]
+                # Status line changes every frame (spinner/timer) — use lightweight Text.
+                if not done:
+                    chat_panel_content = Group(chat_renderable, Text.from_markup(_status_line()))
+                else:
+                    chat_panel_content = chat_renderable
                 panels = [
                     Panel(_timeline_text(), title="Timeline", border_style="yellow"),
-                    Panel(Markdown(chat_md), title="Chat", border_style="blue"),
+                    Panel(chat_panel_content, title="Chat", border_style="blue"),
                 ]
                 if not compact_mode:
                     panels.append(
@@ -2834,11 +2926,20 @@ async def run_tui(
                 )
                 return Group(*panels)
 
-            def make_update(accumulated: str, done: bool) -> None:
-                status["accumulated"] = accumulated
-                status["has_output"] = bool(accumulated)
+            def make_update(text: str, done: bool) -> None:
+                if done:
+                    # Final call: text is the complete response.
+                    status["accumulated"] = text
+                else:
+                    # Intermediate: text is a single fragment — append.
+                    status["accumulated"] = status.get("accumulated", "") + text
+                status["has_output"] = bool(status["accumulated"])
                 status["phase"] = "streaming" if status["has_output"] else "thinking"
-                live.update(_render_live(accumulated, done=done))
+                if status["has_output"]:
+                    status["waiting_since"] = None
+                # Only render on final frame; _tick drives all intermediate renders.
+                if done:
+                    live.update(_render_live(status["accumulated"], done=True), refresh=True)
 
             def _on_tool_start(name: str, arguments: dict) -> None:
                 status["phase"] = "tool_running"
@@ -2931,47 +3032,76 @@ async def run_tui(
                 )
 
             async def _tick():
+                # Small initial sleep lets the Live constructor's first render
+                # display before we start overwriting it — avoids startup flicker.
+                await asyncio.sleep(max(0.05, 1.0 / max(1, tui_refresh_hz)))
                 while not status["done"]:
-                    live.update(_render_live(status.get("accumulated", ""), done=False))
+                    live.update(
+                        _render_live(status.get("accumulated", ""), done=False),
+                        refresh=True,
+                    )
                     await asyncio.sleep(max(0.05, 1.0 / max(1, tui_refresh_hz)))
 
             if use_live:
                 with Live(
-                    _render_live("", done=True),
+                    _render_live("", done=False),
                     console=console,
-                    refresh_per_second=max(1, tui_refresh_hz),
+                    auto_refresh=False,
+                    transient=True,
                     vertical_overflow="crop",
                 ) as live:
                     status["done"] = False
                     status["phase"] = "thinking"
                     status["accumulated"] = ""
+                    status["has_output"] = False
                     status["tool_calls"] = 0
                     status["tool_errors"] = 0
                     run_start = time.perf_counter()
+                    status["waiting_since"] = run_start
                     ticker = asyncio.create_task(_tick())
+                    stream_error = None
                     try:
                         final = await _stream_into_live(stream, make_update)
                     except Exception as e:  # noqa: BLE001
-                        final = f"**Error:** {e}"
-                        if not quiet:
-                            console.print(f"[red]Stream error:[/] {e}")
+                        logger.debug("Stream error", exc_info=True)
+                        final = "**Error:** Something went wrong while streaming the response."
+                        stream_error = e
                     finally:
                         status["done"] = True
+                        status["waiting_since"] = None
                         status["last_duration"] = time.perf_counter() - run_start
                         ticker.cancel()
                         with contextlib.suppress(asyncio.CancelledError):
                             await ticker
+                        # Final render to ensure the completed state is displayed.
+                        live.update(
+                            _render_live(status.get("accumulated", ""), done=True),
+                            refresh=True,
+                        )
+                # Print error outside Live context to avoid visual glitches.
+                if stream_error is not None and not quiet:
+                    console.print("[red]Stream error.[/]")
+                # transient=True erases the Live display; print the response
+                # into the permanent scrollback so the user can review it.
+                if final and not quiet:
+                    console.print(Panel(Markdown(final), title="Assistant", border_style="blue"))
             else:
                 try:
+                    if not quiet:
+                        console.print("[dim]Assistant (thinking...)[/]")
+                    status["has_output"] = False
                     status["tool_calls"] = 0
                     status["tool_errors"] = 0
                     run_start = time.perf_counter()
+                    status["waiting_since"] = run_start
                     final = await _stream_into_console(stream)
                 except Exception as e:  # noqa: BLE001
-                    final = f"Error: {e}"
+                    logger.debug("Stream error (non-live)", exc_info=True)
+                    final = "Error: Something went wrong while streaming the response."
                     if not quiet:
-                        console.print(f"[red]Stream error:[/] {e}")
+                        console.print("[red]Stream error.[/]")
                 finally:
+                    status["waiting_since"] = None
                     status["last_duration"] = time.perf_counter() - run_start
 
             history.append(("assistant", final))
@@ -2984,14 +3114,14 @@ async def run_tui(
 
                     speak_text(final)
                 except Exception:
-                    pass
+                    logger.debug("Voice output failed", exc_info=True)
             if session_ref:
                 try:
                     from .sessions import save_session
 
                     save_session(session_ref[0], None, message_history)
                 except Exception:
-                    pass
+                    logger.debug("Session save failed", exc_info=True)
     finally:
         if producer_task is not None:
             producer_task.cancel()

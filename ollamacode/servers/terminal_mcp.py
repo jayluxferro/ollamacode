@@ -84,8 +84,8 @@ def _is_disallowed_by_allowlist(command: str) -> bool:
         parts = shlex.split(command.strip())
         first = parts[0].lower() if parts else ""
     except ValueError:
-        # Malformed quoting — fall back to naive split so we still check something.
-        first = (command.strip().split() or [""])[0].lower()
+        # Malformed quoting — reject rather than risk a bypass.
+        return True
     return first not in allowed
 
 
