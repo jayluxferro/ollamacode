@@ -19,8 +19,6 @@ import time
 import uuid
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
-
 from .agent import (
     _tool_call_one_line,
     run_agent_loop,
@@ -59,6 +57,8 @@ from .mcp_client import (
     connect_mcp_stdio,
     list_tools,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _check_provider_connectivity(

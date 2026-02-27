@@ -23,8 +23,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal, cast
 from collections import deque
 
-logger = logging.getLogger(__name__)
-
 from .agent import (
     _tool_call_one_line,
     run_agent_loop,
@@ -43,6 +41,8 @@ from .multi_agent import run_multi_agent
 from .context import expand_at_refs
 from .skills import load_skills_text
 from .templates import load_prompt_template
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .mcp_client import McpConnection
@@ -1274,7 +1274,9 @@ async def run_tui(
         session_ref: list[str] = [create_session("")]
     except Exception:
         logger.debug("Session init failed", exc_info=True)
-        console.print("[yellow]Warning:[/] Session persistence unavailable — conversations will not be saved.")
+        console.print(
+            "[yellow]Warning:[/] Session persistence unavailable — conversations will not be saved."
+        )
         session_ref = []
     pending_image_ref: list[tuple[str, str] | None] = [None]
     model_ref = [model]
@@ -1848,7 +1850,9 @@ async def run_tui(
             return count, roles
         except Exception as e:
             logger.debug("Planner failed, using defaults: %s", e)
-            console.print("[dim]Planner returned invalid response, using default agents.[/]")
+            console.print(
+                "[dim]Planner returned invalid response, using default agents.[/]"
+            )
             roles = [
                 {"name": "Agent A", "focus": "Architecture & risks"},
                 {"name": "Agent B", "focus": "Tests & regressions"},
@@ -2435,7 +2439,9 @@ async def run_tui(
                         console.print(f"[dim]Heard:[/] {line}")
                     except Exception as e:
                         logger.debug("Voice input failed: %s", e)
-                        console.print("[dim]Voice input failed. Please type your message instead.[/]")
+                        console.print(
+                            "[dim]Voice input failed. Please type your message instead.[/]"
+                        )
                         continue
                 elif (
                     isinstance(result, tuple)
@@ -2860,7 +2866,12 @@ async def run_tui(
                 )
 
             # Cache history markdown: key = (len(history), limit); rebuilt only when history changes.
-            _history_md_cache: dict[str, Any] = {"len": -1, "limit": -1, "prefix": "", "body": ""}
+            _history_md_cache: dict[str, Any] = {
+                "len": -1,
+                "limit": -1,
+                "prefix": "",
+                "body": "",
+            }
 
             def _build_chat_md_str(accumulated: str) -> str:
                 """Build the chat markdown string (without status line)."""
@@ -2873,7 +2884,7 @@ async def run_tui(
                     cache["limit"] = limit
                     hist = history
                     if limit is not None and limit > 0 and hlen > limit * 2:
-                        hist = history[-(limit * 2):]
+                        hist = history[-(limit * 2) :]
                         cache["prefix"] = "*(scroll up for earlier messages)*\n\n"
                     else:
                         cache["prefix"] = ""
@@ -2888,7 +2899,11 @@ async def run_tui(
                     parts_list.append(cache["body"])
                 if accumulated:
                     parts_list.append("**Assistant** *(streaming)*\n\n" + accumulated)
-                body = "\n\n---\n\n".join(parts_list) if parts_list else "*(no messages yet)*"
+                body = (
+                    "\n\n---\n\n".join(parts_list)
+                    if parts_list
+                    else "*(no messages yet)*"
+                )
                 md = cache["prefix"] + body
                 # Truncate so Live only redraws this many lines; prompt stays visible below.
                 lines = md.split("\n")
@@ -2907,7 +2922,9 @@ async def run_tui(
                 chat_renderable = _md_obj_cache["obj"]
                 # Status line changes every frame (spinner/timer) — use lightweight Text.
                 if not done:
-                    chat_panel_content = Group(chat_renderable, Text.from_markup(_status_line()))
+                    chat_panel_content = Group(
+                        chat_renderable, Text.from_markup(_status_line())
+                    )
                 else:
                     chat_panel_content = chat_renderable
                 panels = [
@@ -2939,7 +2956,9 @@ async def run_tui(
                     status["waiting_since"] = None
                 # Only render on final frame; _tick drives all intermediate renders.
                 if done:
-                    live.update(_render_live(status["accumulated"], done=True), refresh=True)
+                    live.update(
+                        _render_live(status["accumulated"], done=True), refresh=True
+                    )
 
             def _on_tool_start(name: str, arguments: dict) -> None:
                 status["phase"] = "tool_running"
@@ -3084,7 +3103,9 @@ async def run_tui(
                 # transient=True erases the Live display; print the response
                 # into the permanent scrollback so the user can review it.
                 if final and not quiet:
-                    console.print(Panel(Markdown(final), title="Assistant", border_style="blue"))
+                    console.print(
+                        Panel(Markdown(final), title="Assistant", border_style="blue")
+                    )
             else:
                 try:
                     if not quiet:
@@ -3095,7 +3116,7 @@ async def run_tui(
                     run_start = time.perf_counter()
                     status["waiting_since"] = run_start
                     final = await _stream_into_console(stream)
-                except Exception as e:  # noqa: BLE001
+                except Exception:  # noqa: BLE001
                     logger.debug("Stream error (non-live)", exc_info=True)
                     final = "Error: Something went wrong while streaming the response."
                     if not quiet:
