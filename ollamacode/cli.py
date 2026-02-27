@@ -1560,6 +1560,7 @@ async def _run(
             print("[OllamaCode] Eval file must be a JSON list.", file=sys.stderr)
             return 1
         failures = 0
+        skipped = 0
         total = 0
         total_time = 0.0
         failed_names: list[str] = []
@@ -1583,12 +1584,24 @@ async def _run(
             except Exception as exc:
                 dur = time.perf_counter() - t0
                 total_time += dur
-                failures += 1
-                failed_names.append(name)
-                print(f"[eval] {name}: ERROR ({exc})", file=sys.stderr)
-                case_stats.append(
-                    {"name": name, "duration_s": round(dur, 3), "ok": False}
+                exc_msg = str(exc).lower()
+                is_conn_err = any(
+                    k in exc_msg
+                    for k in ("connection", "connect", "refused", "unreachable")
                 )
+                if is_conn_err:
+                    skipped += 1
+                    print(f"[eval] {name}: SKIP (no backend: {exc})", file=sys.stderr)
+                    case_stats.append(
+                        {"name": name, "duration_s": round(dur, 3), "ok": True, "skipped": True}
+                    )
+                else:
+                    failures += 1
+                    failed_names.append(name)
+                    print(f"[eval] {name}: ERROR ({exc})", file=sys.stderr)
+                    case_stats.append(
+                        {"name": name, "duration_s": round(dur, 3), "ok": False}
+                    )
                 continue
             dur = time.perf_counter() - t0
             total_time += dur
@@ -1612,10 +1625,11 @@ async def _run(
                     "ok": ok,
                 }
             )
-        passed = total - failures
-        pass_rate = (passed / total * 100.0) if total else 0.0
+        passed = total - failures - skipped
+        evaluated = total - skipped
+        pass_rate = (passed / evaluated * 100.0) if evaluated else 0.0
         avg = (total_time / total) if total else 0.0
-        summary = {
+        summary: dict[str, Any] = {
             "total": total,
             "passed": passed,
             "failed": failures,
@@ -1624,11 +1638,14 @@ async def _run(
             "failed_cases": failed_names,
             "cases": case_stats,
         }
+        if skipped:
+            summary["skipped"] = skipped
         if eval_json:
             print(json.dumps(summary, ensure_ascii=False))
         else:
+            skip_note = f", {skipped} skipped" if skipped else ""
             print(
-                f"[eval] summary: {passed}/{total} passed ({pass_rate:.1f}%), avg {avg:.2f}s",
+                f"[eval] summary: {passed}/{evaluated} passed ({pass_rate:.1f}%), avg {avg:.2f}s{skip_note}",
                 file=sys.stderr,
             )
             slowest = sorted(case_stats, key=lambda c: c["duration_s"], reverse=True)[
