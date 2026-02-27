@@ -145,7 +145,7 @@ class OpenAICompatProvider(BaseProvider):
 
     def _async_client(self) -> Any:
         try:
-            import openai
+            import openai  # type: ignore[import-not-found]
 
             return openai.AsyncOpenAI(api_key=self._api_key, base_url=self._base_url)
         except ImportError as e:
@@ -153,7 +153,7 @@ class OpenAICompatProvider(BaseProvider):
 
     def _sync_client(self) -> Any:
         try:
-            import openai
+            import openai  # type: ignore[import-not-found]
 
             return openai.OpenAI(api_key=self._api_key, base_url=self._base_url)
         except ImportError as e:
@@ -203,7 +203,7 @@ class OpenAICompatProvider(BaseProvider):
 
     def health_check(self) -> tuple[bool, str]:
         try:
-            import openai
+            import openai  # type: ignore[import-not-found]
         except ImportError:
             return (
                 False,
@@ -237,7 +237,7 @@ class OpenAICompatProvider(BaseProvider):
 
     def list_models(self) -> list[str]:
         try:
-            import openai
+            import openai  # type: ignore[import-not-found]
 
             client = openai.OpenAI(api_key=self._api_key, base_url=self._base_url)
             resp = client.models.list()

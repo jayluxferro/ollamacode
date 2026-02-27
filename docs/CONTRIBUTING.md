@@ -21,7 +21,7 @@ Thanks for your interest in contributing. This document explains how to set up t
    git config core.hooksPath .githooks
    chmod +x .githooks/pre-push
    ```
-   See [.githooks/README.md](.githooks/README.md). To skip the hook: `git push --no-verify`.
+   See `.githooks/README.md` in the repo root. To skip the hook: `git push --no-verify`.
 
 ## Running tests
 
@@ -91,8 +91,8 @@ PRs are reviewed for correctness, tests, and consistency with the codebase. Once
 
 ## Documentation
 
-- User-facing docs: [README.md](README.md), [docs/WIKI.md](docs/WIKI.md).
-- API: [docs/api.md](docs/api.md). Build with `uv run mkdocs build` (requires doc deps: `uv sync --group docs` or `uv sync --extra docs`).
+- User-facing docs: `README.md` (repo root), [Wiki](WIKI.md).
+- API: [API reference](api.md). Build with `uv run mkdocs build` (requires doc deps: `uv sync --group docs` or `uv sync --extra docs`).
 
 If you add a feature, update the README or relevant doc when it’s user-visible.
 

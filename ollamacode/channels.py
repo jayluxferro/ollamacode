@@ -214,7 +214,7 @@ class TelegramChannel(BaseChannel):
         chat_id = msg.get("chat", {}).get("id")
         if not chat_id:
             return
-        if not _is_allowed_user(user_id, self.allowed_user_ids):
+        if user_id is None or not _is_allowed_user(user_id, self.allowed_user_ids):
             self.send("Sorry, you are not authorized to use this bot.", chat_id)
             return
         user_key = f"telegram:{user_id}"
@@ -277,7 +277,7 @@ class DiscordChannel(BaseChannel):
 
     def start(self) -> None:
         try:
-            import discord  # noqa: F401
+            import discord  # type: ignore[import-not-found]  # noqa: F401
         except ImportError:
             logger.warning(
                 "discord.py not installed; Discord channel disabled. "
@@ -291,7 +291,7 @@ class DiscordChannel(BaseChannel):
         logger.info("Discord channel started.")
 
     def _run_bot(self) -> None:
-        import discord
+        import discord  # type: ignore[import-not-found]
 
         intents = discord.Intents.default()
         intents.message_content = True

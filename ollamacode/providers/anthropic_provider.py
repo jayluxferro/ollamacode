@@ -150,7 +150,7 @@ class AnthropicProvider(BaseProvider):
 
     def _sync_client(self) -> Any:
         try:
-            import anthropic
+            import anthropic  # type: ignore[import-not-found]
 
             kwargs: dict[str, Any] = {"api_key": self._api_key}
             if self._base_url:
@@ -161,7 +161,7 @@ class AnthropicProvider(BaseProvider):
 
     def _async_client(self) -> Any:
         try:
-            import anthropic
+            import anthropic  # type: ignore[import-not-found]
 
             kwargs: dict[str, Any] = {"api_key": self._api_key}
             if self._base_url:
@@ -226,7 +226,7 @@ class AnthropicProvider(BaseProvider):
 
     def health_check(self) -> tuple[bool, str]:
         try:
-            import anthropic
+            import anthropic  # type: ignore[import-not-found]
         except ImportError:
             return (
                 False,

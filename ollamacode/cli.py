@@ -717,6 +717,8 @@ async def _run(
     voice_out: bool = False,
     voice_seconds: float = 5.0,
     voice_model: str = "base",
+    eval_file: str = "evals/basic.json",
+    eval_json: bool = False,
 ) -> int | None:
     use_mcp = bool(mcp_servers)
     # Autonomous: no confirm_tool_calls, allow more tool rounds.
@@ -1537,8 +1539,13 @@ async def _run(
             exit_code_holder[0] = 1
             raise
 
-    async def _run_evals(conn: McpConnection | None, current_model: str) -> int:
-        eval_path = getattr(args, "eval_file", None) or "evals/basic.json"
+    async def _run_evals(
+        conn: McpConnection | None,
+        current_model: str,
+        eval_file: str = "evals/basic.json",
+        eval_json: bool = False,
+    ) -> int:
+        eval_path = eval_file
         path = Path(eval_path)
         if not path.exists():
             print(f"[OllamaCode] Eval file not found: {eval_path}", file=sys.stderr)
@@ -1571,7 +1578,16 @@ async def _run(
                 continue
             total += 1
             t0 = time.perf_counter()
-            out = await _do_chat(conn, prompt, current_model, [])
+            try:
+                out = await _do_chat(conn, prompt, current_model, [])
+            except Exception as exc:
+                dur = time.perf_counter() - t0
+                total_time += dur
+                failures += 1
+                failed_names.append(name)
+                print(f"[eval] {name}: ERROR ({exc})", file=sys.stderr)
+                case_stats.append({"name": name, "duration_s": round(dur, 3), "ok": False})
+                continue
             dur = time.perf_counter() - t0
             total_time += dur
             ok = True
@@ -1606,7 +1622,7 @@ async def _run(
             "failed_cases": failed_names,
             "cases": case_stats,
         }
-        if getattr(args, "eval_json", False):
+        if eval_json:
             print(json.dumps(summary, ensure_ascii=False))
         else:
             print(
@@ -1872,7 +1888,7 @@ async def _run(
 
     if not use_mcp:
         if query == "evals":
-            return await _run_evals(None, model)
+            return await _run_evals(None, model, eval_file=eval_file, eval_json=eval_json)
         if query:
             q = (
                 prepend_file_context(query, file_path, workspace_root, lines_spec)
@@ -1893,7 +1909,7 @@ async def _run(
 
     if query == "evals":
         async with session_ctx as session:
-            return await _run_evals(session, model)
+            return await _run_evals(session, model, eval_file=eval_file, eval_json=eval_json)
     if query:
         async with session_ctx as session:
             q = (
@@ -2469,10 +2485,15 @@ def main() -> None:
     _main_provider: BaseProvider | None = (
         get_provider(merged) if _provider_name != "ollama" else None
     )
-    try:
-        _check_provider_connectivity(_main_provider, model, quiet, _provider_name)
-    except SystemExit:
-        raise
+    # Commands that don't need model connectivity at startup
+    _skip_conn_check = args.query in ("evals", "health", "init", "setup", "wizard",
+                                       "secrets", "reindex", "repo-map", "cron",
+                                       "convert-mcp", "tutorial")
+    if not _skip_conn_check:
+        try:
+            _check_provider_connectivity(_main_provider, model, quiet, _provider_name)
+        except SystemExit:
+            raise
     try:
         # Model-aware timeout defaults for Ollama (unless explicitly set via --timeout).
         if getattr(args, "timeout", None) is None:
@@ -2565,6 +2586,8 @@ def main() -> None:
             voice_out=getattr(args, "voice_out", False),
             voice_seconds=getattr(args, "voice_seconds", 5.0),
             voice_model=getattr(args, "voice_model", "base"),
+            eval_file=getattr(args, "eval_file", None) or "evals/basic.json",
+            eval_json=getattr(args, "eval_json", False),
         )
         if run_timeout and args.query:
 

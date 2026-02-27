@@ -20,7 +20,7 @@ import tempfile
 import wave
 import audioop
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 class VoiceError(RuntimeError):
@@ -41,7 +41,7 @@ def record_wav(
     seconds: float = 5.0,
     sample_rate: int = 16000,
     device: int | None = None,
-    meter_cb: callable | None = None,
+    meter_cb: Callable[..., Any] | None = None,
 ) -> str:
     """Record audio to WAV. Requires sounddevice (pip install sounddevice)."""
     try:
@@ -127,7 +127,7 @@ def record_and_transcribe(
     seconds: float = 5.0,
     sample_rate: int = 16000,
     model: str = "base",
-    meter_cb: callable | None = None,
+    meter_cb: Callable[..., Any] | None = None,
 ) -> str:
     """Record from mic then transcribe; returns text."""
     with tempfile.TemporaryDirectory() as td:

@@ -397,6 +397,11 @@ def _handle_tui_slash(
     | tuple[Literal["branch_session"], str]
     | tuple[Literal["run_subagent"], str, str]
     | tuple[Literal["set_pending_image"], str, str]
+    | tuple[Literal["run_agents"], int, str]
+    | tuple[Literal["voice_in"], float]
+    | tuple[Literal["voice_out"], str]
+    | tuple[Literal["show_agents"], str]
+    | tuple[Literal["agents_summary"], str]
 ):
     """Handle slash command in TUI. Returns 'quit', 'cleared', 'help', ('run_prompt', prompt), ('run_multi', prompt), ('run_summary', n), ('run_subagent', type, task), ('set_pending_image', path, msg), ('new_session',), ('resume_session', id), ('branch_session', new_id), or None."""
     line = line.strip()
@@ -2079,6 +2084,7 @@ async def run_tui(
                     console.print(f"[dim]Running {n_agents} agents...[/]")
 
                     async def _run_one(idx: int) -> str:
+                        assert roles is not None
                         role = (
                             roles[idx]
                             if idx < len(roles)

@@ -10,7 +10,7 @@ import os
 import subprocess
 import urllib.request
 from urllib.error import HTTPError
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
@@ -280,7 +280,7 @@ def fetch_url_rendered(
     url: str,
     timeout_seconds: int = 30,
     max_chars: int = 100_000,
-    wait_until: str = "networkidle",
+    wait_until: Literal["commit", "domcontentloaded", "load", "networkidle"] = "networkidle",
 ) -> dict[str, Any]:
     """
     Fetch a URL using Playwright (rendered DOM) and return readable text plus HTML.

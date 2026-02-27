@@ -7,6 +7,7 @@ Root directory: OLLAMACODE_FS_ROOT env var, or current working directory.
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -242,7 +243,7 @@ def build_symbol_index(
 def build_symbol_graph(
     max_files: int = 400,
     max_chars_per_file: int = 12000,
-) -> dict[str, dict[str, list[str]]]:
+) -> dict[str, Any]:
     """Build a symbol graph with definitions and call references (best-effort)."""
     try:
         from ollamacode.symbol_graph import build_symbol_graph as _build
@@ -260,7 +261,7 @@ def build_symbol_graph(
 def index_symbols(
     max_files: int = 400,
     max_chars_per_file: int = 12000,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Build persistent symbol index (definitions + references)."""
     try:
         from ollamacode.symbol_index import build_symbol_index as _build
@@ -277,7 +278,7 @@ def index_symbols(
 @mcp.tool()
 def query_symbol_index(
     name: str, limit: int = 50
-) -> dict[str, list[dict[str, str | int]]]:
+) -> dict[str, Any]:
     """Query persistent symbol index for definitions."""
     try:
         from ollamacode.symbol_index import query_symbol as _query
@@ -291,7 +292,7 @@ def query_symbol_index(
 @mcp.tool()
 def find_symbol_references(
     name: str, limit: int = 100
-) -> dict[str, list[dict[str, str | int]]]:
+) -> dict[str, Any]:
     """Find references to a symbol using persistent index."""
     try:
         from ollamacode.symbol_index import find_references as _find
@@ -305,7 +306,7 @@ def find_symbol_references(
 @mcp.tool()
 def refactor_rename(
     old_name: str, new_name: str, max_files: int = 500
-) -> dict[str, list[dict]]:
+) -> dict[str, Any]:
     """Generate unified-diff edits to rename a symbol across the workspace."""
     try:
         from ollamacode.refactor import rename_symbol
