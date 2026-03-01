@@ -8,6 +8,7 @@ Workspace root: OLLAMACODE_FS_ROOT env var, or current working directory.
 import os
 
 from mcp.server.fastmcp import FastMCP
+from . import configure_server_logging
 
 from ..skills import (
     list_skills as _list_skills,
@@ -15,6 +16,8 @@ from ..skills import (
     save_memory as _save_memory,
     write_skill as _write_skill,
 )
+
+configure_server_logging()
 
 mcp = FastMCP("ollamacode-skills")
 

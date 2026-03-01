@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import json
 import os
+import time
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -22,10 +23,14 @@ from .agent import (
     run_agent_loop_no_mcp_stream,
     run_agent_loop_stream,
 )
+from ._chat_helpers import (
+    append_dynamic_memory as _append_dynamic_memory,
+    build_system_prompt as _build_system_prompt_shared,
+    resolve_memory_request_settings as _resolve_memory_request_settings,
+)
 from .config import get_env_config_overrides, load_config, merge_config_with_env
 from .context import prepend_file_context
 from .edits import apply_edits, parse_edits
-from .memory import build_dynamic_memory_context
 from .multi_agent import run_multi_agent
 from .mcp_client import McpConnection, connect_mcp_servers, connect_mcp_stdio
 from .completions import get_completion
@@ -33,20 +38,24 @@ from .diagnostics import get_diagnostics
 from .health import check_ollama
 from .protocol import normalize_chat_body
 from .rag import build_local_rag_index, query_local_rag
-from .skills import load_skills_text
-from .state import (
-    format_feedback_context,
-    format_knowledge_context,
-    format_past_errors_context,
-    format_plan_context,
-    format_preferences,
-    format_recent_context,
-    get_state,
-)
-from .templates import load_prompt_template
 
-# In-memory store for tool-approval continuation: approval_token -> { task, event, pending }
+# In-memory store for tool-approval continuation: approval_token -> { task, event, pending, created_at }
 _approval_pending: dict[str, dict[str, Any]] = {}
+_approval_lock = asyncio.Lock()
+_APPROVAL_TTL_SECONDS = 300  # Tokens expire after 5 minutes
+
+
+async def _cleanup_stale_approvals() -> None:
+    """Remove approval tokens older than _APPROVAL_TTL_SECONDS."""
+    now = time.monotonic()
+    async with _approval_lock:
+        expired = [
+            k
+            for k, v in _approval_pending.items()
+            if now - v.get("created_at", 0) > _APPROVAL_TTL_SECONDS
+        ]
+        for k in expired:
+            _approval_pending.pop(k, None)
 
 
 def _verify_webhook_hmac(body_bytes: bytes, signature_header: str, secret: str) -> bool:
@@ -66,54 +75,11 @@ def _verify_webhook_hmac(body_bytes: bytes, signature_header: str, secret: str) 
     return hmac.compare_digest(expected, signature_header)
 
 
-def _append_dynamic_memory(
-    system: str,
-    query: str,
-    *,
-    memory_auto_context: bool = True,
-    memory_kg_max_results: int = 4,
-    memory_rag_max_results: int = 4,
-    memory_rag_snippet_chars: int = 220,
-) -> str:
-    """Append per-query retrieved memory context to the system prompt."""
-    if not memory_auto_context:
-        return system
-    block = build_dynamic_memory_context(
-        query,
-        kg_max_results=memory_kg_max_results,
-        rag_max_results=memory_rag_max_results,
-        rag_snippet_chars=memory_rag_snippet_chars,
-    )
-    if not block:
-        return system
-    return system + "\n\n--- Retrieved memory (query-specific) ---\n\n" + block
-
-
-def _coerce_int(value: Any, default: int, min_value: int, max_value: int) -> int:
-    try:
-        n = int(value)
-    except (TypeError, ValueError):
-        return default
-    return max(min_value, min(n, max_value))
-
-
-def _resolve_memory_request_settings(
-    body: dict,
-    *,
-    default_auto: bool,
-    default_kg_max: int,
-    default_rag_max: int,
-    default_rag_chars: int,
-) -> tuple[bool, int, int, int]:
-    auto_raw = body.get("memoryAutoContext", body.get("memory_auto_context"))
-    kg_raw = body.get("memoryKgMaxResults", body.get("memory_kg_max_results"))
-    rag_raw = body.get("memoryRagMaxResults", body.get("memory_rag_max_results"))
-    chars_raw = body.get("memoryRagSnippetChars", body.get("memory_rag_snippet_chars"))
-    auto = bool(auto_raw) if isinstance(auto_raw, bool) else default_auto
-    kg_max = _coerce_int(kg_raw, default_kg_max, 0, 20)
-    rag_max = _coerce_int(rag_raw, default_rag_max, 0, 20)
-    rag_chars = _coerce_int(chars_raw, default_rag_chars, 40, 2000)
-    return auto, kg_max, rag_max, rag_chars
+def _set_apple_fm_session_key(key: str) -> None:
+    if not key:
+        return
+    os.environ.setdefault("OLLAMACODE_APPLE_FM_STATEFUL", "1")
+    os.environ["OLLAMACODE_APPLE_FM_SESSION_KEY"] = key
 
 
 def _build_chat_system(
@@ -142,62 +108,17 @@ def _build_chat_system(
             message, str(file_path), workspace_root, lines_spec
         )
     use_model = body.get("model") or model
-    system = (
-        "You are a coding assistant with full access to the workspace. You are given a list of available tools with their names "
-        "and descriptions—use whichever tools fit the task. When the user asks you to run something, check something, or change "
-        "something, use the appropriate tool and report the result. When generating code, include docstrings and brief comments where helpful."
+    system = _build_system_prompt_shared(
+        system_extra,
+        workspace_root=workspace_root,
+        use_skills=use_skills,
+        prompt_template=prompt_template,
+        inject_recent_context=inject_recent_context,
+        recent_context_max_files=recent_context_max_files,
+        use_reasoning=use_reasoning,
+        prompt_snippets=prompt_snippets,
+        code_style=code_style,
     )
-    if system_extra:
-        system = system + "\n\n" + system_extra
-    if use_skills:
-        skills_text = load_skills_text(workspace_root)
-        if skills_text:
-            system = (
-                system
-                + "\n\n--- Skills (saved instructions & memory) ---\n\n"
-                + skills_text
-            )
-    if prompt_template:
-        template_text = load_prompt_template(prompt_template, workspace_root)
-        if template_text:
-            system = system + "\n\n--- Prompt template ---\n\n" + template_text
-    state = get_state()
-    if inject_recent_context:
-        block = format_recent_context(state, max_files=recent_context_max_files)
-        if block:
-            system = system + "\n\n--- Recent context ---\n\n" + block
-    prefs_block = format_preferences(state)
-    if prefs_block:
-        system = system + "\n\n--- User preferences ---\n\n" + prefs_block
-    plan_block = format_plan_context(state)
-    if plan_block:
-        system = (
-            system + "\n\n--- Plan (use /continue to work on it) ---\n\n" + plan_block
-        )
-    feedback_block = format_feedback_context(state)
-    if feedback_block:
-        system = system + "\n\n--- Recent feedback ---\n\n" + feedback_block
-    knowledge_block = format_knowledge_context(state)
-    if knowledge_block:
-        system = system + "\n\n--- " + knowledge_block
-    past_errors_block = format_past_errors_context(state, max_entries=5)
-    if past_errors_block:
-        system = system + "\n\n--- " + past_errors_block
-    if use_reasoning:
-        system = (
-            system
-            + "\n\nWhen answering, you may include a brief reasoning or rationale before your conclusion; for code changes, briefly explain the fix."
-            + '\n\nOptionally output <<REASONING>>\n{"steps": ["..."], "conclusion": "..."}\n<<END>> or call record_reasoning(steps, conclusion).'
-        )
-    for snip in prompt_snippets or []:
-        if snip and isinstance(snip, str) and snip.strip():
-            system = system + "\n\n" + snip.strip()
-    if code_style:
-        system = (
-            system
-            + "\n\n--- Code style (follow when generating code) ---\n\n"
-            + code_style.strip()
-        )
     system = _append_dynamic_memory(
         system,
         message,
@@ -253,6 +174,7 @@ async def _handle_chat(
     if message is None:
         return {"content": "", "error": "message required"}
     request_id = body.get("requestId") or uuid.uuid4().hex
+    _set_apple_fm_session_key(str(request_id))
     tool_errors: list[dict[str, Any]] = []
     try:
         if session is not None:
@@ -302,6 +224,33 @@ def _check_api_key(request: Any, api_key: str) -> JSONResponse | None:
     return None
 
 
+_MAX_REQUEST_BODY_BYTES = 1_048_576  # 1 MB
+
+
+def _check_body_size(request: Any) -> JSONResponse | None:
+    """Reject requests whose Content-Length exceeds _MAX_REQUEST_BODY_BYTES. Return 413 response if too large, else None."""
+    cl = request.headers.get("content-length")
+    if cl is not None:
+        try:
+            if int(cl) > _MAX_REQUEST_BODY_BYTES:
+                import logging as _log
+
+                _log.getLogger(__name__).warning(
+                    "Request body too large: %s bytes (max %s)",
+                    cl,
+                    _MAX_REQUEST_BODY_BYTES,
+                )
+                return JSONResponse(
+                    {
+                        "error": f"request body too large (max {_MAX_REQUEST_BODY_BYTES} bytes)"
+                    },
+                    status_code=413,
+                )
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
 # create_app remains largely unchanged, but Request type hint will be Any
 
 
@@ -338,6 +287,7 @@ def create_app(
     rate_limit_rpm: int = 0,
     rate_limit_tpd: int = 0,
     webhook_secret: str | None = None,
+    max_concurrent_requests: int = 4,
 ):
     """Create ASGI app (Starlette) with MCP session in lifespan.
 
@@ -363,6 +313,8 @@ def create_app(
         ) from e
 
     from .rate_limit import RateLimiter
+
+    _concurrency_sem = asyncio.Semaphore(max(1, max_concurrent_requests))
 
     _limiter = RateLimiter(
         requests_per_minute=rate_limit_rpm,
@@ -443,6 +395,9 @@ def create_app(
     async def chat(request: Request) -> JSONResponse:
         if request.method != "POST":
             return JSONResponse({"error": "method not allowed"}, status_code=405)
+        size_err = _check_body_size(request)
+        if size_err is not None:
+            return size_err
         if api_key:
             err = _check_api_key(request, api_key)
             if err is not None:
@@ -450,6 +405,13 @@ def create_app(
         rl_err = _check_rate_limit(request)
         if rl_err is not None:
             return rl_err
+        # Concurrency limit: reject if too many in-flight requests
+        if _concurrency_sem.locked():
+            return JSONResponse(
+                {"error": "too many concurrent requests", "retry_after": 5},
+                status_code=429,
+                headers={"Retry-After": "5"},
+            )
         # Webhook HMAC verification (optional; for channel integrations).
         if webhook_secret:
             raw_body = await request.body()
@@ -467,10 +429,21 @@ def create_app(
                 body = await request.json()
             except Exception:
                 return JSONResponse({"error": "invalid json"}, status_code=400)
+        # Acquire concurrency permit (non-blocking check already done above)
+        await _concurrency_sem.acquire()
+        try:
+            return await _chat_inner(request, body)
+        finally:
+            _concurrency_sem.release()
+
+    async def _chat_inner(request: Any, body: dict) -> JSONResponse:
         session: McpConnection | None = getattr(request.app.state, "session", None)
         use_confirm = (
             body.get("confirmToolCalls") or confirm_tool_calls
         ) and session is not None
+        from .hooks import HookManager
+
+        hook_mgr = HookManager(root, None)
         req_mem_auto, req_mem_kg, req_mem_rag, req_mem_chars = (
             _resolve_memory_request_settings(
                 body,
@@ -505,6 +478,23 @@ def create_app(
             loop = asyncio.get_event_loop()
 
             async def before_tool_call(name: str, arguments: dict):
+                try:
+                    decision = await hook_mgr.run_pre_tool_use(
+                        name, arguments, user_prompt=body.get("message")
+                    )
+                    if decision and decision.behavior == "deny":
+                        return ("skip", decision.message or "Blocked by hook.")
+                    if (
+                        decision
+                        and decision.behavior == "modify"
+                        and decision.updated_input
+                    ):
+                        arguments = decision.updated_input
+                        return ("edit", arguments)
+                    if decision and decision.behavior == "allow":
+                        return "run"
+                except Exception:
+                    pass
                 pending["tool"] = name
                 pending["arguments"] = arguments
                 pending["future"] = loop.create_future()
@@ -555,6 +545,7 @@ def create_app(
                 "event": event,
                 "pending": pending,
                 "mode": "multi",
+                "created_at": time.monotonic(),
             }
             return JSONResponse(
                 {
@@ -613,6 +604,7 @@ def create_app(
             return JSONResponse(out)
         if use_confirm:
             request_id = body.get("requestId") or uuid.uuid4().hex
+            _set_apple_fm_session_key(str(request_id))
             message, use_model, system = _build_chat_system(
                 body,
                 model,
@@ -637,6 +629,23 @@ def create_app(
             loop = asyncio.get_event_loop()
 
             async def before_tool_call(name: str, arguments: dict):
+                try:
+                    decision = await hook_mgr.run_pre_tool_use(
+                        name, arguments, user_prompt=body.get("message")
+                    )
+                    if decision and decision.behavior == "deny":
+                        return ("skip", decision.message or "Blocked by hook.")
+                    if (
+                        decision
+                        and decision.behavior == "modify"
+                        and decision.updated_input
+                    ):
+                        arguments = decision.updated_input
+                        return ("edit", arguments)
+                    if decision and decision.behavior == "allow":
+                        return "run"
+                except Exception:
+                    pass
                 pending["tool"] = name
                 pending["arguments"] = arguments
                 pending["future"] = loop.create_future()
@@ -687,6 +696,7 @@ def create_app(
                 "event": event,
                 "pending": pending,
                 "tool_errors": tool_errors,
+                "created_at": time.monotonic(),
             }
             return JSONResponse(
                 {
@@ -726,6 +736,9 @@ def create_app(
         """POST /chat/continue: send tool approval decision (run/skip/edit) and get next result or final content."""
         if request.method != "POST":
             return JSONResponse({"error": "method not allowed"}, status_code=405)
+        size_err = _check_body_size(request)
+        if size_err is not None:
+            return size_err
         if api_key:
             err = _check_api_key(request, api_key)
             if err is not None:
@@ -738,10 +751,13 @@ def create_app(
         except Exception:
             return JSONResponse({"error": "invalid json"}, status_code=400)
         token = body.get("approvalToken")
-        if not token or token not in _approval_pending:
-            return JSONResponse(
-                {"error": "invalid or expired approvalToken"}, status_code=400
-            )
+        await _cleanup_stale_approvals()
+        async with _approval_lock:
+            if not token or token not in _approval_pending:
+                return JSONResponse(
+                    {"error": "invalid or expired approvalToken"}, status_code=400
+                )
+            entry = _approval_pending.pop(token)
         decision = body.get("decision", "run")
         edited = body.get("editedArguments") if decision == "edit" else None
         if decision == "edit" and isinstance(edited, dict):
@@ -750,7 +766,6 @@ def create_app(
             decision_value = "skip"
         else:
             decision_value = "run"
-        entry = _approval_pending.pop(token)
         task = entry["task"]
         event = entry["event"]
         pending = entry["pending"]
@@ -786,13 +801,15 @@ def create_app(
                     result["tool_errors"] = tool_errors
                 return JSONResponse(result)
             new_token = uuid.uuid4().hex
-            _approval_pending[new_token] = {
-                "task": task,
-                "event": event,
-                "pending": pending,
-                "tool_errors": entry.get("tool_errors", []),
-                "mode": mode,
-            }
+            async with _approval_lock:
+                _approval_pending[new_token] = {
+                    "task": task,
+                    "event": event,
+                    "pending": pending,
+                    "tool_errors": entry.get("tool_errors", []),
+                    "mode": mode,
+                    "created_at": time.monotonic(),
+                }
             return JSONResponse(
                 {
                     "toolApprovalRequired": {
@@ -806,6 +823,9 @@ def create_app(
     async def chat_stream(request: Request):
         if request.method != "POST":
             return JSONResponse({"error": "method not allowed"}, status_code=405)
+        size_err = _check_body_size(request)
+        if size_err is not None:
+            return size_err
         if api_key:
             err = _check_api_key(request, api_key)
             if err is not None:
@@ -817,13 +837,6 @@ def create_app(
             body = await request.json()
         except Exception:
             return JSONResponse({"error": "invalid json"}, status_code=400)
-        message, file_path, lines_spec = normalize_chat_body(body)
-        if not message:
-            return JSONResponse({"error": "message required"}, status_code=400)
-        if file_path:
-            message = prepend_file_context(message, str(file_path), root, lines_spec)
-        model_override = body.get("model")
-        use_model = model_override or model
         req_mem_auto, req_mem_kg, req_mem_rag, req_mem_chars = (
             _resolve_memory_request_settings(
                 body,
@@ -833,71 +846,36 @@ def create_app(
                 default_rag_chars=memory_rag_snippet_chars,
             )
         )
-        system = (
-            "You are a coding assistant with full access to the workspace. You are given a list of available tools with their names "
-            "and descriptions—use whichever tools fit the task. When the user asks you to run something, check something, or change "
-            "something, use the appropriate tool and report the result. When generating code, include docstrings and brief comments where helpful."
-        )
-        if system_extra:
-            system = system + "\n\n" + system_extra
-        if use_skills:
-            skills_text = load_skills_text(root)
-            if skills_text:
-                system = (
-                    system
-                    + "\n\n--- Skills (saved instructions & memory) ---\n\n"
-                    + skills_text
-                )
-        if prompt_template:
-            template_text = load_prompt_template(prompt_template, root)
-            if template_text:
-                system = system + "\n\n--- Prompt template ---\n\n" + template_text
-        state = get_state()
-        if inject_recent_context:
-            block = format_recent_context(state, max_files=recent_context_max_files)
-            if block:
-                system = system + "\n\n--- Recent context ---\n\n" + block
-        prefs_block = format_preferences(state)
-        if prefs_block:
-            system = system + "\n\n--- User preferences ---\n\n" + prefs_block
-        plan_block = format_plan_context(state)
-        if plan_block:
-            system = (
-                system
-                + "\n\n--- Plan (use /continue to work on it) ---\n\n"
-                + plan_block
-            )
-        feedback_block = format_feedback_context(state)
-        if feedback_block:
-            system = system + "\n\n--- Recent feedback ---\n\n" + feedback_block
-        knowledge_block = format_knowledge_context(state)
-        if knowledge_block:
-            system = system + "\n\n--- " + knowledge_block
-        past_errors_block = format_past_errors_context(state, max_entries=5)
-        if past_errors_block:
-            system = system + "\n\n--- " + past_errors_block
-        if use_reasoning:
-            system = (
-                system
-                + "\n\nWhen answering, you may include a brief reasoning or rationale before your conclusion; for code changes, briefly explain the fix."
-                + '\n\nOptionally output <<REASONING>>\n{"steps": ["..."], "conclusion": "..."}\n<<END>> or call record_reasoning(steps, conclusion).'
-            )
-        for snip in prompt_snippets or []:
-            if snip and isinstance(snip, str) and snip.strip():
-                system = system + "\n\n" + snip.strip()
-        system = _append_dynamic_memory(
-            system,
-            message,
+        message, use_model, system = _build_chat_system(
+            body,
+            model,
+            root,
+            system_extra,
+            use_skills=use_skills,
+            prompt_template=prompt_template,
+            inject_recent_context=inject_recent_context,
+            recent_context_max_files=recent_context_max_files,
+            use_reasoning=use_reasoning,
+            prompt_snippets=prompt_snippets,
+            code_style=code_style,
             memory_auto_context=req_mem_auto,
             memory_kg_max_results=req_mem_kg,
             memory_rag_max_results=req_mem_rag,
             memory_rag_snippet_chars=req_mem_chars,
         )
+        if message is None:
+            return JSONResponse({"error": "message required"}, status_code=400)
         request_id = body.get("requestId") or uuid.uuid4().hex
+        _set_apple_fm_session_key(str(request_id))
+
+        _stream_timeout = float(
+            os.environ.get("OLLAMACODE_SERVE_STREAM_TIMEOUT", "300")
+        )  # 5 min default
 
         async def generate() -> AsyncIterator[str]:
             session: McpConnection | None = getattr(request.app.state, "session", None)
             accumulated: list[str] = []
+            stream_start = time.monotonic()
             try:
                 if session is not None:
                     stream = run_agent_loop_stream(
@@ -922,6 +900,9 @@ def create_app(
                         request_id=request_id,
                     )
                 async for chunk in stream:
+                    if time.monotonic() - stream_start > _stream_timeout:
+                        yield f"data: {json.dumps({'type': 'error', 'error': 'Stream timeout exceeded'})}\n\n"
+                        return
                     accumulated.append(chunk)
                     yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
                 full = "".join(accumulated)
@@ -940,6 +921,9 @@ def create_app(
         """POST /apply-edits: apply protocol edits server-side. Body: { "edits": [...], "workspaceRoot"?: "..." }."""
         if request.method != "POST":
             return JSONResponse({"error": "method not allowed"}, status_code=405)
+        size_err = _check_body_size(request)
+        if size_err is not None:
+            return size_err
         if api_key:
             err = _check_api_key(request, api_key)
             if err is not None:
@@ -989,6 +973,9 @@ def create_app(
         """POST /diagnostics: run linter, return LSP-like diagnostics. Body: { workspaceRoot?, path?, linterCommand? }."""
         if request.method != "POST":
             return JSONResponse({"error": "method not allowed"}, status_code=405)
+        size_err = _check_body_size(request)
+        if size_err is not None:
+            return size_err
         if api_key:
             err = _check_api_key(request, api_key)
             if err is not None:
@@ -1007,6 +994,9 @@ def create_app(
         """POST /complete: inline completion for prefix. Body: { prefix, model? }."""
         if request.method != "POST":
             return JSONResponse({"error": "method not allowed"}, status_code=405)
+        size_err = _check_body_size(request)
+        if size_err is not None:
+            return size_err
         if api_key:
             err = _check_api_key(request, api_key)
             if err is not None:
@@ -1024,6 +1014,9 @@ def create_app(
         """POST /rag/index: build local RAG index from workspace files."""
         if request.method != "POST":
             return JSONResponse({"error": "method not allowed"}, status_code=405)
+        size_err = _check_body_size(request)
+        if size_err is not None:
+            return size_err
         if api_key:
             err = _check_api_key(request, api_key)
             if err is not None:
@@ -1055,6 +1048,9 @@ def create_app(
         """POST /rag/query: retrieve top snippets from local RAG index."""
         if request.method != "POST":
             return JSONResponse({"error": "method not allowed"}, status_code=405)
+        size_err = _check_body_size(request)
+        if size_err is not None:
+            return size_err
         if api_key:
             err = _check_api_key(request, api_key)
             if err is not None:

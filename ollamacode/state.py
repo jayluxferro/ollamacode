@@ -7,9 +7,12 @@ Used so the assistant can remember context across sessions. MCP tools (state_mcp
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _STATE_PATH = Path(os.path.expanduser("~")) / ".ollamacode" / "state.json"
 _STATE_LOCK_PATH = Path(os.path.expanduser("~")) / ".ollamacode" / "state.lock"
@@ -19,15 +22,17 @@ _MAX_KNOWLEDGE_NODES = 200
 
 # In-memory cache: avoid re-reading state.json from disk on every operation.
 # Invalidated on every _save() and validated against file mtime on every _load_raw().
+# Uses st_mtime_ns (nanoseconds) for higher precision to avoid false cache hits
+# when rapid consecutive writes produce the same float mtime.
 _state_cache: dict | None = None
-_state_cache_mtime: float = -1.0
+_state_cache_mtime_ns: int = -1
 
 
 def _load_raw() -> dict:
-    global _state_cache, _state_cache_mtime
+    global _state_cache, _state_cache_mtime_ns
     if not _STATE_PATH.exists():
         _state_cache = {}
-        _state_cache_mtime = -1.0
+        _state_cache_mtime_ns = -1
         return {}
     # If a write lock is present, wait briefly to avoid reading mid-write.
     if _STATE_LOCK_PATH.exists():
@@ -42,21 +47,33 @@ def _load_raw() -> dict:
         while _STATE_LOCK_PATH.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
     try:
-        mtime = _STATE_PATH.stat().st_mtime
-        if _state_cache is not None and mtime == _state_cache_mtime:
+        mtime_ns = _STATE_PATH.stat().st_mtime_ns
+        if _state_cache is not None and mtime_ns == _state_cache_mtime_ns:
             return _state_cache
         data = json.loads(_STATE_PATH.read_text(encoding="utf-8"))
         _state_cache = data
-        _state_cache_mtime = mtime
+        _state_cache_mtime_ns = mtime_ns
         return data
-    except (OSError, json.JSONDecodeError):
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "Corrupt state.json at %s: %s — returning empty state", _STATE_PATH, exc
+        )
+        return {}
+    except OSError:
         return {}
 
 
-def _acquire_state_lock(timeout_seconds: float = 2.0) -> None:
-    """Acquire a best-effort filesystem lock to serialize state writes."""
+def _acquire_state_lock(timeout_seconds: float = 2.0, max_retries: int = 40) -> None:
+    """Acquire a best-effort filesystem lock to serialize state writes.
+
+    Limits both wall-clock time (via *timeout_seconds*) and iteration count
+    (via *max_retries*) to avoid infinite loops when the lock file is
+    continuously recreated by a competing process.
+    """
     deadline = time.monotonic() + timeout_seconds
+    attempts = 0
     while True:
+        attempts += 1
         try:
             fd = os.open(
                 str(_STATE_LOCK_PATH),
@@ -77,8 +94,10 @@ def _acquire_state_lock(timeout_seconds: float = 2.0) -> None:
                     continue
             except OSError:
                 pass
-            if time.monotonic() > deadline:
-                raise TimeoutError("Timed out waiting for state lock")
+            if time.monotonic() > deadline or attempts >= max_retries:
+                raise TimeoutError(
+                    f"Timed out waiting for state lock after {attempts} attempts"
+                )
             time.sleep(0.05)
 
 
@@ -90,7 +109,7 @@ def _release_state_lock() -> None:
 
 
 def _save(data: dict) -> None:
-    global _state_cache, _state_cache_mtime
+    global _state_cache, _state_cache_mtime_ns
     _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = _STATE_PATH.with_suffix(".tmp")
     _acquire_state_lock()
@@ -111,9 +130,9 @@ def _save(data: dict) -> None:
     # Update cache immediately so the next _load_raw() doesn't re-read from disk.
     _state_cache = data
     try:
-        _state_cache_mtime = _STATE_PATH.stat().st_mtime
+        _state_cache_mtime_ns = _STATE_PATH.stat().st_mtime_ns
     except OSError:
-        _state_cache_mtime = -1.0
+        _state_cache_mtime_ns = -1
 
 
 def get_state() -> dict:

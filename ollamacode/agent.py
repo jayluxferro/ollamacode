@@ -31,6 +31,7 @@ from .bridge import (
     add_harmony_function_aliases,
     add_tool_aliases_for_ollama,
     mcp_tools_to_ollama,
+    use_short_names_for_builtin_tools,
 )
 from .mcp_client import (
     TOOL_NAME_ALIASES,
@@ -159,9 +160,13 @@ def _emit_replay_report() -> None:
     print("\n".join(lines), file=sys.stderr)
 
 
-# When confirm_tool_calls is True, optional callback before each tool: return "run" | "skip" | ("edit", new_args).
+# When confirm_tool_calls is True, optional callback before each tool:
+# return "run" | "skip" | ("skip", reason) | ("edit", new_args).
 ToolCallDecision = (
-    Literal["run"] | Literal["skip"] | tuple[Literal["edit"], dict[str, Any]]
+    Literal["run"]
+    | Literal["skip"]
+    | tuple[Literal["skip"], str]
+    | tuple[Literal["edit"], dict[str, Any]]
 )
 BeforeToolCallCB = Callable[[str, dict[str, Any]], Awaitable[ToolCallDecision]]
 ToolStartCB = Callable[[str, dict[str, Any]], None]
@@ -172,6 +177,14 @@ def _get(o: Any, key: str, default: Any = None) -> Any:
     if isinstance(o, dict):
         return o.get(key, default)
     return getattr(o, key, default)
+
+
+def _chunk_text(text: str, chunk_size: int) -> list[str]:
+    if not text:
+        return []
+    if chunk_size <= 0:
+        return [text]
+    return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
 
 
 def _parse_tool_args(raw_args: str | dict | None) -> tuple[dict[str, Any], str | None]:
@@ -520,6 +533,92 @@ def _truncate_tool_result(content: str, max_chars: int) -> str:
     if max_chars <= 0 or len(content) <= max_chars:
         return content
     return content[:max_chars] + f"\n\n... (truncated from {len(content)} chars)"
+
+
+# ---------------------------------------------------------------------------
+# Doom loop / infinite loop detection (task 133)
+# ---------------------------------------------------------------------------
+
+_DOOM_LOOP_WINDOW = int(os.environ.get("OLLAMACODE_DOOM_LOOP_WINDOW", "6"))
+_DOOM_LOOP_THRESHOLD = int(os.environ.get("OLLAMACODE_DOOM_LOOP_THRESHOLD", "3"))
+
+
+class _DoomLoopDetector:
+    """Track recent tool calls and detect when the LLM calls the same tool
+    with identical arguments repeatedly (doom loop)."""
+
+    def __init__(
+        self,
+        window: int = _DOOM_LOOP_WINDOW,
+        threshold: int = _DOOM_LOOP_THRESHOLD,
+    ):
+        self._window = max(3, window)
+        self._threshold = max(2, threshold)
+        self._history: list[tuple[str, str]] = []  # (name, args_hash)
+
+    @staticmethod
+    def _hash_args(args: dict[str, Any]) -> str:
+        try:
+            return json.dumps(args, sort_keys=True, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(args)
+
+    def record(self, name: str, arguments: dict[str, Any]) -> None:
+        key = (name, self._hash_args(arguments))
+        self._history.append(key)
+        if len(self._history) > self._window:
+            self._history = self._history[-self._window :]
+
+    def is_looping(self) -> tuple[bool, str | None]:
+        """Check if the last N calls are dominated by a single (tool, args) pair.
+
+        Returns (True, warning_message) if a doom loop is detected.
+        """
+        if len(self._history) < self._threshold:
+            return False, None
+        # Check the last `threshold` entries for consecutive repetition.
+        tail = self._history[-self._threshold :]
+        if len(set(tail)) == 1:
+            name, _ = tail[0]
+            msg = (
+                f"Doom loop detected: tool '{name}' called {self._threshold} times "
+                f"consecutively with identical arguments. Breaking the loop."
+            )
+            logger.warning(msg)
+            _json_log_event(event="doom_loop", tool=name, consecutive=self._threshold)
+            return True, msg
+        return False, None
+
+
+def _active_tool_names(tools: list[dict[str, Any]]) -> list[str]:
+    names: list[str] = []
+    for t in tools:
+        fn = t.get("function") if isinstance(t, dict) else None
+        if not isinstance(fn, dict):
+            continue
+        name = str(fn.get("name") or "").strip()
+        if name:
+            names.append(name)
+    return sorted(set(names))
+
+
+def _tools_system_prompt(
+    tools: list[dict[str, Any]], *, max_chars: int = 2500
+) -> str | None:
+    names = _active_tool_names(tools)
+    if not names:
+        return None
+    joined = ", ".join(names)
+    if len(joined) > max_chars:
+        joined = joined[:max_chars] + "..."
+    return (
+        "Tool availability:\n"
+        "Default built-in capabilities are usually available via MCP: "
+        "filesystem (read/write/edit/list), terminal/commands/tests/lint, "
+        "codebase search/indexing, git, and optional skills/state/reasoning/screenshot/web.\n"
+        "Use only tools listed in this turn. Active tools:\n"
+        f"{joined}"
+    )
 
 
 # --- Tool runner: MCP execution only (no logging, no callbacks) ---
@@ -901,6 +1000,7 @@ async def run_agent_loop(
     provider: BaseProvider | None = None,
     request_id: str | None = None,
     disallow_tools: bool = False,
+    timeout_seconds: float | None = None,
 ) -> str:
     """
     Run one user turn: send message to Ollama with MCP tools; on tool_calls,
@@ -913,14 +1013,20 @@ async def run_agent_loop(
     """
     # 1. Get MCP tools and convert to Ollama format; keep MCP server prefix in names (e.g. ollamacode-fs_read_file).
     list_result = await list_tools(session)
-    ollama_tools = mcp_tools_to_ollama(list_result.tools)
+    provider_tools = mcp_tools_to_ollama(list_result.tools)
     run_start = time.monotonic()
     run_budget_s = _run_budget_seconds()
-    ollama_tools = _filter_tools_by_policy(ollama_tools, allowed_tools, blocked_tools)
-    ollama_tools = add_tool_aliases_for_ollama(ollama_tools, TOOL_NAME_ALIASES)
+    overall_deadline = (run_start + timeout_seconds) if timeout_seconds else None
+    provider_tools = _filter_tools_by_policy(
+        provider_tools, allowed_tools, blocked_tools
+    )
+    provider_tools = use_short_names_for_builtin_tools(provider_tools)
+    ollama_tools = add_tool_aliases_for_ollama(provider_tools, TOOL_NAME_ALIASES)
     ollama_tools = add_harmony_function_aliases(ollama_tools)
-    if not ollama_tools:
+    if not provider_tools:
+        provider_tools = []
         ollama_tools = []  # Ollama may require None for no tools; check docs
+    valid_tool_names = set(_active_tool_names(ollama_tools))
 
     messages: list[dict[str, Any]] = []
     if disallow_tools:
@@ -931,6 +1037,9 @@ async def run_agent_loop(
             system_prompt = tool_block
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
+    tools_hint = _tools_system_prompt(provider_tools)
+    if tools_hint:
+        messages.append({"role": "system", "content": tools_hint})
     if message_history:
         messages.extend(message_history)
     user_msg: dict[str, Any] = {"role": "user", "content": user_message}
@@ -943,6 +1052,7 @@ async def run_agent_loop(
     tool_errors_total = 0
     disallow_tools_warned = False
     disable_token = disable_tool_calls() if disallow_tools else None
+    doom_detector = _DoomLoopDetector()
 
     def _finish(out: str) -> str:
         if disable_token is not None:
@@ -959,6 +1069,16 @@ async def run_agent_loop(
         return out
 
     for round_num in range(max_tool_rounds):
+        if overall_deadline and time.monotonic() > overall_deadline:
+            _json_log_event(
+                event="overall_timeout",
+                request_id=request_id,
+                round=round_num + 1,
+                timeout_seconds=timeout_seconds,
+            )
+            return _finish(
+                "Agent loop timed out. Reduce scope or increase timeout_seconds."
+            )
         if run_budget_s and (time.monotonic() - run_start) > run_budget_s:
             _json_log_event(
                 event="run_budget_exceeded", request_id=request_id, round=round_num + 1
@@ -975,7 +1095,7 @@ async def run_agent_loop(
         t0 = time.perf_counter() if timing else None
         try:
             if provider is not None:
-                response = await provider.chat_async(model, to_send, ollama_tools)
+                response = await provider.chat_async(model, to_send, provider_tools)
             else:
                 response = await ollama_chat_async(model, to_send, ollama_tools)
         except Exception as e:  # noqa: BLE001
@@ -987,11 +1107,7 @@ async def run_agent_loop(
                 event="llm", duration_s=round(elapsed, 3), request_id=request_id
             )
 
-        msg = (
-            response.get("message")
-            if isinstance(response, dict)
-            else getattr(response, "message", None)
-        )
+        msg = _get(response, "message")
         if msg is None:
             return _finish("No response from model.")
 
@@ -1031,23 +1147,37 @@ async def run_agent_loop(
         tool_deadline = time.monotonic() + tool_budget_s if tool_budget_s else None
         items: list[tuple[str, dict[str, Any], str | None]] = []
         for tc in tool_calls:
-            fn = (
-                tc.get("function")
-                if isinstance(tc, dict)
-                else getattr(tc, "function", None)
-            )
+            fn = _get(tc, "function")
             if fn is None:
                 continue
-            name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
+            name = _get(fn, "name")
             if not name:
                 continue
-            raw_args = (
-                fn.get("arguments")
-                if isinstance(fn, dict)
-                else getattr(fn, "arguments", None)
-            )
+            # Validate tool name against available tools
+            if valid_tool_names and name not in valid_tool_names:
+                err_content = (
+                    f"Unknown tool '{name}'. Available tools: "
+                    f"{', '.join(sorted(valid_tool_names)[:20])}"
+                )
+                messages.append(
+                    {"role": "tool", "tool_name": name, "content": err_content}
+                )
+                tool_errors_total += 1
+                logger.debug("Rejected unknown tool call: %s", name)
+                continue
+            raw_args = _get(fn, "arguments")
             arguments, parse_err = _parse_tool_args(raw_args)
             items.append((name, arguments, parse_err))
+
+        # Doom loop detection: record and check for repetitive tool calls
+        for name, arguments, _pe in items:
+            doom_detector.record(name, arguments)
+        looping, doom_msg = doom_detector.is_looping()
+        if looping:
+            messages.append(
+                {"role": "user", "content": doom_msg or "Breaking doom loop."}
+            )
+            return _finish(doom_msg or "Doom loop detected. Stopping agent.")
 
         if items and not quiet:
             names = [x[0] for x in items]
@@ -1074,6 +1204,7 @@ async def run_agent_loop(
                         messages.append(
                             {"role": "tool", "tool_name": name, "content": content}
                         )
+                        tool_errors_total += 1
                         if on_tool_end is not None:
                             try:
                                 on_tool_end(name, arguments, content)
@@ -1092,8 +1223,14 @@ async def run_agent_loop(
                             "before_tool_call callback is None but confirm_tool_calls is True"
                         )
                     decision = await before_tool_call(name, arguments)
-                    if decision == "skip":
-                        content = "Skipped by user."
+                    if decision == "skip" or (
+                        isinstance(decision, tuple) and decision[0] == "skip"
+                    ):
+                        content = (
+                            decision[1]
+                            if isinstance(decision, tuple) and len(decision) > 1
+                            else "Skipped by user."
+                        )
                         if not quiet:
                             if tool_progress_brief:
                                 logger.info("  %s (skipped)", name)
@@ -1179,8 +1316,6 @@ async def run_agent_loop(
                         **({"error_hint": hint} if hint else {}),
                         request_id=request_id,
                     )
-                    if is_error:
-                        tool_errors_total += 1
             else:
                 for name, arguments, _ in items:
                     if on_tool_start is not None:
@@ -1343,17 +1478,9 @@ def _stream_into_queue(
                     model=model, messages=messages, tools=tools, stream=True
                 )
                 for chunk in stream:
-                    msg = (
-                        chunk.get("message")
-                        if isinstance(chunk, dict)
-                        else getattr(chunk, "message", None)
-                    )
+                    msg = _get(chunk, "message")
                     content = _get(msg, "content", "") or "" if msg else ""
-                    done = (
-                        chunk.get("done")
-                        if isinstance(chunk, dict)
-                        else getattr(chunk, "done", False)
-                    )
+                    done = _get(chunk, "done", False)
                     q.put((content, done, msg))
                 break
             except Exception as e:
@@ -1367,11 +1494,7 @@ def _stream_into_queue(
                         resp = _ollama_chat_nonstream_with_retry(
                             model=model, messages=messages, tools=tools
                         )
-                        msg = (
-                            resp.get("message")
-                            if isinstance(resp, dict)
-                            else getattr(resp, "message", None)
-                        )
+                        msg = _get(resp, "message")
                         content = _get(msg, "content", "") or "" if msg else ""
                         q.put((content, True, msg))
                     except Exception as e2:
@@ -1422,12 +1545,16 @@ async def run_agent_loop_stream(
     tool_progress_brief: when True, print one line per tool to reduce terminal flicker during streaming.
     """
     list_result = await list_tools(session)
-    ollama_tools = mcp_tools_to_ollama(list_result.tools)
+    provider_tools = mcp_tools_to_ollama(list_result.tools)
     run_start = time.monotonic()
     run_budget_s = _run_budget_seconds()
-    ollama_tools = _filter_tools_by_policy(ollama_tools, allowed_tools, blocked_tools)
-    ollama_tools = add_tool_aliases_for_ollama(ollama_tools, TOOL_NAME_ALIASES)
+    provider_tools = _filter_tools_by_policy(
+        provider_tools, allowed_tools, blocked_tools
+    )
+    provider_tools = use_short_names_for_builtin_tools(provider_tools)
+    ollama_tools = add_tool_aliases_for_ollama(provider_tools, TOOL_NAME_ALIASES)
     ollama_tools = add_harmony_function_aliases(ollama_tools) or []
+    valid_tool_names = set(_active_tool_names(ollama_tools))
 
     messages: list[dict[str, Any]] = []
     if disallow_tools:
@@ -1438,6 +1565,9 @@ async def run_agent_loop_stream(
             system_prompt = tool_block
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
+    tools_hint = _tools_system_prompt(provider_tools)
+    if tools_hint:
+        messages.append({"role": "system", "content": tools_hint})
     if message_history:
         messages.extend(message_history)
     user_msg_stream: dict[str, Any] = {"role": "user", "content": user_message}
@@ -1451,6 +1581,7 @@ async def run_agent_loop_stream(
     tool_errors_total = 0
     disallow_tools_warned = False
     disable_token = disable_tool_calls() if disallow_tools else None
+    doom_detector = _DoomLoopDetector()
 
     def _finish() -> None:
         if disable_token is not None:
@@ -1484,33 +1615,65 @@ async def run_agent_loop_stream(
         if provider is not None:
             q2: queue.Queue = queue.Queue()
 
-            def _stream_provider() -> None:
+            # For provider-backed tool loops, prefer non-stream chat so we can
+            # preserve tool-calls from the model response.
+            if ollama_tools:
                 try:
-                    for (frag,) in provider.chat_stream_sync(model, to_send):
-                        q2.put(frag)
-                except Exception as e:  # noqa: BLE001
-                    q2.put(e)
-                finally:
-                    q2.put(None)
+                    response = await provider.chat_async(model, to_send, provider_tools)
+                    msg = _get(response, "message")
+                    content = _get(msg, "content", "") or "" if msg else ""
+                    if content:
+                        if os.environ.get("OLLAMACODE_STREAM_WITH_TOOLS", "0") == "1":
+                            chunk_size = int(
+                                os.environ.get("OLLAMACODE_STREAM_CHUNK_CHARS", "240")
+                            )
+                            for frag in _chunk_text(content, chunk_size):
+                                yield frag
+                        else:
+                            yield content
+                    last_msg = msg or {}
+                except Exception as e:
+                    raise _wrap_ollama_template_error(e)
+            else:
 
-            thread2 = threading.Thread(target=_stream_provider, daemon=True)
-            thread2.start()
-            try:
-                buf: list[str] = []
-                while True:
-                    item = await loop.run_in_executor(None, q2.get)
-                    if item is None:
-                        break
-                    if isinstance(item, BaseException):
-                        raise item
-                    if item:
-                        buf.append(item)
-                        yield item
-                last_msg = {"content": "".join(buf)}
-            except Exception as e:
-                raise _wrap_ollama_template_error(e)
-            finally:
-                thread2.join()
+                def _stream_provider() -> None:
+                    try:
+                        for (frag,) in provider.chat_stream_sync(model, to_send):
+                            q2.put(frag)
+                    except Exception as e:  # noqa: BLE001
+                        q2.put(e)
+                    finally:
+                        q2.put(None)
+
+                thread2 = threading.Thread(target=_stream_provider, daemon=True)
+                thread2.start()
+                try:
+                    buf: list[str] = []
+                    stream_err: BaseException | None = None
+                    while True:
+                        item = await loop.run_in_executor(None, q2.get)
+                        if item is None:
+                            break
+                        if isinstance(item, BaseException):
+                            stream_err = item
+                            break
+                        if item:
+                            buf.append(item)
+                            yield item
+                    if stream_err is not None:
+                        # Fallback to non-stream chat if provider streaming fails.
+                        response = await provider.chat_async(model, to_send, [])
+                        msg = _get(response, "message")
+                        content = _get(msg, "content", "") or "" if msg else ""
+                        if content:
+                            yield content
+                        last_msg = msg or {"content": ""}
+                    else:
+                        last_msg = {"content": "".join(buf)}
+                except Exception as e:
+                    raise _wrap_ollama_template_error(e)
+                finally:
+                    thread2.join()
         else:
             # Ollama: real token-by-token streaming via background thread + queue
             stream_with_tools = (
@@ -1522,11 +1685,7 @@ async def run_agent_loop_stream(
                     resp = _ollama_chat_nonstream_with_retry(
                         model=model, messages=to_send, tools=ollama_tools
                     )
-                    msg = (
-                        resp.get("message")
-                        if isinstance(resp, dict)
-                        else getattr(resp, "message", None)
-                    )
+                    msg = _get(resp, "message")
                     content = _get(msg, "content", "") or "" if msg else ""
                     if content:
                         yield content
@@ -1555,11 +1714,7 @@ async def run_agent_loop_stream(
                             resp = _ollama_chat_nonstream_with_retry(
                                 model=model, messages=to_send, tools=ollama_tools
                             )
-                            msg = (
-                                resp.get("message")
-                                if isinstance(resp, dict)
-                                else getattr(resp, "message", None)
-                            )
+                            msg = _get(resp, "message")
                             content = _get(msg, "content", "") or "" if msg else ""
                             if content:
                                 yield content
@@ -1577,11 +1732,7 @@ async def run_agent_loop_stream(
                             resp = _ollama_chat_nonstream_with_retry(
                                 model=model, messages=to_send, tools=ollama_tools
                             )
-                            msg = (
-                                resp.get("message")
-                                if isinstance(resp, dict)
-                                else getattr(resp, "message", None)
-                            )
+                            msg = _get(resp, "message")
                             content = _get(msg, "content", "") or "" if msg else ""
                             if content:
                                 yield content
@@ -1599,7 +1750,7 @@ async def run_agent_loop_stream(
                     last_msg = msg
                     if done:
                         break
-                thread.join()
+                thread.join(timeout=60)
                 last_msg = last_msg or {}
 
         if timing and t0 is not None:
@@ -1650,23 +1801,35 @@ async def run_agent_loop_stream(
         tool_deadline = time.monotonic() + tool_budget_s if tool_budget_s else None
         items_stream: list[tuple[str, dict[str, Any], str | None]] = []
         for tc in tool_calls:
-            fn = (
-                tc.get("function")
-                if isinstance(tc, dict)
-                else getattr(tc, "function", None)
-            )
+            fn = _get(tc, "function")
             if fn is None:
                 continue
-            name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
+            name = _get(fn, "name")
             if not name:
                 continue
-            raw_args = (
-                fn.get("arguments")
-                if isinstance(fn, dict)
-                else getattr(fn, "arguments", None)
-            )
+            # Validate tool name against available tools
+            if valid_tool_names and name not in valid_tool_names:
+                err_content = (
+                    f"Unknown tool '{name}'. Available tools: "
+                    f"{', '.join(sorted(valid_tool_names)[:20])}"
+                )
+                messages.append(
+                    {"role": "tool", "tool_name": name, "content": err_content}
+                )
+                tool_errors_total += 1
+                logger.debug("Rejected unknown tool call: %s", name)
+                continue
+            raw_args = _get(fn, "arguments")
             arguments, parse_err = _parse_tool_args(raw_args)
             items_stream.append((name, arguments, parse_err))
+        # Doom loop detection for streaming loop
+        for name, arguments, _pe in items_stream:
+            doom_detector.record(name, arguments)
+        looping, doom_msg = doom_detector.is_looping()
+        if looping:
+            yield doom_msg or "Doom loop detected. Stopping agent."
+            _finish()
+            return
         if items_stream and not quiet:
             names = [x[0] for x in items_stream]
             logger.info("Running %s tool(s): %s", len(names), ", ".join(names))
@@ -1685,6 +1848,7 @@ async def run_agent_loop_stream(
                         messages.append(
                             {"role": "tool", "tool_name": name, "content": content}
                         )
+                        tool_errors_total += 1
                         if on_tool_end is not None:
                             try:
                                 on_tool_end(name, arguments, content)
@@ -1703,8 +1867,14 @@ async def run_agent_loop_stream(
                             "before_tool_call callback is None but confirm_tool_calls is True"
                         )
                     decision = await before_tool_call(name, arguments)
-                    if decision == "skip":
-                        content = "Skipped by user."
+                    if decision == "skip" or (
+                        isinstance(decision, tuple) and decision[0] == "skip"
+                    ):
+                        content = (
+                            decision[1]
+                            if isinstance(decision, tuple) and len(decision) > 1
+                            else "Skipped by user."
+                        )
                         if not quiet:
                             if tool_progress_brief:
                                 logger.info("  %s (skipped)", name)
@@ -1855,16 +2025,10 @@ async def run_agent_loop_no_mcp(
         _json_log_event(
             event="llm", duration_s=round(elapsed, 3), request_id=request_id
         )
-    msg = (
-        response.get("message")
-        if isinstance(response, dict)
-        else getattr(response, "message", None)
-    )
+    msg = _get(response, "message")
     if msg is None:
         return "No response from model."
-    content = (
-        msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
-    )
+    content = _get(msg, "content")
     return (content or "").strip()
 
 
@@ -1919,14 +2083,25 @@ async def run_agent_loop_no_mcp_stream(
         thread2.start()
         loop2 = asyncio.get_event_loop()
         try:
+            stream_err: BaseException | None = None
+            collected: list[str] = []
             while True:
                 item = await loop2.run_in_executor(None, q2.get)
                 if item is None:
                     break
                 if isinstance(item, BaseException):
-                    raise item
+                    stream_err = item
+                    break
                 if item:
+                    collected.append(item)
                     yield item
+            if stream_err is not None:
+                # Fallback to non-stream chat when provider streaming fails.
+                response = await provider.chat_async(model, messages, [])
+                msg = _get(response, "message")
+                content = _get(msg, "content") or "" if msg else ""
+                if content:
+                    yield str(content)
         finally:
             thread2.join()
         if timing and t0 is not None:
@@ -1953,7 +2128,7 @@ async def run_agent_loop_no_mcp_stream(
             if item and item[0]:
                 yield item[0]
     finally:
-        thread.join()
+        thread.join(timeout=60)
         if timing and t0 is not None:
             elapsed = time.perf_counter() - t0
             _json_log_event(

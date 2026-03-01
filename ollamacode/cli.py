@@ -5,6 +5,7 @@ CLI for OllamaCode: chat with local Ollama + MCP tools.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import logging
 import tempfile
 from typing import Any, Literal
@@ -158,7 +159,7 @@ def _parse_args() -> argparse.Namespace:
         help=(
             "AI provider name (default: ollama). "
             "Options: ollama, openai, groq, deepseek, anthropic, openrouter, mistral, "
-            "xai, together, fireworks, perplexity, venice, cohere, cloudflare_ai, custom. "
+            "xai, together, fireworks, perplexity, venice, cohere, cloudflare_ai, apple_fm, custom. "
             "Override with OLLAMACODE_PROVIDER env var."
         ),
     )
@@ -184,6 +185,11 @@ def _parse_args() -> argparse.Namespace:
         nargs="*",
         default=[],
         help="MCP server args for legacy single stdio. Override with OLLAMACODE_MCP_ARGS (space-separated).",
+    )
+    p.add_argument(
+        "--builtin-mcp",
+        action="store_true",
+        help="Ignore config MCP servers and use built-in servers only.",
     )
     p.add_argument(
         "--python",
@@ -215,6 +221,68 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         metavar="PATH",
         help="Append each interactive turn to this file (user + assistant). Disabled if not set.",
+    )
+    p.add_argument(
+        "--permission-mode",
+        choices=["auto", "plan", "readonly"],
+        default=None,
+        metavar="MODE",
+        help="Tool permission mode: auto (no prompts), plan (confirm each tool), readonly (no writes).",
+    )
+    p.add_argument(
+        "--allowed-tools",
+        nargs="*",
+        default=None,
+        metavar="NAME",
+        help="Allowlist tool names (space-separated). Overrides/extends config allowed_tools.",
+    )
+    p.add_argument(
+        "--blocked-tools",
+        nargs="*",
+        default=None,
+        metavar="NAME",
+        help="Block tool names (space-separated). Overrides/extends config blocked_tools.",
+    )
+    sess_group = p.add_mutually_exclusive_group()
+    sess_group.add_argument(
+        "--session",
+        default=None,
+        metavar="ID",
+        help="Resume a persisted session by id (use --list-sessions to find).",
+    )
+    sess_group.add_argument(
+        "--new-session",
+        action="store_true",
+        help="Start a new persisted session for this run.",
+    )
+    sess_group.add_argument(
+        "--branch-session",
+        default=None,
+        metavar="ID",
+        help="Branch an existing session into a new session and use it.",
+    )
+    sess_group.add_argument(
+        "--continue",
+        dest="continue_session",
+        action="store_true",
+        help="Resume the most recent session for the current workspace.",
+    )
+    p.add_argument(
+        "--session-title",
+        default=None,
+        metavar="TITLE",
+        help="Set the session title (new or existing session).",
+    )
+    p.add_argument(
+        "--list-sessions",
+        action="store_true",
+        help="List recent sessions and exit.",
+    )
+    p.add_argument(
+        "--search-sessions",
+        default=None,
+        metavar="QUERY",
+        help="Search sessions by title/content and exit.",
     )
     p.add_argument(
         "--quiet",
@@ -415,7 +483,19 @@ def _parse_args() -> argparse.Namespace:
         "query",
         nargs="?",
         default=None,
-        help="Single query to run, 'serve' for HTTP API, 'protocol' for stdio JSON-RPC, 'health' to check provider, 'init' to scaffold, 'tutorial' for interactive tutorial, 'setup' for interactive setup wizard, 'secrets' to manage encrypted secrets (--secret-action set/get/list/delete), 'reindex' to rebuild vector memory index, 'repo-map' to generate a repo map, 'cron' for scheduled tasks (cron list / cron run <name>), 'install-browsers' to install Playwright Chromium, 'discover-tools' to scan PATH, 'list-tools' to list MCP tools, 'list-mcp' to list MCP servers, or 'convert-mcp' to convert MCP config. Use --rlm for RLM mode.",
+        help="Single query to run, 'serve' for HTTP API, 'protocol' for stdio JSON-RPC, 'health' to check provider, 'init' to scaffold, 'tutorial' for interactive tutorial, 'setup' for interactive setup wizard, 'secrets' to manage encrypted secrets (--secret-action set/get/list/delete), 'reindex' to rebuild vector memory index, 'repo-map' to generate a repo map, 'cron' for scheduled tasks (cron list / cron run <name>), 'install-browsers' to install Playwright Chromium, 'discover-tools' to scan PATH, 'list-tools' to list MCP tools, 'list-mcp' to list MCP servers, 'checkpoints' to list session checkpoints, 'rewind' to restore a checkpoint, or 'convert-mcp' to convert MCP config. Use --rlm for RLM mode.",
+    )
+    p.add_argument(
+        "--checkpoint-id",
+        default=None,
+        metavar="ID",
+        help="Checkpoint id (or prefix) for 'rewind'.",
+    )
+    p.add_argument(
+        "--checkpoint-mode",
+        choices=["code", "conversation", "both"],
+        default="code",
+        help="Rewind mode for 'rewind' (default: code).",
     )
     p.add_argument(
         "--template",
@@ -656,6 +736,9 @@ async def _run(
     stream: bool,
     max_messages: int = 0,
     history_file: str | None = None,
+    session_id: str | None = None,
+    session_title: str | None = None,
+    session_history: list[dict[str, Any]] | None = None,
     max_tool_rounds: int = 20,
     max_tool_result_chars: int = 0,
     quiet: bool = False,
@@ -720,6 +803,10 @@ async def _run(
     eval_file: str = "evals/basic.json",
     eval_json: bool = False,
 ) -> int | None:
+    from .bridge import BUILTIN_SERVER_PREFIXES
+    from .checkpoints import CheckpointRecorder
+    from .hooks import HookManager
+
     use_mcp = bool(mcp_servers)
     # Autonomous: no confirm_tool_calls, allow more tool rounds.
     if autonomous_mode:
@@ -747,9 +834,21 @@ async def _run(
             print("[OllamaCode] Voice input failed.", file=sys.stderr)
             return 1
 
+    session_history_local: list[dict[str, Any]] | None = None
+    if session_id:
+        session_history_local = list(session_history or [])
+
     # Inject workspace root so MCP servers (fs, terminal, codebase) run in the directory from which the CLI was started.
     # Merge with os.environ so the subprocess has PATH etc. and reliably sees OLLAMACODE_FS_ROOT.
     workspace_root = os.path.abspath(os.getcwd())
+    hook_mgr = (
+        HookManager(workspace_root, session_id)
+        if session_id
+        else HookManager(workspace_root, None)
+    )
+    current_prompt_ref: list[str | None] = [None]
+    checkpoints_enabled = os.environ.get("OLLAMACODE_CHECKPOINTS", "1") != "0"
+    _allowed_tools = list(allowed_tools or [])
     _env_base = dict(os.environ)
     mcp_servers = [
         {
@@ -764,6 +863,53 @@ async def _run(
         else entry
         for entry in mcp_servers
     ]
+
+    def _normalize_tool_name(name: str) -> str:
+        n = (name or "").strip()
+        if n.startswith("functions::"):
+            n = n[len("functions::") :]
+        for prefix in BUILTIN_SERVER_PREFIXES:
+            if n.startswith(prefix):
+                n = n[len(prefix) :]
+        return n
+
+    def _tool_paths_from_args(tool_name: str, arguments: dict[str, Any]) -> list[str]:
+        base = _normalize_tool_name(tool_name)
+        paths: list[str] = []
+        if base in ("write_file", "edit_file"):
+            path_val = arguments.get("path")
+            if isinstance(path_val, str) and path_val:
+                paths.append(path_val)
+        elif base == "multi_edit":
+            edits = arguments.get("edits")
+            if isinstance(edits, list):
+                for item in edits:
+                    if isinstance(item, dict):
+                        p = item.get("path")
+                        if isinstance(p, str) and p:
+                            paths.append(p)
+        return paths
+
+    def _is_allowed_tool(name: str) -> bool:
+        if not _allowed_tools:
+            return False
+        base = _normalize_tool_name(name)
+        for pat in _allowed_tools:
+            try:
+                if fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(base, pat):
+                    return True
+            except Exception:
+                if pat == name or pat == base:
+                    return True
+        return False
+
+    def _maybe_checkpoint(
+        prompt: str, message_history: list[dict[str, Any]] | None
+    ) -> CheckpointRecorder | None:
+        if not checkpoints_enabled or not session_id:
+            return None
+        idx = len(message_history or [])
+        return CheckpointRecorder(session_id, workspace_root, prompt, idx)
 
     if not query and (json_output or pipe_mode):
         err = "No input provided. Use query arg or --pipe with stdin."
@@ -840,6 +986,9 @@ async def _run(
                         memory_rag_snippet_chars=memory_rag_snippet_chars,
                         autonomous_mode=autonomous_mode,
                         subagents=subagents or [],
+                        session_id=session_id,
+                        session_title=session_title,
+                        session_history=session_history_local,
                         provider=provider,
                         provider_name=provider.name
                         if provider is not None
@@ -888,6 +1037,9 @@ async def _run(
                     allowed_tools=allowed_tools,
                     blocked_tools=blocked_tools,
                     subagents=subagents or [],
+                    session_id=session_id,
+                    session_title=session_title,
+                    session_history=session_history_local,
                     provider=provider,
                     provider_name=provider.name if provider is not None else "ollama",
                 )
@@ -1042,6 +1194,21 @@ async def _run(
 
     async def _before_tool_call_cli(tool_name: str, arguments: dict):
         """Prompt [y/N/e] per tool when confirm_tool_calls; e = edit args in $EDITOR. Returns run | skip | (edit, dict)."""
+        modified_by_hook = False
+        # Hooks (pre tool) can deny or modify.
+        try:
+            decision = await hook_mgr.run_pre_tool_use(
+                tool_name, arguments, user_prompt=current_prompt_ref[0]
+            )
+            if decision and decision.behavior == "deny":
+                return ("skip", decision.message or "Blocked by hook.")
+            if decision and decision.behavior == "modify" and decision.updated_input:
+                arguments = decision.updated_input
+                modified_by_hook = True
+        except Exception:
+            pass
+        if _is_allowed_tool(tool_name):
+            return ("edit", arguments) if modified_by_hook else "run"
         if not quiet:
             print(
                 f"[OllamaCode] Tool: {_tool_call_one_line(tool_name, arguments)}",
@@ -1054,7 +1221,7 @@ async def _run(
                 None, lambda: input("[y/N/e(dit)]? ").strip().lower() or "n"
             )
             if choice in ("y", "yes"):
-                return "run"
+                return ("edit", arguments) if modified_by_hook else "run"
             if choice in ("n", "no", ""):
                 return "skip"
             if choice in ("e", "edit"):
@@ -1161,6 +1328,15 @@ async def _run(
             return str(a / b)
         return None
 
+    # Set to prevent fire-and-forget asyncio tasks from being GC'd before completion.
+    _background_tasks: set[asyncio.Task] = set()
+
+    def _create_background_task(coro) -> None:
+        """Create an asyncio task and store a reference to prevent GC."""
+        task = asyncio.create_task(coro)
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+
     async def _do_chat(
         conn: McpConnection | None,
         q: str,
@@ -1172,9 +1348,13 @@ async def _run(
         if local is not None:
             return local
         request_id = uuid.uuid4().hex
+        os.environ.setdefault("OLLAMACODE_APPLE_FM_STATEFUL", "1")
+        os.environ["OLLAMACODE_APPLE_FM_SESSION_KEY"] = request_id
         q = expand_at_refs(q, workspace_root)
+        current_prompt_ref[0] = q
         sys_prompt = system_prompt_override or _SYSTEM
         last_system_prompt[0] = sys_prompt
+        recorder = _maybe_checkpoint(q, message_history)
         memory_block = (
             build_dynamic_memory_context(
                 q,
@@ -1278,6 +1458,47 @@ async def _run(
             if history_file:
                 _append_history(history_file, q, out)
             return out
+        if conn is not None and provider is not None:
+            # Native Apple FM tool execution (optional).
+            if (
+                hasattr(provider, "set_tool_executor")
+                and os.environ.get("OLLAMACODE_APPLE_FM_NATIVE_TOOLS", "0") == "1"
+            ):
+                from .mcp_client import call_tool, tool_result_to_content
+
+                async def _exec_tool(name: str, args: dict):
+                    try:
+                        decision = await hook_mgr.run_pre_tool_use(
+                            name, args, user_prompt=current_prompt_ref[0]
+                        )
+                        if decision and decision.behavior == "deny":
+                            raise RuntimeError(decision.message or "Blocked by hook.")
+                        if (
+                            decision
+                            and decision.behavior == "modify"
+                            and decision.updated_input
+                        ):
+                            args = decision.updated_input
+                    except Exception:
+                        pass
+                    if recorder:
+                        for p in _tool_paths_from_args(name, args):
+                            recorder.record_pre(p)
+                    result = await call_tool(conn, name, args)
+                    out = tool_result_to_content(result)
+                    await hook_mgr.run_post_tool_use(
+                        name,
+                        args,
+                        out,
+                        getattr(result, "isError", False),
+                        user_prompt=current_prompt_ref[0],
+                    )
+                    return out
+
+                try:
+                    provider.set_tool_executor(_exec_tool)
+                except Exception:
+                    pass
         if conn is not None:
             run_coro = run_agent_loop(
                 conn,
@@ -1294,8 +1515,24 @@ async def _run(
                 blocked_tools=blocked_tools,
                 confirm_tool_calls=confirm_tool_calls,
                 before_tool_call=_before_tool_call_cli if confirm_tool_calls else None,
-                on_tool_start=lambda n, a: _emit_tool_trace("tool_start", n, a),
-                on_tool_end=lambda n, a, s: _emit_tool_trace("tool_end", n, a, s),
+                on_tool_start=lambda n, a: (
+                    _emit_tool_trace("tool_start", n, a),
+                    [recorder.record_pre(p) for p in _tool_paths_from_args(n, a)]
+                    if recorder
+                    else None,
+                ),
+                on_tool_end=lambda n, a, s: (
+                    _emit_tool_trace("tool_end", n, a, s),
+                    _create_background_task(
+                        hook_mgr.run_post_tool_use(
+                            n,
+                            a,
+                            s,
+                            bool(str(s or "").lower().startswith("tool error")),
+                            user_prompt=current_prompt_ref[0],
+                        )
+                    ),
+                ),
                 provider=provider,
                 request_id=request_id,
             )
@@ -1319,6 +1556,8 @@ async def _run(
                 if timeout_seconds and timeout_seconds > 0
                 else await run_coro
             )
+        if recorder:
+            recorder.finalize()
         if use_meta_reflection and out and out.strip():
             if not quiet:
                 print(
@@ -1336,12 +1575,15 @@ async def _run(
                 timing=timing,
                 request_id=request_id,
             )
-            out = (
-                await asyncio.wait_for(reflect_coro, timeout=timeout_seconds)
-                if timeout_seconds and timeout_seconds > 0
-                else await reflect_coro
-            )
-            out = (out or "").strip()
+            try:
+                out = (
+                    await asyncio.wait_for(reflect_coro, timeout=timeout_seconds)
+                    if timeout_seconds and timeout_seconds > 0
+                    else await reflect_coro
+                )
+                out = (out or "").strip()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Meta-reflection failed; keeping original output: %s", e)
         if history_file:
             _append_history(history_file, q, out)
         return out
@@ -1371,10 +1613,14 @@ async def _run(
             print(out, flush=True)
             return out
         request_id = uuid.uuid4().hex
+        os.environ.setdefault("OLLAMACODE_APPLE_FM_STATEFUL", "1")
+        os.environ["OLLAMACODE_APPLE_FM_SESSION_KEY"] = request_id
         buf: list[str] = []
         q_expanded = expand_at_refs(q, workspace_root)
+        current_prompt_ref[0] = q_expanded
         sys_prompt = system_prompt_override or _SYSTEM
         last_system_prompt[0] = sys_prompt
+        recorder = _maybe_checkpoint(q_expanded, message_history)
         memory_block = (
             build_dynamic_memory_context(
                 q_expanded,
@@ -1391,6 +1637,46 @@ async def _run(
                 + "\n\n--- Retrieved memory (query-specific) ---\n\n"
                 + memory_block
             )
+        if conn is not None and provider is not None:
+            if (
+                hasattr(provider, "set_tool_executor")
+                and os.environ.get("OLLAMACODE_APPLE_FM_NATIVE_TOOLS", "0") == "1"
+            ):
+                from .mcp_client import call_tool, tool_result_to_content
+
+                async def _exec_tool(name: str, args: dict):
+                    try:
+                        decision = await hook_mgr.run_pre_tool_use(
+                            name, args, user_prompt=current_prompt_ref[0]
+                        )
+                        if decision and decision.behavior == "deny":
+                            raise RuntimeError(decision.message or "Blocked by hook.")
+                        if (
+                            decision
+                            and decision.behavior == "modify"
+                            and decision.updated_input
+                        ):
+                            args = decision.updated_input
+                    except Exception:
+                        pass
+                    if recorder:
+                        for p in _tool_paths_from_args(name, args):
+                            recorder.record_pre(p)
+                    result = await call_tool(conn, name, args)
+                    out = tool_result_to_content(result)
+                    await hook_mgr.run_post_tool_use(
+                        name,
+                        args,
+                        out,
+                        getattr(result, "isError", False),
+                        user_prompt=current_prompt_ref[0],
+                    )
+                    return out
+
+                try:
+                    provider.set_tool_executor(_exec_tool)
+                except Exception:
+                    pass
         if conn is not None:
             if timeout_seconds and timeout_seconds > 0:
                 async with asyncio.timeout(timeout_seconds):
@@ -1412,9 +1698,26 @@ async def _run(
                         before_tool_call=_before_tool_call_cli
                         if confirm_tool_calls
                         else None,
-                        on_tool_start=lambda n, a: _emit_tool_trace("tool_start", n, a),
-                        on_tool_end=lambda n, a, s: _emit_tool_trace(
-                            "tool_end", n, a, s
+                        on_tool_start=lambda n, a: (
+                            _emit_tool_trace("tool_start", n, a),
+                            [
+                                recorder.record_pre(p)
+                                for p in _tool_paths_from_args(n, a)
+                            ]
+                            if recorder
+                            else None,
+                        ),
+                        on_tool_end=lambda n, a, s: (
+                            _emit_tool_trace("tool_end", n, a, s),
+                            _create_background_task(
+                                hook_mgr.run_post_tool_use(
+                                    n,
+                                    a,
+                                    s,
+                                    bool(str(s or "").lower().startswith("tool error")),
+                                    user_prompt=current_prompt_ref[0],
+                                )
+                            ),
                         ),
                         provider=provider,
                         request_id=request_id,
@@ -1475,6 +1778,8 @@ async def _run(
                     print(frag, end="", flush=True)
                     buf.append(frag)
             print(flush=True)
+        if recorder:
+            recorder.finalize()
         return "".join(buf)
 
     def _emit_json_response(out_text: str) -> None:
@@ -1493,13 +1798,31 @@ async def _run(
         conn: McpConnection | None,
         q: str,
         current_model: str,
+        message_history: list[dict[str, Any]] | None,
     ) -> None:
+        def _save_session_turn(user_text: str, assistant_text: str) -> None:
+            if not session_id or message_history is None:
+                return
+            message_history.append({"role": "user", "content": user_text})
+            message_history.append({"role": "assistant", "content": assistant_text})
+            try:
+                from .sessions import save_session
+
+                save_session(session_id, session_title, message_history, workspace_root)
+            except Exception:
+                logger.debug("Session save failed", exc_info=True)
+
+        # Snapshot history length so we can roll back partial mutations on timeout.
+        _history_snapshot_len = (
+            len(message_history) if message_history is not None else 0
+        )
         try:
             model_for = _route_model(q, current_model)
             if stream and not json_output:
-                out = await _do_chat_stream(conn, q, model_for, [])
+                out = await _do_chat_stream(conn, q, model_for, message_history or [])
                 out = _strip_and_show_reasoning(out)
                 await _maybe_apply_edits(out, conn)
+                _save_session_turn(q, out)
                 if voice_out:
                     try:
                         from .voice import speak_text
@@ -1509,12 +1832,13 @@ async def _run(
                         logger.debug("Voice output failed: %s", e)
                         print("[OllamaCode] Voice output failed.", file=sys.stderr)
                 return
-            out = await _do_chat(conn, q, model_for, [])
+            out = await _do_chat(conn, q, model_for, message_history or [])
             out = _strip_and_show_reasoning(out)
             if json_output:
                 _emit_json_response(out)
             else:
                 print(out)
+            _save_session_turn(q, out)
             if voice_out:
                 try:
                     from .voice import speak_text
@@ -1526,6 +1850,13 @@ async def _run(
             await _maybe_apply_edits(out, conn)
         except asyncio.TimeoutError:
             exit_code_holder[0] = 1
+            # Roll back any partial mutations the agent loop made to message_history
+            # so the session DB doesn't end up with a half-finished turn.
+            if (
+                message_history is not None
+                and len(message_history) > _history_snapshot_len
+            ):
+                del message_history[_history_snapshot_len:]
             msg = (
                 f"Request timed out after {timeout_seconds} seconds."
                 if timeout_seconds and timeout_seconds > 0
@@ -1921,7 +2252,7 @@ async def _run(
                 if file_path
                 else query
             )
-            await _do_single_query(None, q, model)
+            await _do_single_query(None, q, model, session_history_local)
             return exit_code_holder[0]
         return None
 
@@ -1945,7 +2276,7 @@ async def _run(
                 if file_path
                 else query
             )
-            await _do_single_query(session, q, model)
+            await _do_single_query(session, q, model, session_history_local)
         return exit_code_holder[0]
     return None
 
@@ -1965,8 +2296,114 @@ def main() -> None:
         stream=sys.stderr,
         force=True,
     )
+    if not getattr(args, "verbose", False):
+        for _name in (
+            "mcp",
+            "mcp.client",
+            "mcp.server",
+            "mcp.server.lowlevel",
+            "mcp.server.lowlevel.server",
+            "httpx",
+            "urllib3",
+        ):
+            _lg = logging.getLogger(_name)
+            _lg.setLevel(logging.ERROR)
+            _lg.propagate = False
+            _lg.disabled = True
     if getattr(args, "no_stream", False):
         args.stream = False
+    if getattr(args, "list_sessions", False) or getattr(args, "search_sessions", None):
+        try:
+            from .sessions import list_sessions, search_sessions
+
+            if getattr(args, "search_sessions", None):
+                rows = search_sessions(args.search_sessions, limit=50)
+            else:
+                rows = list_sessions(limit=50)
+            if not rows:
+                print("No sessions found.")
+                return
+            print("id\tupdated_at\tmessages\tworkspace\ttitle")
+            for r in rows:
+                print(
+                    f"{r.get('id', '')}\t{r.get('updated_at', '')}\t{r.get('message_count', '')}\t{r.get('workspace_root', '')}\t{r.get('title', '')}"
+                )
+            return
+        except Exception as e:
+            logger.debug("Failed to list/search sessions: %s", e)
+            print("[OllamaCode] Could not load sessions.", file=sys.stderr)
+            raise SystemExit(1) from e
+    if args.query == "checkpoints":
+        try:
+            from .checkpoints import list_checkpoints
+        except Exception as e:
+            print("[OllamaCode] Checkpoints unavailable.", file=sys.stderr)
+            raise SystemExit(1) from e
+        _cp_sid = getattr(args, "session", None) or getattr(
+            args, "continue_session", None
+        )
+        if not _cp_sid:
+            print(
+                "[OllamaCode] Use --session to select a session.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        rows = list_checkpoints(_cp_sid, limit=20)
+        if not rows:
+            print("No checkpoints.")
+            return
+        print("id\tcreated_at\tfiles\tprompt")
+        for r in rows:
+            created = r.get("created_at", 0.0)
+            print(
+                f"{r.get('id', '')}\t{created:.3f}\t{r.get('file_count', '')}\t{(r.get('prompt') or '')[:60]}"
+            )
+        return
+    if args.query == "rewind":
+        _rw_sid = getattr(args, "session", None) or getattr(
+            args, "continue_session", None
+        )
+        if not _rw_sid:
+            print(
+                "[OllamaCode] Use --session to select a session.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        chk = getattr(args, "checkpoint_id", None)
+        if not chk:
+            print(
+                "[OllamaCode] --checkpoint-id is required for rewind.", file=sys.stderr
+            )
+            raise SystemExit(1)
+        mode = getattr(args, "checkpoint_mode", "code")
+        from .checkpoints import list_checkpoints, restore_checkpoint
+        from .sessions import get_session_info, load_session, save_session
+
+        rows = list_checkpoints(_rw_sid, limit=50)
+        target = None
+        for r in rows:
+            if r["id"].startswith(chk):
+                target = r
+                break
+        if target is None:
+            print("[OllamaCode] Checkpoint not found.", file=sys.stderr)
+            raise SystemExit(1)
+        _rw_workspace = os.getcwd()
+        if mode in ("code", "both"):
+            modified = restore_checkpoint(target["id"], _rw_workspace)
+            print(f"Rewound {len(modified)} file(s).")
+        if mode in ("conversation", "both"):
+            _rw_history = load_session(_rw_sid)
+            if _rw_history is None:
+                print("[OllamaCode] Session not found in DB.", file=sys.stderr)
+                raise SystemExit(1)
+            _rw_info = get_session_info(_rw_sid)
+            _rw_title = (_rw_info or {}).get("title", "")
+            idx = int(target.get("message_index") or 0)
+            trimmed = _rw_history[:idx]
+            save_session(_rw_sid, _rw_title, trimmed, _rw_workspace)
+            print("Conversation rewound.")
+        return
     if args.query == "convert-mcp":
         try:
             from .convert_mcp import run_convert
@@ -2456,6 +2893,19 @@ def main() -> None:
         args.mcp_args,
         python_executable=getattr(args, "python", None),
     )
+    if getattr(args, "builtin_mcp", False):
+        from .config import DEFAULT_MCP_SERVERS
+
+        mcp_servers = list(DEFAULT_MCP_SERVERS)
+        py_exec = getattr(args, "python", None)
+        if py_exec is not None:
+            mcp_servers = [
+                {**e, "command": py_exec}
+                if (e.get("type") or "stdio").lower() == "stdio"
+                else e
+                for e in mcp_servers
+            ]
+        using_builtin = True
     if getattr(args, "no_mcp", False):
         mcp_servers = []
         using_builtin = False
@@ -2474,6 +2924,7 @@ def main() -> None:
         or merged.get("model")
         or os.environ.get("OLLAMACODE_MODEL", "gpt-oss:20b")
     )
+    workspace_root = os.path.abspath(os.getcwd())
     system_extra = (merged.get("system_prompt_extra") or "").strip()
     max_messages = (
         args.max_messages
@@ -2488,11 +2939,109 @@ def main() -> None:
     max_tool_result_chars = merged.get("max_tool_result_chars", 0)
     quiet = getattr(args, "quiet", False) or getattr(args, "headless", False)
     blocked_tools_merged = list(merged.get("blocked_tools") or [])
+    if getattr(args, "blocked_tools", None):
+        blocked_tools_merged.extend(args.blocked_tools or [])
     if getattr(args, "no_write", False):
         for t in ("write_file", "git_add", "git_commit", "git_push"):
             if t not in blocked_tools_merged:
                 blocked_tools_merged.append(t)
+    # Permission mode overrides
+    permission_mode = (
+        getattr(args, "permission_mode", None)
+        or os.environ.get("OLLAMACODE_PERMISSION_MODE", "").strip()
+    )
+    if permission_mode == "readonly":
+        os.environ["OLLAMACODE_SANDBOX_LEVEL"] = "readonly"
+        for t in (
+            "write_file",
+            "edit_file",
+            "multi_edit",
+            "git_add",
+            "git_commit",
+            "git_push",
+        ):
+            if t not in blocked_tools_merged:
+                blocked_tools_merged.append(t)
+    session_id: str | None = None
+    session_history: list[dict[str, Any]] | None = None
+    session_title = getattr(args, "session_title", None)
+    _MAX_SESSION_TITLE_LEN = 500
+    if session_title and len(session_title) > _MAX_SESSION_TITLE_LEN:
+        logger.warning(
+            "Session title too long (%d chars), truncating to %d",
+            len(session_title),
+            _MAX_SESSION_TITLE_LEN,
+        )
+        session_title = session_title[:_MAX_SESSION_TITLE_LEN]
+    if getattr(args, "branch_session", None):
+        try:
+            from .sessions import branch_session, load_session
+
+            session_id = branch_session(args.branch_session, title=session_title)
+            if session_id is None:
+                print(
+                    f"[OllamaCode] Session not found: {args.branch_session}",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
+            session_history = load_session(session_id) or []
+        except Exception as e:
+            logger.debug("Session branch failed: %s", e)
+            print("[OllamaCode] Could not branch session.", file=sys.stderr)
+            raise SystemExit(1) from e
+    elif getattr(args, "continue_session", False):
+        try:
+            from .sessions import get_latest_session, load_session
+
+            latest = get_latest_session(workspace_root)
+            if not latest:
+                print(
+                    "[OllamaCode] No sessions found for this workspace. Use --new-session.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
+            session_id = latest["id"]
+            session_history = load_session(session_id) or []
+        except Exception as e:
+            logger.debug("Session continue failed: %s", e)
+            print("[OllamaCode] Could not resume latest session.", file=sys.stderr)
+            raise SystemExit(1) from e
+    elif getattr(args, "session", None):
+        try:
+            from .sessions import load_session
+
+            session_id = args.session
+            session_history = load_session(session_id)
+            if session_history is None:
+                print(
+                    f"[OllamaCode] Session not found: {session_id}",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
+        except Exception as e:
+            logger.debug("Session load failed: %s", e)
+            print("[OllamaCode] Could not load session.", file=sys.stderr)
+            raise SystemExit(1) from e
+    elif getattr(args, "new_session", False):
+        try:
+            from .sessions import create_session
+
+            session_id = create_session(
+                session_title or "", workspace_root=workspace_root
+            )
+            session_history = []
+        except Exception as e:
+            logger.debug("Session create failed: %s", e)
+            print("[OllamaCode] Could not create session.", file=sys.stderr)
+            raise SystemExit(1) from e
     timing = getattr(args, "timing", False) or merged.get("timing", False)
+    allowed_tools_merged = list(merged.get("allowed_tools") or [])
+    if getattr(args, "allowed_tools", None):
+        allowed_tools_merged.extend(args.allowed_tools or [])
+    if permission_mode == "plan":
+        merged["confirm_tool_calls"] = True
+    elif permission_mode == "auto":
+        merged["confirm_tool_calls"] = False
     if using_builtin and not quiet:
         print(
             "[OllamaCode] Using built-in MCP (fs, terminal, codebase, tools, git). Use ollamacode.yaml to customize.",
@@ -2565,6 +3114,9 @@ def main() -> None:
             args.stream,
             max_messages,
             args.history_file,
+            session_id=session_id,
+            session_title=session_title,
+            session_history=session_history,
             max_tool_rounds=max_tool_rounds,
             max_tool_result_chars=max_tool_result_chars,
             quiet=quiet,
@@ -2590,7 +3142,7 @@ def main() -> None:
             recent_context_max_files=merged.get("recent_context_max_files", 10),
             use_reasoning=merged.get("use_reasoning", True),
             use_meta_reflection=merged.get("use_meta_reflection", True),
-            allowed_tools=merged.get("allowed_tools"),
+            allowed_tools=allowed_tools_merged if allowed_tools_merged else None,
             blocked_tools=blocked_tools_merged if blocked_tools_merged else None,
             prompt_snippets=merged.get("prompt_snippets") or [],
             confirm_tool_calls=merged.get("confirm_tool_calls", False),

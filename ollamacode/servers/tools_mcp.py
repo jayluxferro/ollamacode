@@ -13,6 +13,9 @@ from urllib.error import HTTPError
 from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
+from . import configure_server_logging
+
+configure_server_logging()
 
 mcp = FastMCP("ollamacode-tools")
 
@@ -321,6 +324,74 @@ def fetch_url_rendered(
         }
     except Exception as e:
         return {"status_code": -1, "body": "", "html": "", "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# ask_user tool: LLM asks the user a question with predefined choices
+# ---------------------------------------------------------------------------
+
+# Callback set by the TUI layer to actually prompt the user.
+# Signature: (question: str, choices: list[str]) -> str
+_ask_user_callback: Any = None
+
+
+def set_ask_user_callback(cb: Any) -> None:
+    """Register a callback for the ask_user tool (called by TUI on startup)."""
+    global _ask_user_callback
+    _ask_user_callback = cb
+
+
+@mcp.tool()
+def ask_user(question: str, choices: list[str] | None = None) -> dict[str, Any]:
+    """
+    Ask the user a question and return their answer.
+
+    question: The question to ask the user.
+    choices: Optional list of predefined choices (e.g. ["yes", "no", "cancel"]).
+             If provided, user must select one. If omitted, user can type a free-form answer.
+    """
+    if _ask_user_callback is not None:
+        try:
+            answer = _ask_user_callback(question, choices or [])
+            return {"answer": answer, "error": None}
+        except Exception as e:
+            return {"answer": None, "error": str(e)}
+
+    # Fallback: stdin prompt (works in non-TUI CLI mode)
+    import sys
+
+    if not sys.stdin.isatty():
+        return {
+            "answer": None,
+            "error": "Cannot ask user: not running in interactive mode.",
+        }
+    try:
+        prompt_text = question
+        if choices:
+            prompt_text += "\nChoices: " + ", ".join(
+                f"[{i + 1}] {c}" for i, c in enumerate(choices)
+            )
+            prompt_text += "\nEnter choice number: "
+        else:
+            prompt_text += "\n> "
+        print(prompt_text, flush=True)
+        raw = input().strip()
+        if choices:
+            try:
+                idx = int(raw) - 1
+                if 0 <= idx < len(choices):
+                    return {"answer": choices[idx], "error": None}
+            except ValueError:
+                pass
+            # Try matching by text
+            lower = raw.lower()
+            for c in choices:
+                if c.lower() == lower or c.lower().startswith(lower):
+                    return {"answer": c, "error": None}
+            return {"answer": raw, "error": f"Input did not match choices: {choices}"}
+        return {"answer": raw, "error": None}
+    except EOFError:
+        return {"answer": None, "error": "User input closed (EOF)"}
 
 
 def main() -> None:

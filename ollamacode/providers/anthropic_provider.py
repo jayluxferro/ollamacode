@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from typing import Any, Generator
 
 from .base import BaseProvider, ProviderCapabilities
@@ -74,18 +75,34 @@ def _to_anthropic_messages(
                 if content:
                     blocks.append({"type": "text", "text": str(content)})
                 for i, tc in enumerate(tcs):
-                    fn = (tc.get("function") or {}) if isinstance(tc, dict) else {}
-                    args = fn.get("arguments") or {}
+                    if isinstance(tc, dict):
+                        fn = tc.get("function") or {}
+                    else:
+                        fn = getattr(tc, "function", None) or {}
+                    if isinstance(fn, dict):
+                        args = fn.get("arguments") or {}
+                    else:
+                        args = getattr(fn, "arguments", {}) or {}
                     if isinstance(args, str):
                         try:
                             args = json.loads(args)
-                        except Exception:
+                        except (json.JSONDecodeError, ValueError):
                             args = {}
+                    tc_id = (
+                        tc.get("id")
+                        if isinstance(tc, dict)
+                        else getattr(tc, "id", None)
+                    ) or f"toolu_{uuid.uuid4().hex[:8]}"
+                    fn_name = (
+                        fn.get("name")
+                        if isinstance(fn, dict)
+                        else getattr(fn, "name", None)
+                    ) or ""
                     blocks.append(
                         {
                             "type": "tool_use",
-                            "id": tc.get("id") or f"toolu_{i:02d}",
-                            "name": fn.get("name") or "",
+                            "id": tc_id,
+                            "name": fn_name,
                             "input": args,
                         }
                     )
@@ -127,10 +144,12 @@ def _normalize_response(response: Any) -> dict[str, Any]:
         elif btype == "tool_use":
             tool_calls.append(
                 {
+                    "id": getattr(block, "id", None)
+                    or f"toolu_{uuid.uuid4().hex[:12]}",
                     "function": {
                         "name": getattr(block, "name", "") or "",
                         "arguments": getattr(block, "input", {}) or {},
-                    }
+                    },
                 }
             )
 
@@ -196,8 +215,11 @@ class AnthropicProvider(BaseProvider):
         except Exception as e:
             raise RuntimeError(f"Anthropic API error: {e}") from e
         finally:
-            if hasattr(client, "close"):
-                await client.close()
+            try:
+                if hasattr(client, "close"):
+                    await client.close()
+            except Exception:
+                logger.debug("Failed to close Anthropic async client", exc_info=True)
 
     def chat_stream_sync(
         self,
@@ -232,6 +254,7 @@ class AnthropicProvider(BaseProvider):
                 False,
                 "The 'anthropic' package is required. Install: pip install anthropic",
             )
+        client = None
         try:
             client = anthropic.Anthropic(api_key=self._api_key)
             # Minimal call to verify auth — cheapest available model, 1 token
@@ -253,6 +276,12 @@ class AnthropicProvider(BaseProvider):
             if "connection" in msg:
                 return False, "Anthropic: connection error."
             return False, f"Anthropic error: {e}"
+        finally:
+            if client is not None and hasattr(client, "close"):
+                try:
+                    client.close()
+                except Exception:
+                    pass
 
     @property
     def name(self) -> str:

@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from . import configure_server_logging
+
+configure_server_logging()
 
 mcp = FastMCP("ollamacode-screenshot")
 
@@ -98,6 +101,33 @@ def screenshot(
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
+    # SSRF prevention: reject URLs targeting private/local addresses
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+    _private_hosts = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"}
+    if (
+        hostname in _private_hosts
+        or hostname.startswith("192.168.")
+        or hostname.startswith("10.")
+        or hostname.startswith("172.")
+    ):
+        return {
+            "ok": False,
+            "error": "URLs targeting private/local addresses are not allowed",
+            "path": None,
+        }
+    if parsed.scheme not in ("http", "https"):
+        return {
+            "ok": False,
+            "error": f"Unsupported URL scheme: {parsed.scheme}",
+            "path": None,
+        }
+    # Clamp viewport dimensions
+    viewport_width = max(320, min(viewport_width, 4096))
+    viewport_height = max(200, min(viewport_height, 4096))
+    timeout_seconds = max(1, min(timeout_seconds, 120))
     if not _playwright_available():
         return {
             "ok": False,

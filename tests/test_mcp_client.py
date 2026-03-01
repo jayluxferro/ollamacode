@@ -1,5 +1,6 @@
 """Tests for MCP client helpers."""
 
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -94,9 +95,18 @@ def test_resolve_tool_name_for_tools_unknown_raises():
 def test_server_params_from_config_stdio_default():
     """_server_params_from_config returns StdioServerParameters for stdio with defaults."""
     params = _server_params_from_config({"type": "stdio"})
-    assert params.command == "python"
-    assert params.args == []
-    assert params.env is None
+    if os.name == "posix":
+        assert params.command == "sh"
+        assert params.args and params.args[0] == "-lc"
+        assert "python" in params.args[1]
+        assert "2>/dev/null" in params.args[1]
+    else:
+        assert params.command == "python"
+        assert params.args == []
+    assert params.env == {
+        "OLLAMACODE_MCP_SERVER_LOG_LEVEL": "ERROR",
+        "OLLAMACODE_MCP_STDERR_QUIET": "1",
+    }
 
 
 def test_server_params_from_config_stdio_with_args_and_env():
@@ -109,9 +119,19 @@ def test_server_params_from_config_stdio_with_args_and_env():
             "env": {"FOO": "bar"},
         }
     )
-    assert params.command == "/usr/bin/python3"
-    assert params.args == ["-m", "server"]
-    assert params.env == {"FOO": "bar"}
+    if os.name == "posix":
+        assert params.command == "sh"
+        assert params.args and params.args[0] == "-lc"
+        assert "/usr/bin/python3" in params.args[1]
+        assert "-m server" in params.args[1]
+    else:
+        assert params.command == "/usr/bin/python3"
+        assert params.args == ["-m", "server"]
+    assert params.env == {
+        "FOO": "bar",
+        "OLLAMACODE_MCP_SERVER_LOG_LEVEL": "ERROR",
+        "OLLAMACODE_MCP_STDERR_QUIET": "1",
+    }
 
 
 def test_server_params_from_config_sse():

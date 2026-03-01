@@ -8,6 +8,7 @@ When set, only commands whose first word matches one of the entries are allowed.
 Optional command log: set OLLAMACODE_LOG_COMMANDS=1 to append (cwd, command, return_code) to a log file for debugging.
 """
 
+import logging
 import os
 import re
 import shlex
@@ -17,20 +18,45 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from . import configure_server_logging
+
+configure_server_logging()
+logger = logging.getLogger(__name__)
 
 mcp = FastMCP("ollamacode-terminal")
 
-# Substrings blocked when OLLAMACODE_BLOCK_DANGEROUS_COMMANDS is set (case-insensitive)
+# Substrings blocked when OLLAMACODE_BLOCK_DANGEROUS_COMMANDS is set (case-insensitive).
+# Whitespace is normalized before matching so "rm  -rf  /" still matches.
 _BLOCKED_SUBSTRINGS = [
     "rm -rf /",
     "rm -rf /*",
     "| bash",
     "| sh ",
-    "| sh",  # pipe to sh (with or without trailing space)
+    "| sh",
     " -o- | sh",
     " -o- | bash",
     ":(){ :|:& };:",  # fork bomb
 ]
+
+# Environment variable names that must never be overridden by tool callers.
+_DANGEROUS_ENV_VARS = frozenset(
+    {
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "DYLD_FRAMEWORK_PATH",
+        "BASH_ENV",
+        "ENV",
+        "BASH_FUNC_%%",
+        "CDPATH",
+        "GLOBIGNORE",
+        "IFS",
+        "PROMPT_COMMAND",
+        "SHELLOPTS",
+        "BASHOPTS",
+    }
+)
 
 # Patterns that require confirmation when OLLAMACODE_CONFIRM_RISKY=1 (optional confirm-before-run)
 _RISKY_PATTERNS = [
@@ -55,13 +81,21 @@ def _allowed_commands() -> set[str]:
     return {s.strip().lower() for s in raw.split(",") if s.strip()}
 
 
+def _normalize_whitespace(cmd: str) -> str:
+    """Collapse runs of whitespace to single space for reliable pattern matching."""
+    return re.sub(r"\s+", " ", cmd.strip())
+
+
 def _is_blocked(command: str) -> bool:
-    """Return True if blocklist is enabled and command matches a blocked pattern."""
+    """Return True if blocklist is enabled and command matches a blocked pattern.
+
+    Normalises whitespace so ``rm  -rf  /`` still matches ``rm -rf /``.
+    """
     if os.environ.get(
         "OLLAMACODE_BLOCK_DANGEROUS_COMMANDS", ""
     ).strip().lower() not in ("1", "true", "yes"):
         return False
-    cmd_lower = command.strip().lower()
+    cmd_lower = _normalize_whitespace(command).lower()
     for pat in _BLOCKED_SUBSTRINGS:
         if pat.lower() in cmd_lower:
             return True
@@ -74,19 +108,27 @@ def _is_blocked(command: str) -> bool:
 def _is_disallowed_by_allowlist(command: str) -> bool:
     """Return True if allowlist is set and command's first word is not in it.
 
-    Uses shlex.split so quoted arguments (e.g. ruff "file name.py") are handled
-    correctly and the first token is always the actual command binary.
+    Also checks every sub-command after shell separators (&&, ||, ;, |) so that
+    ``git status && rm -rf /`` is blocked when only ``git`` is allowed.
     """
     allowed = _allowed_commands()
     if not allowed:
         return False
-    try:
-        parts = shlex.split(command.strip())
-        first = parts[0].lower() if parts else ""
-    except ValueError:
-        # Malformed quoting — reject rather than risk a bypass.
-        return True
-    return first not in allowed
+    # Split on shell meta-characters to get all sub-commands.
+    sub_cmds = re.split(r"\s*(?:&&|\|\||[;|])\s*", command.strip())
+    for sub in sub_cmds:
+        sub = sub.strip()
+        if not sub:
+            continue
+        try:
+            parts = shlex.split(sub)
+            first = parts[0].lower() if parts else ""
+        except ValueError:
+            # Malformed quoting — reject rather than risk a bypass.
+            return True
+        if first not in allowed:
+            return True
+    return False
 
 
 def _is_risky(command: str) -> bool:
@@ -200,8 +242,49 @@ def run_command(
         return out
     run_env = os.environ.copy()
     if env:
+        # Block dangerous env var overrides (LD_PRELOAD, BASH_ENV, etc.)
+        blocked_vars = [k for k in env if k.upper() in _DANGEROUS_ENV_VARS]
+        if blocked_vars:
+            _log_command(cwd or _root(), command, -1)
+            return {
+                "stdout": "",
+                "stderr": f"Blocked: cannot override dangerous env vars: {', '.join(blocked_vars)}",
+                "return_code": -1,
+            }
+        # Reject env var names with = or null bytes
+        for k, v in env.items():
+            if "\0" in k or "\0" in v or "=" in k:
+                _log_command(cwd or _root(), command, -1)
+                return {
+                    "stdout": "",
+                    "stderr": f"Invalid env var name or value: {k!r}",
+                    "return_code": -1,
+                }
         run_env.update(env)
+
+    # Validate cwd is within workspace root
     work_dir = cwd or _root()
+    if cwd:
+        workspace = Path(_root()).resolve()
+        resolved_cwd = (
+            (workspace / cwd.lstrip("/")).resolve()
+            if not Path(cwd).is_absolute()
+            else Path(cwd).resolve()
+        )
+        if not resolved_cwd.is_relative_to(workspace):
+            _log_command(str(workspace), command, -1)
+            return {
+                "stdout": "",
+                "stderr": f"cwd {cwd!r} is outside workspace root",
+                "return_code": -1,
+            }
+        if not resolved_cwd.is_dir():
+            return {
+                "stdout": "",
+                "stderr": f"cwd {cwd!r} is not a directory",
+                "return_code": -1,
+            }
+        work_dir = str(resolved_cwd)
     try:
         result = subprocess.run(
             command,

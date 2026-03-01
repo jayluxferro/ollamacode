@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -23,81 +24,42 @@ from .agent import (
     run_agent_loop_no_mcp_stream,
     run_agent_loop_stream,
 )
+from ._chat_helpers import (
+    append_dynamic_memory as _append_dynamic_memory,
+    build_system_prompt as _build_system_prompt,
+    resolve_memory_request_settings as _resolve_memory_request_settings,
+)
 from .context import prepend_file_context
 from .edits import apply_edits, parse_edits
-from .memory import build_dynamic_memory_context
 from .multi_agent import run_multi_agent
 from .mcp_client import McpConnection
 from .completions import get_completion
 from .diagnostics import get_diagnostics
 from .protocol import normalize_chat_body
 from .rag import build_local_rag_index, query_local_rag
-from .skills import load_skills_text
-from .state import (
-    format_feedback_context,
-    format_knowledge_context,
-    format_past_errors_context,
-    format_plan_context,
-    format_preferences,
-    format_recent_context,
-    get_state,
-)
-from .templates import load_prompt_template
 
 # In-memory store for tool-approval continuation (stdio: one client at a time)
 _protocol_approval_pending: dict[str, dict[str, Any]] = {}
+_PROTOCOL_APPROVAL_TTL_SECONDS = 300  # Tokens expire after 5 minutes
 
 
-def _coerce_int(value: Any, default: int, min_value: int, max_value: int) -> int:
-    try:
-        n = int(value)
-    except (TypeError, ValueError):
-        return default
-    return max(min_value, min(n, max_value))
+def _cleanup_stale_protocol_approvals() -> None:
+    """Remove approval tokens older than _PROTOCOL_APPROVAL_TTL_SECONDS."""
+    now = time.monotonic()
+    expired = [
+        k
+        for k, v in _protocol_approval_pending.items()
+        if now - v.get("created_at", 0) > _PROTOCOL_APPROVAL_TTL_SECONDS
+    ]
+    for k in expired:
+        _protocol_approval_pending.pop(k, None)
 
 
-def _resolve_memory_request_settings(
-    params: dict[str, Any],
-    *,
-    default_auto: bool,
-    default_kg_max: int,
-    default_rag_max: int,
-    default_rag_chars: int,
-) -> tuple[bool, int, int, int]:
-    auto_raw = params.get("memoryAutoContext", params.get("memory_auto_context"))
-    kg_raw = params.get("memoryKgMaxResults", params.get("memory_kg_max_results"))
-    rag_raw = params.get("memoryRagMaxResults", params.get("memory_rag_max_results"))
-    chars_raw = params.get(
-        "memoryRagSnippetChars", params.get("memory_rag_snippet_chars")
-    )
-    auto = bool(auto_raw) if isinstance(auto_raw, bool) else default_auto
-    kg_max = _coerce_int(kg_raw, default_kg_max, 0, 20)
-    rag_max = _coerce_int(rag_raw, default_rag_max, 0, 20)
-    rag_chars = _coerce_int(chars_raw, default_rag_chars, 40, 2000)
-    return auto, kg_max, rag_max, rag_chars
-
-
-def _append_dynamic_memory(
-    system: str,
-    query: str,
-    *,
-    memory_auto_context: bool = True,
-    memory_kg_max_results: int = 4,
-    memory_rag_max_results: int = 4,
-    memory_rag_snippet_chars: int = 220,
-) -> str:
-    """Append per-query retrieved memory context to the system prompt."""
-    if not memory_auto_context:
-        return system
-    block = build_dynamic_memory_context(
-        query,
-        kg_max_results=memory_kg_max_results,
-        rag_max_results=memory_rag_max_results,
-        rag_snippet_chars=memory_rag_snippet_chars,
-    )
-    if not block:
-        return system
-    return system + "\n\n--- Retrieved memory (query-specific) ---\n\n" + block
+def _set_apple_fm_session_key(key: str) -> None:
+    if not key:
+        return
+    os.environ.setdefault("OLLAMACODE_APPLE_FM_STATEFUL", "1")
+    os.environ["OLLAMACODE_APPLE_FM_SESSION_KEY"] = key
 
 
 def _system_prompt(
@@ -111,60 +73,17 @@ def _system_prompt(
     prompt_snippets: list[str] | None = None,
     code_style: str | None = None,
 ) -> str:
-    base = (
-        "You are a coding assistant with full access to the workspace. You are given a list of available tools with their names "
-        "and descriptions—use whichever tools fit the task. When the user asks you to run something, check something, or change "
-        "something, use the appropriate tool and report the result. When generating code, include docstrings and brief comments where helpful."
+    return _build_system_prompt(
+        system_extra,
+        workspace_root=workspace_root,
+        use_skills=use_skills,
+        prompt_template=prompt_template,
+        inject_recent_context=inject_recent_context,
+        recent_context_max_files=recent_context_max_files,
+        use_reasoning=use_reasoning,
+        prompt_snippets=prompt_snippets,
+        code_style=code_style,
     )
-    out = base + ("\n\n" + system_extra) if system_extra else base
-    if use_skills and workspace_root:
-        skills_text = load_skills_text(workspace_root)
-        if skills_text:
-            out = (
-                out
-                + "\n\n--- Skills (saved instructions & memory) ---\n\n"
-                + skills_text
-            )
-    if prompt_template and workspace_root:
-        template_text = load_prompt_template(prompt_template, workspace_root)
-        if template_text:
-            out = out + "\n\n--- Prompt template ---\n\n" + template_text
-    state = get_state()
-    if inject_recent_context:
-        block = format_recent_context(state, max_files=recent_context_max_files)
-        if block:
-            out = out + "\n\n--- Recent context ---\n\n" + block
-    prefs_block = format_preferences(state)
-    if prefs_block:
-        out = out + "\n\n--- User preferences ---\n\n" + prefs_block
-    plan_block = format_plan_context(state)
-    if plan_block:
-        out = out + "\n\n--- Plan (use /continue to work on it) ---\n\n" + plan_block
-    feedback_block = format_feedback_context(state)
-    if feedback_block:
-        out = out + "\n\n--- Recent feedback ---\n\n" + feedback_block
-    knowledge_block = format_knowledge_context(state)
-    if knowledge_block:
-        out = out + "\n\n--- " + knowledge_block
-    past_errors_block = format_past_errors_context(state, max_entries=5)
-    if past_errors_block:
-        out = out + "\n\n--- " + past_errors_block
-    if use_reasoning:
-        out = (
-            out
-            + "\n\nWhen answering, you may include a brief reasoning or rationale before your conclusion; for code changes, briefly explain the fix."
-            + '\n\nOptionally output <<REASONING>>\n{"steps": ["..."], "conclusion": "..."}\n<<END>> or call record_reasoning(steps, conclusion).'
-        )
-    for snip in prompt_snippets or []:
-        if snip and isinstance(snip, str) and snip.strip():
-            out = out + "\n\n" + snip.strip()
-    if code_style:
-        out = (
-            out
-            + "\n\n--- Code style (follow when generating code) ---\n\n"
-            + code_style.strip()
-        )
-    return out
 
 
 async def _handle_chat(
@@ -407,6 +326,8 @@ async def _handle_request(
     params = request.get("params")
     if not isinstance(params, dict):
         params = {}
+    _set_apple_fm_session_key(str(req_id) if req_id is not None else uuid.uuid4().hex)
+    root = workspace_root
     req_mem_auto, req_mem_kg, req_mem_rag, req_mem_chars = (
         _resolve_memory_request_settings(
             params,
@@ -419,6 +340,7 @@ async def _handle_request(
 
     if method == "ollamacode/chatContinue":
         token = params.get("approvalToken")
+        _cleanup_stale_protocol_approvals()
         if not token or token not in _protocol_approval_pending:
             return {
                 "jsonrpc": "2.0",
@@ -428,6 +350,7 @@ async def _handle_request(
                     "message": "invalid or expired approvalToken",
                 },
             }
+        entry = _protocol_approval_pending.pop(token)
         decision = params.get("decision", "run")
         edited = params.get("editedArguments") if decision == "edit" else None
         if decision == "edit" and isinstance(edited, dict):
@@ -436,7 +359,6 @@ async def _handle_request(
             decision_value = "skip"
         else:
             decision_value = "run"
-        entry = _protocol_approval_pending.pop(token)
         task = entry["task"]
         event = entry["event"]
         pending = entry["pending"]
@@ -482,6 +404,7 @@ async def _handle_request(
                 "pending": pending,
                 "tool_errors": tool_errors,
                 "mode": mode,
+                "created_at": time.monotonic(),
             }
             return {
                 "jsonrpc": "2.0",
@@ -535,8 +458,28 @@ async def _handle_request(
         event = asyncio.Event()
         pending: dict[str, Any] = {}
         loop = asyncio.get_event_loop()
+        from .hooks import HookManager
+
+        hook_mgr = HookManager(root, None)
 
         async def before_tool_call(name: str, arguments: dict):
+            try:
+                decision = await hook_mgr.run_pre_tool_use(
+                    name, arguments, user_prompt=message
+                )
+                if decision and decision.behavior == "deny":
+                    return ("skip", decision.message or "Blocked by hook.")
+                if (
+                    decision
+                    and decision.behavior == "modify"
+                    and decision.updated_input
+                ):
+                    arguments = decision.updated_input
+                    return ("edit", arguments)
+                if decision and decision.behavior == "allow":
+                    return "run"
+            except Exception:
+                pass
             pending["tool"] = name
             pending["arguments"] = arguments
             pending["future"] = loop.create_future()
@@ -590,6 +533,7 @@ async def _handle_request(
             "event": event,
             "pending": pending,
             "mode": "multi",
+            "created_at": time.monotonic(),
         }
         return {
             "jsonrpc": "2.0",
@@ -638,8 +582,28 @@ async def _handle_request(
         event = asyncio.Event()
         pending: dict[str, Any] = {}
         loop = asyncio.get_event_loop()
+        from .hooks import HookManager
+
+        hook_mgr = HookManager(root, None)
 
         async def before_tool_call(name: str, arguments: dict):
+            try:
+                decision = await hook_mgr.run_pre_tool_use(
+                    name, arguments, user_prompt=message
+                )
+                if decision and decision.behavior == "deny":
+                    return ("skip", decision.message or "Blocked by hook.")
+                if (
+                    decision
+                    and decision.behavior == "modify"
+                    and decision.updated_input
+                ):
+                    arguments = decision.updated_input
+                    return ("edit", arguments)
+                if decision and decision.behavior == "allow":
+                    return "run"
+            except Exception:
+                pass
             pending["tool"] = name
             pending["arguments"] = arguments
             pending["future"] = loop.create_future()
@@ -688,6 +652,7 @@ async def _handle_request(
             "event": event,
             "pending": pending,
             "tool_errors": tool_errors,
+            "created_at": time.monotonic(),
         }
         return {
             "jsonrpc": "2.0",

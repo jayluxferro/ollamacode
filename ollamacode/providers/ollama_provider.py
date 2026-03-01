@@ -24,11 +24,16 @@ class OllamaProvider(BaseProvider):
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        import os
-
-        if self._base_url:
-            os.environ["OLLAMA_HOST"] = self._base_url
         try:
+            if self._base_url:
+                import ollama as _ollama_mod  # type: ignore[import-untyped]
+
+                client = _ollama_mod.AsyncClient(host=self._base_url)
+                kwargs: dict[str, Any] = {"model": model, "messages": messages}
+                if tools:
+                    kwargs["tools"] = tools
+                resp = await client.chat(**kwargs)
+                return resp if isinstance(resp, dict) else dict(resp)
             return await _chat_async(model, messages, tools)
         except Exception as e:
             raise _wrap_template_error(e)

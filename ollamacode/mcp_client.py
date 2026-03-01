@@ -14,7 +14,11 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import contextvars
 from datetime import timedelta
+import logging
+import os
+import shlex
 from typing import Any, Callable, AsyncIterator, Dict, List
+from urllib.parse import urlparse
 
 from mcp import ClientSession, ClientSessionGroup, StdioServerParameters
 from mcp.client.session_group import (
@@ -52,34 +56,100 @@ def reset_tool_calls(token: contextvars.Token) -> None:
 
 
 def _builtin_stdio_params(entry: Dict[str, Any]) -> StdioServerParameters:
+    merged_env = dict(entry.get("env") or {})
+    merged_env.setdefault("OLLAMACODE_MCP_SERVER_LOG_LEVEL", "ERROR")
+    merged_env.setdefault("OLLAMACODE_MCP_STDERR_QUIET", "1")
+    cmd = entry.get("command", "python")
+    args = entry.get("args") or []
+    quiet_stderr = merged_env.get(
+        "OLLAMACODE_MCP_STDERR_QUIET", "1"
+    ).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if quiet_stderr and os.name == "posix":
+        quoted = " ".join(shlex.quote(str(p)) for p in [cmd, *args])
+        shell_cmd = f"exec {quoted} 2>/dev/null"
+        return StdioServerParameters(
+            command="sh",
+            args=["-lc", shell_cmd],
+            env=merged_env or None,
+        )
     return StdioServerParameters(
-        command=entry.get("command", "python"),
-        args=entry.get("args") or [],
-        env=entry.get("env"),
+        command=cmd,
+        args=args,
+        env=merged_env or None,
     )
 
 
+logger = logging.getLogger(__name__)
+
+_MAX_MCP_URL_LEN = 2048
+_ALLOWED_MCP_URL_SCHEMES = {"http", "https"}
+
+
+def _validate_mcp_url(url: str, context: str = "MCP server") -> None:
+    """Validate a URL for MCP SSE/HTTP connections. Raises ValueError on invalid input."""
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError(f"{context}: url is required and must be a non-empty string")
+    if len(url) > _MAX_MCP_URL_LEN:
+        raise ValueError(
+            f"{context}: url too long ({len(url)} chars, max {_MAX_MCP_URL_LEN})"
+        )
+    try:
+        parsed = urlparse(url)
+    except Exception as exc:
+        raise ValueError(f"{context}: invalid url: {exc}") from exc
+    if parsed.scheme not in _ALLOWED_MCP_URL_SCHEMES:
+        raise ValueError(
+            f"{context}: url scheme must be http or https, got {parsed.scheme!r}"
+        )
+    if not parsed.hostname:
+        raise ValueError(f"{context}: url must include a hostname")
+
+
 def _builtin_sse_params(entry: Dict[str, Any]) -> SseServerParameters:
+    url = entry.get("url") or ""
+    _validate_mcp_url(url, context="SSE MCP server")
+    timeout = entry.get("timeout", 5)
+    sse_read = entry.get("sse_read_timeout", 60 * 5)
+    try:
+        timeout = max(1.0, min(float(timeout), 300.0))
+    except (TypeError, ValueError):
+        timeout = 5.0
+    try:
+        sse_read = max(1.0, min(float(sse_read), 3600.0))
+    except (TypeError, ValueError):
+        sse_read = 300.0
     return SseServerParameters(
-        url=entry["url"],
+        url=url,
         headers=entry.get("headers"),
-        timeout=float(entry.get("timeout", 5)),
-        sse_read_timeout=float(entry.get("sse_read_timeout", 60 * 5)),
+        timeout=timeout,
+        sse_read_timeout=sse_read,
     )
 
 
 def _builtin_streamable_http_params(
     entry: Dict[str, Any],
 ) -> StreamableHttpParameters:
+    url = entry.get("url") or ""
+    _validate_mcp_url(url, context="Streamable HTTP MCP server")
     timeout = entry.get("timeout", 30)
     sse_read = entry.get("sse_read_timeout", 60 * 5)
+    try:
+        timeout_s = max(1.0, min(float(timeout), 300.0))
+    except (TypeError, ValueError):
+        timeout_s = 30.0
+    try:
+        sse_read_s = max(1.0, min(float(sse_read), 3600.0))
+    except (TypeError, ValueError):
+        sse_read_s = 300.0
     return StreamableHttpParameters(
-        url=entry["url"],
+        url=url,
         headers=entry.get("headers"),
-        timeout=timedelta(seconds=timeout if isinstance(timeout, (int, float)) else 30),
-        sse_read_timeout=timedelta(
-            seconds=sse_read if isinstance(sse_read, (int, float)) else 60 * 5
-        ),
+        timeout=timedelta(seconds=timeout_s),
+        sse_read_timeout=timedelta(seconds=sse_read_s),
         terminate_on_close=entry.get("terminate_on_close", True),
     )
 
@@ -100,12 +170,14 @@ def _get_server_type_registry() -> Dict[
         from importlib.metadata import entry_points
 
         eps = entry_points(group=MCP_SERVER_TYPES_ENTRY_POINT_GROUP)
-    except Exception:
+    except Exception as exc:
+        logger.warning("Failed to load MCP server type entry points: %s", exc)
         return registry
     for ep in eps:
         try:
             registry[ep.name.lower()] = ep.load()
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to load MCP server type plugin %r: %s", ep.name, exc)
             continue
     return registry
 
@@ -282,8 +354,20 @@ async def call_tool(
 
 def tool_result_to_content(result: CallToolResult) -> str:
     """Extract a single string from CallToolResult for Ollama tool message."""
+    if not isinstance(result, CallToolResult):
+        logger.warning(
+            "tool_result_to_content received unexpected type %s; converting to string",
+            type(result).__name__,
+        )
+        return str(result) if result else "Error: no content"
     if result.isError or not result.content:
         return str(result.content) if result.content else "Error: no content"
+    if not isinstance(result.content, (list, tuple)):
+        logger.warning(
+            "CallToolResult.content is %s, expected list; converting to string",
+            type(result.content).__name__,
+        )
+        return str(result.content)
     parts: List[str] = []
     for block in result.content:
         if isinstance(block, TextContent):

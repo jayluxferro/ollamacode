@@ -7,6 +7,7 @@ State is stored in ~/.ollamacode/state.json (recent files, preferences). Lets th
 import os
 
 from mcp.server.fastmcp import FastMCP
+from . import configure_server_logging
 
 from ..rag import build_local_rag_index as _build_local_rag_index
 from ..rag import query_local_rag as _query_local_rag
@@ -17,6 +18,8 @@ from ..state import get_state as _get_state
 from ..state import query_knowledge_graph as _query_knowledge_graph
 from ..state import record_reasoning as _record_reasoning
 from ..state import update_state as _update_state
+
+configure_server_logging()
 
 mcp = FastMCP("ollamacode-state")
 

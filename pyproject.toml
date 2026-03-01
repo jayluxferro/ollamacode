@@ -36,16 +36,6 @@ docs = [
     "mkdocs>=1.5.0",
     "mkdocstrings[python]>=0.24.0",
 ]
-dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.24",
-    "pytest-cov>=4.0.0",
-    "mkdocs>=1.5.0",
-    "mkdocstrings[python]>=0.24.0",
-    "ruff>=0.8.0",
-    "pyright>=1.1.0",
-    "pytest-timeout>=2.3.0",
-]
 [project.scripts]
 ollamacode = "ollamacode.cli:main"
 
@@ -61,15 +51,17 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-cov>=4.0.0",
-    "mkdocs>=1.5.0",
-    "mkdocstrings[python]>=0.24.0",
     "ruff>=0.8.0",
     "pyright>=1.1.0",
     "pytest-timeout>=2.3.0",
+    "bandit>=1.7.0",
 ]
 docs = [
     "mkdocs>=1.5.0",
     "mkdocstrings[python]>=0.24.0",
+]
+apple_fm = [
+    "apple-fm-sdk @ git+https://github.com/apple/python-apple-fm-sdk.git",
 ]
 
 [tool.ruff]
@@ -77,12 +69,25 @@ line-length = 128
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W"]
+select = ["E", "F", "I", "W", "C4", "B", "UP", "SIM"]
+# C4: flake8-comprehensions, B: flake8-bugbear, UP: pyupgrade, SIM: flake8-simplify
+ignore = [
+    "B008",   # function-call-in-default-argument (common pattern with FastMCP)
+    "B905",   # zip-without-explicit-strict
+    "SIM108", # use-ternary-operator (reduces readability)
+    "UP007",  # non-pep604-annotation (need 3.11 compat)
+]
 
 [tool.pyright]
 pythonVersion = "3.11"
-typeCheckingMode = "basic"
+typeCheckingMode = "strict"
 reportMissingImports = true
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownParameterType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportMissingParameterType = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -97,5 +102,12 @@ source = ["ollamacode"]
 omit = ["*/tests/*", "*/__pycache__/*"]
 
 [tool.coverage.report]
-fail_under = 30
+fail_under = 70
 exclude_lines = ["pragma: no cover", "def __repr__", "if TYPE_CHECKING:"]
+
+[tool.bandit]
+exclude_dirs = ["tests", "docs", "examples"]
+skips = ["B101", "B404", "B603"]
+# B101: assert used (fine in non-production code paths)
+# B404: import subprocess (needed for terminal_mcp, hooks)
+# B603: subprocess call (validated inputs)

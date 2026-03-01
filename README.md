@@ -4,7 +4,7 @@ A coding assistant powered by **local models** (Ollama) and **MCP** (Model Conte
 
 ## Features
 
-- **Local-first**: Ollama by default; optional multi-provider support (OpenAI-compat, Anthropic, etc.) when configured.
+- **Local-first**: Ollama by default; optional multi-provider support (OpenAI-compat, Anthropic, Apple Foundation Models, etc.) when configured.
 - **MCP tools**: Connect any MCP server; built-in fs, terminal, codebase, tools, and git when no config is present.
 - **CLI**: One-off queries or interactive chat (TUI).
 - **HTTP & stdio API**: `ollamacode serve` (REST) and `ollamacode protocol` (JSON-RPC over stdin/stdout) for editor integration.
@@ -77,6 +77,14 @@ Use `OLLAMACODE_MCP_ARGS` for a single stdio server without flags. To use **no M
 | `--file`, `-f` | Prepend file to prompt; use `--lines START-END` for a range |
 | `--apply-edits` | Parse `<<EDITS>>` from output, show diff, prompt to apply |
 | `--max-messages` | Cap message history (0 = no limit) |
+| `--session ID` | Resume a persisted session by id |
+| `--new-session` | Start a new persisted session |
+| `--continue` | Resume most recent session for current workspace |
+| `--list-sessions` | List recent sessions and exit |
+| `--permission-mode` | `auto` (no prompts), `plan` (confirm each tool), `readonly` |
+| `--checkpoint-id` | Checkpoint id/prefix for `rewind` |
+| `--checkpoint-mode` | `code` | `conversation` | `both` (for `rewind`) |
+| `--builtin-mcp` | Ignore config MCP servers and use built-in servers only |
 | `--no-mcp` | Skip MCP (faster when tools not needed) |
 | `--port` | Port for `serve` (default 8000) |
 | `--auto` | Autonomous: no per-tool confirm, more tool rounds |
@@ -95,7 +103,7 @@ rules_file: .ollamacode/rules.md
 max_messages: 0
 max_tool_rounds: 20
 include_builtin_servers: true
-provider: ollama            # or openai, anthropic, groq, openrouter, etc.
+provider: ollama            # or openai, anthropic, groq, openrouter, apple_fm, etc.
 base_url: ""                # optional for non-default provider endpoints
 api_key: ""                 # or "secret:<name>" (encrypted secrets)
 embedding_backend: ollama   # or "provider" to use provider embeddings
@@ -110,6 +118,39 @@ mcp_servers:
 ```
 
 See [docs/MCP_SERVERS.md](docs/MCP_SERVERS.md) for full options (prompt_template, memory_auto_context, multi_agent, etc.). Custom server types: register an entry point in `ollamacode.mcp_server_types`; see [API](docs/api.md).
+
+### Apple Foundation Models (apple_fm)
+
+OllamaCode supports Apple Foundation Models via the `apple_fm` provider. Install the SDK, then set `provider: apple_fm` and `model: apple.system` in your config:
+
+```yaml
+provider: apple_fm
+model: apple.system
+```
+
+Install the SDK:
+
+```bash
+uv pip install "apple-fm-sdk @ git+https://github.com/apple/python-apple-fm-sdk.git"
+```
+
+Optional: persist Apple FM transcripts (JSONL) for debugging/evals:
+
+```bash
+export OLLAMACODE_APPLE_FM_TRANSCRIPT_PATH=~/.ollamacode/apple_fm_transcripts.jsonl
+```
+
+Optional: request JSON‑schema guided output for Apple FM (no tools):
+
+```bash
+export OLLAMACODE_APPLE_FM_JSON_SCHEMA_PATH=./schema.json
+```
+
+Optional: enable Apple FM native tool execution (experimental):
+
+```bash
+export OLLAMACODE_APPLE_FM_NATIVE_TOOLS=1
+```
 
 **Safety / sandboxing**
 
@@ -167,6 +208,14 @@ Index via the agent (“Run index_codebase”); then use **semantic_search_codeb
 - **--apply-edits**: Model outputs `<<EDITS>>`…`<<END>>`; OllamaCode shows a diff and prompts to apply. Writes are scoped to the workspace root.
 - **branch_context**: Set `branch_context: true` (and `branch_context_base: "main"`) to inject git diff into the system prompt.
 - **Long chats**: Use `--max-messages N` or `/summary [N]` in the TUI to free context. **--history-file PATH** appends each turn to a file.
+- **Project instructions**: Place `OLLAMA.md` or `CLAUDE.md` in the project root (or `.ollamacode/`) to inject persistent instructions into the system prompt.
+- **Hooks**: Add `.ollamacode/hooks.json` (or `~/.ollamacode/hooks.json`) to run pre/post tool hooks (e.g., policy checks, logging).
+- **Checkpoints**: TUI creates checkpoints for file edits; use `/checkpoints` and `/rewind` to restore. Set `OLLAMACODE_CHECKPOINTS=0` to disable. CLI: `ollamacode checkpoints --session <id>` and `ollamacode rewind --session <id> --checkpoint-id <id> --checkpoint-mode code|conversation|both`.
+
+### Sessions
+
+- TUI: `/sessions`, `/resume <id>`, `/branch`, `/session <title>`
+- CLI: `--session <id>` to resume, `--new-session` to start a new one, `--continue` to resume most recent in this repo
 
 ### HTTP API and editors
 

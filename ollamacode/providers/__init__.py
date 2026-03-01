@@ -29,11 +29,13 @@ Usage in config (ollamacode.yaml):
 
 Supported named providers (base_url auto-configured):
   ollama, openai, groq, deepseek, openrouter, mistral, xai,
-  together, fireworks, perplexity, venice, cohere, cloudflare_ai, anthropic
+  together, fireworks, perplexity, venice, cohere, cloudflare_ai, anthropic,
+  apple_fm, gemini, bedrock, azure
 """
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
@@ -41,6 +43,9 @@ from .base import BaseProvider
 from .ollama_provider import OllamaProvider
 from .openai_compat import OpenAICompatProvider, PROVIDER_BASE_URLS
 from .anthropic_provider import AnthropicProvider
+from .apple_fm_provider import AppleFMProvider
+
+logger = logging.getLogger(__name__)
 
 # Providers that use the OpenAI-compatible REST protocol
 _OPENAI_COMPAT_PROVIDERS = set(PROVIDER_BASE_URLS.keys())
@@ -59,6 +64,8 @@ _PROVIDER_KEY_ENVS: dict[str, str] = {
     "venice": "VENICE_API_KEY",
     "cohere": "COHERE_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "azure": "AZURE_OPENAI_API_KEY",
 }
 
 
@@ -76,8 +83,13 @@ def _resolve_api_key(provider_name: str, config: dict[str, Any]) -> str:
 
             resolved = resolve_secret(raw)
             return resolved or ""
-        except Exception:
-            pass  # Fall back to the raw value; caller will surface auth errors.
+        except Exception as exc:
+            logger.warning(
+                "Failed to resolve secret '%s': %s. "
+                "Falling back to raw value; auth errors may follow.",
+                raw,
+                exc,
+            )
     return raw
 
 
@@ -106,6 +118,47 @@ def get_provider(config: dict[str, Any]) -> BaseProvider:
 
     if provider_name == "anthropic":
         return AnthropicProvider(api_key=api_key, base_url=base_url)
+    if provider_name == "apple_fm":
+        return AppleFMProvider()
+    if provider_name == "gemini":
+        from .gemini_provider import GeminiProvider
+
+        return GeminiProvider(api_key=api_key)
+    if provider_name == "bedrock":
+        from .bedrock_provider import BedrockProvider
+
+        return BedrockProvider(
+            region=config.get("aws_region") or os.environ.get("AWS_REGION"),
+            profile=config.get("aws_profile") or os.environ.get("AWS_PROFILE"),
+        )
+    if provider_name == "azure":
+        from .azure_provider import AzureOpenAIProvider
+
+        azure_endpoint = base_url or config.get("azure_endpoint") or ""
+        api_version = config.get("azure_api_version")
+        return AzureOpenAIProvider(
+            api_key=api_key,
+            azure_endpoint=azure_endpoint,
+            api_version=api_version,
+        )
+
+    # Validate that the provider is known or has a custom base_url
+    _ALL_KNOWN = _OPENAI_COMPAT_PROVIDERS | {
+        "ollama",
+        "anthropic",
+        "apple_fm",
+        "gemini",
+        "bedrock",
+        "azure",
+        "custom",
+    }
+    if provider_name not in _ALL_KNOWN and not base_url:
+        logger.warning(
+            "Unknown provider '%s'. Known providers: %s. "
+            "Treating as OpenAI-compatible; set base_url if needed.",
+            provider_name,
+            ", ".join(sorted(_ALL_KNOWN)),
+        )
 
     # Everything else speaks OpenAI-compatible REST
     return OpenAICompatProvider(
@@ -120,6 +173,11 @@ __all__ = [
     "OllamaProvider",
     "OpenAICompatProvider",
     "AnthropicProvider",
+    "AppleFMProvider",
     "PROVIDER_BASE_URLS",
     "get_provider",
+    # Lazy-loaded providers (imported on demand in get_provider):
+    # "GeminiProvider",
+    # "BedrockProvider",
+    # "AzureOpenAIProvider",
 ]

@@ -85,6 +85,8 @@ _SLASH_COMMANDS = [
     "/resume",
     "/session",
     "/branch",
+    "/checkpoints",
+    "/rewind",
     "/quit",
     "/exit",
 ]
@@ -92,13 +94,15 @@ _SLASH_COMMANDS = [
 
 # Helpers
 def _extract_pasted_image(line: str) -> tuple[str | None, str]:
-    """Detect data URL image paste; save to disk and return (path, cleaned_line)."""
+    """Detect data URL image paste; save to disk and return (path, cleaned_line).
+    Supports png, jpeg, jpg, gif, webp formats."""
     if "data:image" not in line:
         return None, line
-    m = re.search(r"data:image/(png|jpeg|jpg);base64,([A-Za-z0-9+/=]+)", line)
+    m = re.search(r"data:image/(png|jpeg|jpg|gif|webp);base64,([A-Za-z0-9+/=]+)", line)
     if not m:
         return None, line
-    ext = "jpg" if m.group(1) in ("jpeg", "jpg") else "png"
+    _ext_map = {"jpeg": "jpg", "jpg": "jpg", "png": "png", "gif": "gif", "webp": "webp"}
+    ext = _ext_map.get(m.group(1), "png")
     b64 = m.group(2)
     try:
         raw = base64.b64decode(b64)
@@ -156,12 +160,87 @@ if _readline_available and _tui_prompt_session is None:
 
 _symbol_cache: list[str] = []
 _symbol_cache_ts: float = 0.0
+# Mutable workspace root reference for path completion; updated by run_tui().
+_workspace_root_ref: list[str] = []
+_ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 
 
 def _reset_symbol_cache() -> None:
     global _symbol_cache, _symbol_cache_ts
     _symbol_cache = []
     _symbol_cache_ts = 0.0
+
+
+# Theme support: OLLAMACODE_THEME env var (dark/light)
+_THEMES: dict[str, dict[str, str]] = {
+    "dark": {
+        "panel_main": "green",
+        "panel_chat": "blue",
+        "panel_tools": "magenta",
+        "panel_agents": "cyan",
+        "panel_status": "green",
+        "panel_timeline": "yellow",
+        "panel_info": "dim",
+        "status_dim": "dim",
+    },
+    "light": {
+        "panel_main": "dark_green",
+        "panel_chat": "dark_blue",
+        "panel_tools": "dark_magenta",
+        "panel_agents": "dark_cyan",
+        "panel_status": "dark_green",
+        "panel_timeline": "dark_goldenrod",
+        "panel_info": "grey50",
+        "status_dim": "grey50",
+    },
+}
+
+
+def _get_theme() -> dict[str, str]:
+    """Return the active theme dict based on OLLAMACODE_THEME env var."""
+    name = os.environ.get("OLLAMACODE_THEME", "dark").strip().lower()
+    return _THEMES.get(name, _THEMES["dark"])
+
+
+def _highlight_diff(diff_text: str) -> Any:
+    """Syntax-highlight a unified diff using Pygments if available; returns a Rich renderable."""
+    if not diff_text:
+        return diff_text
+    try:
+        from pygments import highlight as pyg_highlight
+        from pygments.lexers import DiffLexer
+        from pygments.formatters import TerminalTrueColorFormatter
+
+        return pyg_highlight(diff_text, DiffLexer(), TerminalTrueColorFormatter())
+    except ImportError:
+        return diff_text
+
+
+def _escape_rich_markup(text: str) -> str:
+    """Escape Rich markup tags in user input so they are not interpreted as formatting."""
+    if not text or "[" not in text:
+        return text
+    return text.replace("[", "\\[")
+
+
+def _sanitize_stream_text(text: str) -> str:
+    """
+    Remove terminal control noise so TUI panels don't show raw escape sequences
+    or carriage-return artifacts while streaming.
+    """
+    if not text:
+        return ""
+    cleaned = _ANSI_ESCAPE_RE.sub("", text)
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = cleaned.replace("\x00", "")
+    return cleaned
+
+
+def _set_apple_fm_session_key(session_id: str | None) -> None:
+    if not session_id:
+        return
+    os.environ.setdefault("OLLAMACODE_APPLE_FM_STATEFUL", "1")
+    os.environ["OLLAMACODE_APPLE_FM_SESSION_KEY"] = session_id
 
 
 if _tui_prompt_session is None:
@@ -199,7 +278,11 @@ if _tui_prompt_session is None:
             return _symbol_cache
 
         def _path_completions(prefix: str) -> list[str]:
-            root = Path(os.environ.get("OLLAMACODE_FS_ROOT") or os.getcwd())
+            root = Path(
+                _workspace_root_ref[0]
+                if _workspace_root_ref
+                else os.environ.get("OLLAMACODE_FS_ROOT") or os.getcwd()
+            )
             if prefix.startswith("@"):
                 prefix = prefix[1:]
             base = root / prefix
@@ -270,6 +353,33 @@ if _tui_prompt_session is None:
                 event.app.current_buffer.insert_text(text)
                 event.app.current_buffer.validate_and_handle()
 
+        @kb_main.add("c-l")
+        def _clear_screen(event):
+            """Ctrl+L clears the screen."""
+            event.app.renderer.clear()
+
+        @kb_main.add("c-v")
+        def _paste_image(event):
+            """Ctrl+V: attempt clipboard image paste via pngpaste (macOS), then fall back to text paste."""
+            try:
+                tmp_dir = Path.home() / ".ollamacode" / "clipboard"
+                tmp_dir.mkdir(parents=True, exist_ok=True)
+                tmp_path = tmp_dir / f"clipboard_{int(time.time())}.png"
+                p = subprocess.run(
+                    ["pngpaste", str(tmp_path)],
+                    capture_output=True,
+                    text=True,
+                )
+                if p.returncode == 0 and tmp_path.exists():
+                    event.app.current_buffer.insert_text(f"/image {tmp_path} ")
+                    return
+            except Exception:
+                pass
+            # Fall back to default paste behavior
+            event.app.current_buffer.paste_clipboard_data(
+                event.app.clipboard.get_data()
+            )
+
         _tui_prompt_session = PromptSession(
             history=InMemoryHistory(),
             completer=_SlashCommandCompleter(),
@@ -310,7 +420,8 @@ def _conversation_to_markdown(
     parts = []
     for role, text in history:
         label = "**You**" if role == "user" else "**Assistant**"
-        parts.append(f"{label}\n\n{text}")
+        display_text = _escape_rich_markup(text) if role == "user" else text
+        parts.append(f"{label}\n\n{display_text}")
     if current:
         parts.append("**Assistant** *(streaming)*\n\n" + current)
     body = "\n\n---\n\n".join(parts) if parts else "*(no messages yet)*"
@@ -407,9 +518,14 @@ def _handle_tui_slash(
     line = line.strip()
     if not line.startswith("/"):
         return None
-    parts = line.split(maxsplit=1)
-    cmd = (parts[0] or "").lower()
-    rest = (parts[1] or "").strip() if len(parts) > 1 else ""
+    # Use shlex to handle quoted arguments (e.g. /session "My Session Title")
+    try:
+        _shlex_parts = shlex.split(line)
+    except ValueError:
+        # Malformed quoting — fall back to simple split
+        _shlex_parts = line.split(maxsplit=1)
+    cmd = (_shlex_parts[0] if _shlex_parts else "").lower()
+    rest = " ".join(_shlex_parts[1:]) if len(_shlex_parts) > 1 else ""
     # Custom commands from commands.md
     if custom_commands:
         for name, description, prompt_template in custom_commands:
@@ -429,6 +545,7 @@ def _handle_tui_slash(
                 from .sessions import create_session
 
                 session_ref[0] = create_session("")
+                _set_apple_fm_session_key(session_ref[0])
                 console.print("[dim]New session started.[/]")
             except Exception:
                 console.print("[dim]Conversation cleared.[/]")
@@ -445,6 +562,8 @@ def _handle_tui_slash(
   /resume [id]  Resume a session by id
   /session [title]  Show current session or set title
   /branch       Branch current session (copy history to new session)
+  /checkpoints  List recent checkpoints for this session
+  /rewind [id]  Rewind code to a checkpoint (use /checkpoints to list)
   /help         Show this help
   /model [name] Show or set Ollama model
   /fix          Run linter, send errors to model
@@ -497,6 +616,13 @@ def _handle_tui_slash(
         return "help"
     if cmd == "/model":
         if rest:
+            _model_name_re = re.compile(r"^[a-zA-Z0-9._:/@-]+$")
+            if len(rest) > 200 or not _model_name_re.match(rest):
+                logger.warning("Invalid model name rejected: %r", rest[:80])
+                console.print(
+                    "[red]Invalid model name. Use alphanumeric, dots, colons, slashes, hyphens (max 200 chars).[/]"
+                )
+                return "help"
             model_ref[0] = rest
             console.print(f"[dim]Model set to: {rest}[/]")
             return "help"
@@ -758,6 +884,7 @@ def _handle_tui_slash(
                     history.append(("assistant", content))
             if session_ref is not None:
                 session_ref[0] = rid
+                _set_apple_fm_session_key(session_ref[0])
             console.print(
                 f"[dim]Resumed session {rid[:8]}... ({len(msgs)} messages)[/]"
             )
@@ -911,8 +1038,12 @@ def _handle_tui_slash(
 
             sid = session_ref[0]
             if rest:
-                save_session(sid, rest.strip(), message_history)
-                console.print(f"[dim]Session title set to: {rest.strip()[:60]}[/]")
+                new_title = rest.strip()[:500]
+                if len(rest.strip()) > 500:
+                    logger.warning("Session title truncated to 500 chars")
+                    console.print("[dim]Title truncated to 500 characters.[/]")
+                save_session(sid, new_title, message_history, workspace_root)
+                console.print(f"[dim]Session title set to: {new_title[:60]}[/]")
                 return "help"
             info = get_session_info(sid)
             if not info:
@@ -938,11 +1069,96 @@ def _handle_tui_slash(
                 console.print("[dim]Could not branch (session not found).[/]")
                 return "help"
             session_ref[0] = new_id
+            _set_apple_fm_session_key(session_ref[0])
             console.print(f"[dim]Branched to new session {new_id[:8]}...[/]")
             return ("branch_session", new_id)
         except Exception as e:
             logger.debug("Branch failed: %s", e)
             console.print("[dim]Branch failed.[/]")
+        return "help"
+    if cmd == "/checkpoints":
+        if session_ref is None:
+            console.print("[dim]Session persistence not active.[/]")
+            return "help"
+        try:
+            from .checkpoints import list_checkpoints
+            from datetime import datetime
+            from rich.table import Table as T
+
+            rows = list_checkpoints(session_ref[0], limit=10)
+            if not rows:
+                console.print("[dim]No checkpoints yet.[/]")
+                return "help"
+            t = T(title="Recent checkpoints")
+            t.add_column("id")
+            t.add_column("time")
+            t.add_column("files")
+            t.add_column("prompt")
+            for r in rows:
+                ts = datetime.fromtimestamp(r["created_at"]).strftime("%Y-%m-%d %H:%M")
+                t.add_row(
+                    r["id"][:8],
+                    ts,
+                    str(r.get("file_count", "")),
+                    (r.get("prompt") or "")[:48],
+                )
+            console.print(t)
+        except Exception as e:
+            logger.debug("Checkpoints list failed: %s", e)
+            console.print("[dim]Could not list checkpoints.[/]")
+        return "help"
+    if cmd == "/rewind":
+        if session_ref is None:
+            console.print("[dim]Session persistence not active.[/]")
+            return "help"
+        parts = (rest or "").strip().split()
+        if not parts:
+            console.print("[dim]Usage: /rewind <id|index> [code|conversation|both][/]")
+            return "help"
+        mode = parts[1].lower() if len(parts) > 1 else "code"
+        try:
+            from .checkpoints import list_checkpoints, restore_checkpoint
+
+            rows = list_checkpoints(session_ref[0], limit=20)
+            if not rows:
+                console.print("[dim]No checkpoints yet.[/]")
+                return "help"
+            ident = parts[0]
+            row = None
+            if ident.isdigit():
+                idx = int(ident) - 1
+                if 0 <= idx < len(rows):
+                    row = rows[idx]
+            else:
+                for r in rows:
+                    if r["id"].startswith(ident):
+                        row = r
+                        break
+            if row is None:
+                console.print("[dim]Checkpoint not found.[/]")
+                return "help"
+            if mode not in ("code", "conversation", "both"):
+                console.print("[dim]Mode must be code, conversation, or both.[/]")
+                return "help"
+            ans = input("Rewind now? This may overwrite files. [y/N] ").strip().lower()
+            if ans not in ("y", "yes"):
+                return "help"
+            if mode in ("code", "both"):
+                modified = restore_checkpoint(row["id"], workspace_root or os.getcwd())
+                console.print(f"[dim]Rewound {len(modified)} file(s).[/]")
+            if mode in ("conversation", "both"):
+                idx = int(row.get("message_index") or 0)
+                message_history[:] = message_history[:idx]
+                history.clear()
+                for m in message_history:
+                    role = (m.get("role") or "").strip().lower()
+                    if role in ("user", "assistant"):
+                        history.append((role, m.get("content") or ""))
+                console.print("[dim]Conversation rewound.[/]")
+            return "help"
+        except Exception as e:
+            logger.debug("Rewind failed: %s", e)
+            console.print("[dim]Rewind failed.[/]")
         return "help"
     if cmd == "/subagents":
         if not subagents:
@@ -1074,10 +1290,11 @@ async def _stream_into_live(
     """Consume async stream, call update_cb(accumulated, done) on each fragment, return final text."""
     parts: list[str] = []
     async for frag in stream:
-        parts.append(frag)
+        clean_frag = _sanitize_stream_text(frag)
+        parts.append(clean_frag)
         # Callback only updates status dict (no render), so a join here is fine;
         # but we defer the join to avoid O(n²) by only joining when _tick reads it.
-        update_cb(frag, False)
+        update_cb(clean_frag, False)
     final = "".join(parts)
     update_cb(final, True)
     return final
@@ -1110,8 +1327,9 @@ async def _stream_into_console(stream: AsyncIterator[str]) -> str:
             sys.stderr.write("\r" + (" " * 80) + "\r")
             sys.stderr.flush()
             showed_wait = False
-        chunks.append(frag)
-        print(frag, end="", flush=True)
+        clean_frag = _sanitize_stream_text(frag)
+        chunks.append(clean_frag)
+        print(clean_frag, end="", flush=True)
     if showed_wait:
         sys.stderr.write("\r" + (" " * 80) + "\r")
         sys.stderr.flush()
@@ -1164,6 +1382,9 @@ async def run_tui(
     memory_rag_snippet_chars: int = 220,
     autonomous_mode: bool = False,
     subagents: list[dict[str, Any]] | None = None,
+    session_id: str | None = None,
+    session_title: str | None = None,
+    session_history: list[dict[str, Any]] | None = None,
     provider: "Any" = None,
     provider_name: str = "ollama",
 ) -> None:
@@ -1194,6 +1415,7 @@ async def run_tui(
         logger = logging.getLogger(_name)
         logger.setLevel(logging.WARNING)
         logger.propagate = False
+        logger.disabled = True
 
     console = Console()
     _SYSTEM = (
@@ -1271,12 +1493,47 @@ async def run_tui(
             + code_style.strip()
         )
 
+    import fnmatch
+    from .bridge import BUILTIN_SERVER_PREFIXES
+    from .checkpoints import CheckpointRecorder
+    from .hooks import HookManager
+
+    root = workspace_root if workspace_root is not None else os.getcwd()
+    # Update workspace root ref so path completion always uses current root.
+    if _workspace_root_ref:
+        _workspace_root_ref[0] = root
+    else:
+        _workspace_root_ref.append(root)
     history: list[tuple[str, str]] = []
     message_history: list[dict[str, Any]] = []
     try:
-        from .sessions import create_session
+        from .sessions import create_session, load_session, save_session
 
-        session_ref: list[str] = [create_session("")]
+        session_ref: list[str] = []
+        if session_id:
+            msgs = (
+                session_history
+                if session_history is not None
+                else load_session(session_id)
+            )
+            if msgs is None:
+                console.print(
+                    f"[yellow]Warning:[/] Session not found ({session_id}); starting new session."
+                )
+            else:
+                session_ref = [session_id]
+                _set_apple_fm_session_key(session_ref[0])
+                message_history = list(msgs)
+                for m in message_history:
+                    role = (m.get("role") or "").strip().lower()
+                    content = m.get("content") or ""
+                    if role in ("user", "assistant"):
+                        history.append((role, content))
+                if session_title:
+                    save_session(session_id, session_title, message_history, root)
+        if not session_ref:
+            session_ref = [create_session(session_title or "", workspace_root=root)]
+            _set_apple_fm_session_key(session_ref[0])
     except Exception:
         logger.debug("Session init failed", exc_info=True)
         console.print(
@@ -1286,6 +1543,84 @@ async def run_tui(
     pending_image_ref: list[tuple[str, str] | None] = [None]
     model_ref = [model]
     autonomous_ref = [autonomous_mode]
+    hook_mgr = HookManager(
+        workspace_root or os.getcwd(), session_ref[0] if session_ref else None
+    )
+    checkpoints_enabled = os.environ.get("OLLAMACODE_CHECKPOINTS", "1") != "0"
+    recorder_ref: list[CheckpointRecorder | None] = [None]
+    current_prompt_ref: list[str | None] = [None]
+
+    def _normalize_tool_name(name: str) -> str:
+        n = (name or "").strip()
+        if n.startswith("functions::"):
+            n = n[len("functions::") :]
+        for prefix in BUILTIN_SERVER_PREFIXES:
+            if n.startswith(prefix):
+                n = n[len(prefix) :]
+        return n
+
+    def _tool_paths_from_args(tool_name: str, arguments: dict[str, Any]) -> list[str]:
+        base = _normalize_tool_name(tool_name)
+        paths: list[str] = []
+        if base in ("write_file", "edit_file"):
+            p = arguments.get("path")
+            if isinstance(p, str) and p:
+                paths.append(p)
+        elif base == "multi_edit":
+            edits = arguments.get("edits")
+            if isinstance(edits, list):
+                for item in edits:
+                    if isinstance(item, dict):
+                        p = item.get("path")
+                        if isinstance(p, str) and p:
+                            paths.append(p)
+        return paths
+
+    def _is_allowed_tool(name: str) -> bool:
+        if not allowed_tools:
+            return False
+        base = _normalize_tool_name(name)
+        for pat in allowed_tools:
+            try:
+                if fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(base, pat):
+                    return True
+            except Exception:
+                if pat == name or pat == base:
+                    return True
+        return False
+
+    def _maybe_checkpoint(prompt: str) -> None:
+        if not checkpoints_enabled or not session_ref:
+            recorder_ref[0] = None
+            return
+        recorder_ref[0] = CheckpointRecorder(
+            session_ref[0],
+            root,
+            prompt,
+            len(message_history),
+        )
+
+    # Set to prevent fire-and-forget asyncio tasks from being GC'd before completion.
+    _background_tasks: set[asyncio.Task] = set()
+
+    def _tool_start_cb(n: str, a: dict) -> None:
+        r = recorder_ref[0]
+        if r is not None:
+            for p in _tool_paths_from_args(n, a):
+                r.record_pre(p)
+
+    def _tool_end_cb(n: str, a: dict, s: str) -> None:
+        task = asyncio.create_task(
+            hook_mgr.run_post_tool_use(
+                n,
+                a,
+                s,
+                bool(str(s or "").lower().startswith("tool error")),
+                user_prompt=current_prompt_ref[0],
+            )
+        )
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
     def effective_confirm() -> bool:
         return confirm_tool_calls and not autonomous_ref[0]
@@ -1329,7 +1664,28 @@ async def run_tui(
         _prompt = f"You [{_provider_prefix}{model_ref[0]}]: "
         if _tui_prompt_session is not None:
             return _tui_prompt_session.prompt(_prompt).strip()
-        return input(_prompt).strip()
+        line = input(_prompt)
+        if os.environ.get("OLLAMACODE_TUI_MULTILINE", "1") == "1":
+            stripped = line.strip()
+            if stripped == '"""':
+                lines: list[str] = []
+                while True:
+                    cont = input("... ")
+                    if cont.strip() == '"""':
+                        break
+                    lines.append(cont)
+                return "\n".join(lines).strip()
+            if line.endswith("\\"):
+                lines = [line[:-1]]
+                while True:
+                    cont = input("... ")
+                    if cont.endswith("\\"):
+                        lines.append(cont[:-1])
+                        continue
+                    lines.append(cont)
+                    break
+                return "\n".join(lines).strip()
+        return line.strip()
 
     def add_input_history(line: str) -> None:
         """Add a submitted line to input history so Up/Down can recall it (readline path only)."""
@@ -1341,7 +1697,6 @@ async def run_tui(
             except Exception:
                 pass
 
-    root = workspace_root if workspace_root is not None else os.getcwd()
     from .commands_loader import load_custom_commands
 
     _custom_commands_raw = load_custom_commands(root)
@@ -1381,7 +1736,8 @@ async def run_tui(
         if not edits:
             return
         console.print("\n[bold]Proposed edits:[/]")
-        console.print(format_edits_diff(edits, root))
+        diff_str = format_edits_diff(edits, root)
+        console.print(_highlight_diff(diff_str))
         while True:
             choice = input("Apply edits? [a]ll / [s]elect / [n]: ").strip().lower()
             if choice in ("a", "all", "y", "yes"):
@@ -1601,6 +1957,7 @@ async def run_tui(
         "tool": "",
         "accumulated": "",
         "last_user": "",
+        "token_count": 0,
         "agents_running": 0,
         "agents_done": 0,
         "agents": [],
@@ -1608,6 +1965,11 @@ async def run_tui(
         "agent_roles": [],
         "agent_task": "",
     }
+
+    def _status_update(**kwargs: Any) -> None:
+        """Batch-update status dict for consistent multi-key mutations."""
+        status.update(kwargs)
+
     tool_trace: deque[str] = deque(maxlen=tui_tool_trace_max)
     tool_log: deque[str] = deque(maxlen=tui_tool_log_max)
     trace_filter = ""
@@ -1615,8 +1977,21 @@ async def run_tui(
 
     async def _before_tool_call_tui(tool_name: str, arguments: dict):
         """Prompt [y/N/e] per tool with Rich panel when confirm_tool_calls; e = edit args in $EDITOR."""
-        status["phase"] = "tool"
-        status["tool"] = tool_name
+        modified_by_hook = False
+        try:
+            decision = await hook_mgr.run_pre_tool_use(
+                tool_name, arguments, user_prompt=current_prompt_ref[0]
+            )
+            if decision and decision.behavior == "deny":
+                return ("skip", decision.message or "Blocked by hook.")
+            if decision and decision.behavior == "modify" and decision.updated_input:
+                arguments = decision.updated_input
+                modified_by_hook = True
+        except Exception:
+            pass
+        if _is_allowed_tool(tool_name):
+            return ("edit", arguments) if modified_by_hook else "run"
+        _status_update(phase="tool", tool=tool_name)
         one_line = _tool_call_one_line(tool_name, arguments)
         args_preview = json.dumps(arguments, indent=2)
         if len(args_preview) > 400:
@@ -1632,24 +2007,27 @@ async def run_tui(
             None, lambda: input("[y/N/e(dit)]? ").strip().lower() or "n"
         )
         if choice in ("y", "yes"):
-            status["phase"] = "streaming" if status.get("has_output") else "thinking"
-            status["tool"] = ""
-            return "run"
+            _status_update(
+                phase="streaming" if status.get("has_output") else "thinking", tool=""
+            )
+            return ("edit", arguments) if modified_by_hook else "run"
         if choice in ("n", "no", ""):
-            status["phase"] = "streaming" if status.get("has_output") else "thinking"
-            status["tool"] = ""
+            _status_update(
+                phase="streaming" if status.get("has_output") else "thinking", tool=""
+            )
             return "skip"
         if choice in ("e", "edit"):
             edited = _edit_tool_args_in_editor(arguments, root)
             if edited is not None:
-                status["phase"] = (
-                    "streaming" if status.get("has_output") else "thinking"
+                _status_update(
+                    phase="streaming" if status.get("has_output") else "thinking",
+                    tool="",
                 )
-                status["tool"] = ""
                 return ("edit", edited)
             console.print("[dim]Invalid JSON or cancel; running with original args.[/]")
-            status["phase"] = "streaming" if status.get("has_output") else "thinking"
-            status["tool"] = ""
+            _status_update(
+                phase="streaming" if status.get("has_output") else "thinking", tool=""
+            )
             return "run"
         console.print("[dim]Choose y (run), N (skip), or e (edit).[/]")
         return await _before_tool_call_tui(tool_name, arguments)  # re-prompt
@@ -1697,11 +2075,12 @@ async def run_tui(
     except ValueError:
         agents_preview_lines = 10
     agents_preview_lines = max(3, min(30, agents_preview_lines))
+    _theme = _get_theme()
     console.print(
         Panel(
             "[bold]OllamaCode TUI[/] – [dim]/help[/] for commands. Up/Down = history. Empty or Ctrl+C to exit.",
             title="OllamaCode",
-            border_style="green",
+            border_style=_theme["panel_main"],
         )
     )
     if show_semantic_hint:
@@ -1906,6 +2285,8 @@ async def run_tui(
                 "resume_session",
                 "branch_session",
             ):
+                if session_ref:
+                    hook_mgr = HookManager(root, session_ref[0])
                 continue
             if (
                 isinstance(result, tuple)
@@ -1967,7 +2348,7 @@ async def run_tui(
                     try:
                         from .sessions import save_session
 
-                        save_session(session_ref[0], None, message_history)
+                        save_session(session_ref[0], None, message_history, root)
                     except Exception:
                         logger.debug("Session save failed", exc_info=True)
                 console.print(
@@ -2041,7 +2422,7 @@ async def run_tui(
                         try:
                             from .sessions import save_session
 
-                            save_session(session_ref[0], None, message_history)
+                            save_session(session_ref[0], None, message_history, root)
                         except Exception:
                             logger.debug("Session save failed", exc_info=True)
                     console.print(
@@ -2235,7 +2616,7 @@ async def run_tui(
                         try:
                             from .sessions import save_session
 
-                            save_session(session_ref[0], None, message_history)
+                            save_session(session_ref[0], None, message_history, root)
                         except Exception:
                             logger.debug("Session save failed", exc_info=True)
                     console.print(
@@ -2611,6 +2992,8 @@ async def run_tui(
                 pending_image_ref[0] = (img_path, "")
                 line = cleaned or line
             line_expanded = expand_at_refs(line, root)
+            current_prompt_ref[0] = str(line_expanded)
+            _maybe_checkpoint(str(line_expanded))
             model_for_turn = _route_model(str(line_expanded), model_ref[0])
             image_paths_list: list[str] = []
             if pending_image_ref[0]:
@@ -2718,7 +3101,7 @@ async def run_tui(
                     try:
                         from .sessions import save_session
 
-                        save_session(session_ref[0], None, message_history)
+                        save_session(session_ref[0], None, message_history, root)
                     except Exception:
                         logger.debug("Session save failed", exc_info=True)
                 console.print(
@@ -2730,8 +3113,8 @@ async def run_tui(
 
             def _status_line() -> str:
                 spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-                # Use wall time so the spinner runs at ~8 fps independent of refresh rate.
-                idx = int(time.monotonic() * 8) % len(spinner)
+                # Tie spinner to configured refresh rate so animation stays in sync with redraws.
+                idx = int(time.monotonic() * max(1, tui_refresh_hz)) % len(spinner)
                 spin = spinner[idx]
                 if status["phase"] == "tool" and status.get("tool"):
                     return f"[dim]{spin} Tool: {status['tool']} (awaiting approval)[/]"
@@ -2819,6 +3202,32 @@ async def run_tui(
                     f"[bold]Last:[/] {_safe_single_line(last_user, 160)}"
                 )
 
+            def _sidebar_text() -> str:
+                """Compact sidebar showing session metadata, token count, tool calls, duration."""
+                session_short = session_ref[0][:8] if session_ref else "none"
+                tokens = int(status.get("token_count", 0))
+                tool_calls_count = int(status.get("tool_calls", 0))
+                tool_errs = int(status.get("tool_errors", 0))
+                last_dur = status.get("last_duration")
+                dur_str = (
+                    f"{last_dur:.1f}s" if isinstance(last_dur, (int, float)) else "-"
+                )
+                mode = (
+                    "auto"
+                    if autonomous_ref[0]
+                    else "confirm"
+                    if effective_confirm()
+                    else "open"
+                )
+                lines = [
+                    f"[bold]Session:[/] {session_short}",
+                    f"[bold]Tokens:[/]  {tokens}",
+                    f"[bold]Tools:[/]   {tool_calls_count} ({tool_errs} err)",
+                    f"[bold]Duration:[/]{dur_str}",
+                    f"[bold]Mode:[/]    {mode}",
+                ]
+                return "\n".join(lines)
+
             def _agents_panel_text() -> str:
                 agents = status.get("agents") or []
                 if not agents:
@@ -2897,7 +3306,10 @@ async def run_tui(
                     parts = []
                     for role, text in hist:
                         label = "**You**" if role == "user" else "**Assistant**"
-                        parts.append(f"{label}\n\n{text}")
+                        display_text = (
+                            _escape_rich_markup(text) if role == "user" else text
+                        )
+                        parts.append(f"{label}\n\n{display_text}")
                     cache["body"] = "\n\n---\n\n".join(parts) if parts else ""
                 # Build final markdown: cached history + streaming suffix.
                 parts_list = []
@@ -2915,6 +3327,10 @@ async def run_tui(
                 lines = md.split("\n")
                 if len(lines) > live_panel_max_lines:
                     md = "\n".join(lines[-live_panel_max_lines:])
+                # Hard char limit to prevent Markdown parser from choking on very long content.
+                _MAX_CHAT_MD_CHARS = 50_000
+                if len(md) > _MAX_CHAT_MD_CHARS:
+                    md = "*(content truncated)*\n\n" + md[-_MAX_CHAT_MD_CHARS:]
                 return md
 
             # Cache parsed Markdown object — only re-parse when chat content changes.
@@ -2934,18 +3350,43 @@ async def run_tui(
                 else:
                     chat_panel_content = chat_renderable
                 panels = [
-                    Panel(_timeline_text(), title="Timeline", border_style="yellow"),
-                    Panel(chat_panel_content, title="Chat", border_style="blue"),
+                    Panel(
+                        _timeline_text(),
+                        title="Timeline",
+                        border_style=_theme["panel_timeline"],
+                    ),
+                    Panel(
+                        chat_panel_content,
+                        title="Chat",
+                        border_style=_theme["panel_chat"],
+                    ),
                 ]
                 if not compact_mode:
                     panels.append(
-                        Panel(_tool_panel_text(), title="Tools", border_style="magenta")
+                        Panel(
+                            _tool_panel_text(),
+                            title="Tools",
+                            border_style=_theme["panel_tools"],
+                        )
                     )
                     panels.append(
-                        Panel(_agents_panel_text(), title="Agents", border_style="cyan")
+                        Panel(
+                            _agents_panel_text(),
+                            title="Agents",
+                            border_style=_theme["panel_agents"],
+                        )
                     )
                 panels.append(
-                    Panel(_status_bar_text(), title="Status", border_style="green")
+                    Panel(
+                        _sidebar_text(), title="Info", border_style=_theme["panel_info"]
+                    )
+                )
+                panels.append(
+                    Panel(
+                        _status_bar_text(),
+                        title="Status",
+                        border_style=_theme["panel_status"],
+                    )
                 )
                 return Group(*panels)
 
@@ -2960,6 +3401,8 @@ async def run_tui(
                 status["phase"] = "streaming" if status["has_output"] else "thinking"
                 if status["has_output"]:
                     status["waiting_since"] = None
+                # Estimate token count (~4 chars per token)
+                status["token_count"] = len(status["accumulated"]) // 4
                 # Only render on final frame; _tick drives all intermediate renders.
                 if done:
                     live.update(
@@ -2974,6 +3417,7 @@ async def run_tui(
                 tool_trace.appendleft(
                     f"{ts} → {name} {_tool_call_one_line(name, arguments)}"
                 )
+                _tool_start_cb(name, arguments)
 
             def _on_tool_end(name: str, arguments: dict, summary: str) -> None:
                 status["phase"] = (
@@ -2988,8 +3432,52 @@ async def run_tui(
                     "…" if len(summary) > tui_tool_log_chars else ""
                 )
                 tool_log.appendleft(f"{ts} {name}: {trimmed}")
+                _tool_end_cb(name, arguments, summary)
 
             if session is not None:
+                if (
+                    provider is not None
+                    and hasattr(provider, "set_tool_executor")
+                    and os.environ.get("OLLAMACODE_APPLE_FM_NATIVE_TOOLS", "0") == "1"
+                ):
+                    from .mcp_client import call_tool, tool_result_to_content
+
+                    async def _exec_tool(name: str, args: dict):
+                        try:
+                            decision = await hook_mgr.run_pre_tool_use(
+                                name, args, user_prompt=current_prompt_ref[0]
+                            )
+                            if decision and decision.behavior == "deny":
+                                raise RuntimeError(
+                                    decision.message or "Blocked by hook."
+                                )
+                            if (
+                                decision
+                                and decision.behavior == "modify"
+                                and decision.updated_input
+                            ):
+                                args = decision.updated_input
+                        except Exception:
+                            pass
+                        r = recorder_ref[0]
+                        if r is not None:
+                            for p in _tool_paths_from_args(name, args):
+                                r.record_pre(p)
+                        result = await call_tool(session, name, args)
+                        out = tool_result_to_content(result)
+                        await hook_mgr.run_post_tool_use(
+                            name,
+                            args,
+                            out,
+                            getattr(result, "isError", False),
+                            user_prompt=current_prompt_ref[0],
+                        )
+                        return out
+
+                    try:
+                        provider.set_tool_executor(_exec_tool)
+                    except Exception:
+                        pass
                 mem_block = (
                     build_dynamic_memory_context(
                         cast(str, line_expanded),
@@ -3075,14 +3563,16 @@ async def run_tui(
                     transient=True,
                     vertical_overflow="crop",
                 ) as live:
-                    status["done"] = False
-                    status["phase"] = "thinking"
-                    status["accumulated"] = ""
-                    status["has_output"] = False
-                    status["tool_calls"] = 0
-                    status["tool_errors"] = 0
                     run_start = time.perf_counter()
-                    status["waiting_since"] = run_start
+                    _status_update(
+                        done=False,
+                        phase="thinking",
+                        accumulated="",
+                        has_output=False,
+                        tool_calls=0,
+                        tool_errors=0,
+                        waiting_since=run_start,
+                    )
                     ticker = asyncio.create_task(_tick())
                     stream_error = None
                     try:
@@ -3092,9 +3582,11 @@ async def run_tui(
                         final = "**Error:** Something went wrong while streaming the response."
                         stream_error = e
                     finally:
-                        status["done"] = True
-                        status["waiting_since"] = None
-                        status["last_duration"] = time.perf_counter() - run_start
+                        _status_update(
+                            done=True,
+                            waiting_since=None,
+                            last_duration=time.perf_counter() - run_start,
+                        )
                         ticker.cancel()
                         with contextlib.suppress(asyncio.CancelledError):
                             await ticker
@@ -3131,6 +3623,10 @@ async def run_tui(
                     status["waiting_since"] = None
                     status["last_duration"] = time.perf_counter() - run_start
 
+            final = _sanitize_stream_text(final)
+            if recorder_ref[0] is not None:
+                recorder_ref[0].finalize()
+                recorder_ref[0] = None
             history.append(("assistant", final))
             message_history.append({"role": "user", "content": line})
             message_history.append({"role": "assistant", "content": final})
@@ -3146,7 +3642,7 @@ async def run_tui(
                 try:
                     from .sessions import save_session
 
-                    save_session(session_ref[0], None, message_history)
+                    save_session(session_ref[0], None, message_history, root)
                 except Exception:
                     logger.debug("Session save failed", exc_info=True)
     finally:

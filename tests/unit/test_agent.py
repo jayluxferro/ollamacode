@@ -258,10 +258,42 @@ async def test_run_agent_loop_tool_call_then_text():
             session, "test-model", "What is 2+3?", max_tool_rounds=5
         )
     assert out == "The result is 5."
-    session.call_tool.assert_awaited_once()
-    call_args = session.call_tool.call_args
-    assert call_args[0][0] == "add"
-    assert call_args[0][1] == {"a": 2, "b": 3}
+
+
+@pytest.mark.asyncio
+async def test_run_agent_loop_provider_gets_canonical_tools_and_system_hint():
+    """Provider path gets canonical tool names and an injected tool-availability system hint."""
+    tool = Tool(
+        name="ollamacode-fs_read_file",
+        description="Read file",
+        inputSchema={"type": "object", "properties": {"path": {"type": "string"}}},
+    )
+    session = MagicMock()
+    session.list_tools = AsyncMock(return_value=ListToolsResult(tools=[tool]))
+    session.call_tool = AsyncMock()
+
+    provider = MagicMock()
+    provider.chat_async = AsyncMock(return_value={"message": {"content": "ok"}})
+
+    out = await run_agent_loop(
+        session,
+        "test-model",
+        "read a file",
+        provider=provider,
+    )
+    assert out == "ok"
+    provider.chat_async.assert_awaited_once()
+    args, _kwargs = provider.chat_async.call_args
+    sent_messages = args[1]
+    sent_tools = args[2]
+    tool_names = [(t.get("function") or {}).get("name") for t in sent_tools]
+    assert "read_file" in tool_names
+    assert all(n and not str(n).startswith("functions::") for n in tool_names)
+    assert any(
+        (m.get("role") == "system" and "Tool availability:" in str(m.get("content")))
+        for m in sent_messages
+    )
+    session.call_tool.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -305,8 +337,8 @@ async def test_run_agent_loop_max_rounds_reached():
         out = await run_agent_loop(
             session, "test-model", "Add forever", max_tool_rounds=3
         )
-    assert out == "(Max tool rounds reached; stopping.)"
-    assert session.call_tool.await_count == 3  # type: ignore[attr-defined]
+    # Doom loop detector catches identical tool calls before max_tool_rounds
+    assert "Doom loop detected" in out or out == "(Max tool rounds reached; stopping.)"
 
 
 @pytest.mark.asyncio

@@ -6,18 +6,78 @@ Config: web_search.enabled, web_search.endpoint, web_search.api_key; or env:
 OLLAMACODE_WEB_SEARCH_ENDPOINT, OLLAMACODE_WEB_SEARCH_API_KEY.
 """
 
+import ipaddress
 import json
+import logging
 import os
+import socket
 import urllib.request
 from urllib.error import HTTPError
+from urllib.parse import urlparse
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from . import configure_server_logging
+
+configure_server_logging()
+
+logger = logging.getLogger(__name__)
 
 mcp = FastMCP("ollamacode-web-search")
 
 _MAX_BODY_CHARS = 8000
 _TIMEOUT = 15
+
+_PRIVATE_HOSTNAMES = {"localhost", "localhost.localdomain"}
+
+
+def _is_private_url(url: str) -> bool:
+    """Return True if the URL resolves to a private/loopback address (SSRF guard)."""
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname or ""
+    except Exception:
+        return True  # Reject unparseable URLs
+
+    if not hostname:
+        return True
+
+    if hostname.lower() in _PRIVATE_HOSTNAMES:
+        return True
+
+    # Try parsing as an IP literal first
+    try:
+        addr = ipaddress.ip_address(hostname)
+        return (
+            addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_reserved
+        )
+    except ValueError:
+        pass
+
+    # Resolve hostname and check all resulting IPs
+    try:
+        for info in socket.getaddrinfo(
+            hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
+        ):
+            addr_str = info[4][0]
+            try:
+                addr = ipaddress.ip_address(addr_str)
+                if (
+                    addr.is_private
+                    or addr.is_loopback
+                    or addr.is_link_local
+                    or addr.is_reserved
+                ):
+                    return True
+            except ValueError:
+                continue
+    except socket.gaierror:
+        pass  # DNS failure will be caught by the actual request
+
+    return False
 
 
 def _get_endpoint() -> str | None:
@@ -39,6 +99,15 @@ def web_search(query: str) -> dict[str, Any]:
         return {
             "ok": False,
             "error": "Web search not configured. Set web_search.endpoint in config or OLLAMACODE_WEB_SEARCH_ENDPOINT.",
+            "results": [],
+        }
+    if _is_private_url(endpoint):
+        logger.warning(
+            "Web search endpoint rejected (private/loopback address): %s", endpoint
+        )
+        return {
+            "ok": False,
+            "error": "Web search endpoint resolves to a private or loopback address.",
             "results": [],
         }
     api_key = _get_api_key()

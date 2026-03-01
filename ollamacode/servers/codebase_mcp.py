@@ -4,12 +4,17 @@ Built-in codebase search MCP server: search_codebase, get_relevant_files, glob, 
 Root directory: OLLAMACODE_FS_ROOT env var, or current working directory.
 """
 
+import logging
 import os
 import re
 from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from . import configure_server_logging
+
+configure_server_logging()
+logger = logging.getLogger(__name__)
 
 mcp = FastMCP("ollamacode-codebase")
 
@@ -17,6 +22,7 @@ mcp = FastMCP("ollamacode-codebase")
 MAX_RESULTS = 50
 MAX_FILE_BYTES = 500_000
 SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build"}
+_REGEX_MAX_LENGTH = 500  # Max regex pattern length to prevent ReDoS
 
 
 def _root() -> Path:
@@ -32,16 +38,29 @@ def _resolve(path: str) -> Path:
     return resolved
 
 
+def _matches_file_types(path: Path, file_types: list[str] | None) -> bool:
+    """Check if a file path matches the given file type extensions."""
+    if not file_types:
+        return True
+    suffix = path.suffix.lower()
+    return suffix in {ft if ft.startswith(".") else f".{ft}" for ft in file_types}
+
+
 @mcp.tool()
 def search_codebase(
-    query: str, file_pattern: str = "*", max_results: int = MAX_RESULTS
+    query: str,
+    file_pattern: str = "*",
+    max_results: int = MAX_RESULTS,
+    file_types: list[str] | None = None,
 ) -> str:
     """
     Search the workspace for a text query (case-insensitive substring match).
     Returns matching file paths with line numbers and snippet context.
     file_pattern: glob for files to search (default '*' = all). Examples: '*.py', '*.ts'.
     max_results: cap on number of matches returned (default 50).
+    file_types: optional list of file extensions to filter by (e.g. [".py", ".js"]). When set, only files with matching extensions are searched.
     """
+    max_results = max(1, min(max_results, MAX_RESULTS))
     root = _root()
     query_lower = query.lower()
     results: list[tuple[str, int, str]] = []
@@ -52,6 +71,8 @@ def search_codebase(
             if not path.is_file():
                 continue
             if any(skip in path.parts for skip in SKIP_DIRS):
+                continue
+            if not _matches_file_types(path, file_types):
                 continue
             try:
                 if path.stat().st_size > MAX_FILE_BYTES:
@@ -74,6 +95,77 @@ def search_codebase(
         return f"No matches for {query!r} in workspace."
     lines = [f"{path}:{num}: {snippet}" for path, num, snippet in results]
     return "\n".join(lines)
+
+
+@mcp.tool()
+def search_incremental(
+    query: str,
+    offset: int = 0,
+    limit: int = 20,
+    file_pattern: str = "*",
+    file_types: list[str] | None = None,
+) -> dict[str, Any]:
+    """
+    Incremental (paginated) search: like search_codebase but returns a page of results.
+    query: text to search for (case-insensitive).
+    offset: number of matches to skip (default 0).
+    limit: max results to return in this page (default 20, max 50).
+    file_pattern: glob for files to search (default '*').
+    file_types: optional list of file extensions to filter by (e.g. [".py", ".js"]).
+    Returns: {results: [{path, line, snippet}], total: int, offset: int, has_more: bool}
+    """
+    limit = max(1, min(limit, MAX_RESULTS))
+    offset = max(0, offset)
+    root = _root()
+    query_lower = query.lower()
+    # Collect all matches up to offset + limit + 1 to know if there are more
+    all_matches: list[tuple[str, int, str]] = []
+    need = offset + limit + 1
+
+    try:
+        pattern = file_pattern.strip() or "*"
+        for path in root.rglob(pattern):
+            if not path.is_file():
+                continue
+            if any(skip in path.parts for skip in SKIP_DIRS):
+                continue
+            if not _matches_file_types(path, file_types):
+                continue
+            try:
+                if path.stat().st_size > MAX_FILE_BYTES:
+                    continue
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except (OSError, UnicodeDecodeError):
+                continue
+            rel_str = str(path.relative_to(root))
+            for i, line in enumerate(text.splitlines(), 1):
+                if query_lower in line.lower():
+                    all_matches.append((rel_str, i, line.strip()[:200]))
+                    if len(all_matches) >= need:
+                        break
+            if len(all_matches) >= need:
+                break
+    except Exception as e:
+        return {
+            "results": [],
+            "total": 0,
+            "offset": offset,
+            "has_more": False,
+            "error": str(e),
+        }
+
+    total_found = len(all_matches)
+    page = all_matches[offset : offset + limit]
+    has_more = total_found > offset + limit
+
+    return {
+        "results": [{"path": p, "line": n, "snippet": s} for p, n, s in page],
+        "total": total_found
+        if not has_more
+        else total_found - 1,  # total is at least this many
+        "offset": offset,
+        "has_more": has_more,
+    }
 
 
 @mcp.tool()
@@ -144,14 +236,18 @@ def grep(
     path: str = ".",
     context_lines: int = 0,
     max_results: int = 100,
+    file_types: list[str] | None = None,
 ) -> str:
     """
     Regex search in workspace files. Returns matching lines with optional context.
     pattern: regex (Python re). path: directory or file to search (default '.'). context_lines: lines before/after each match (default 0). max_results: cap matches (default 100).
+    file_types: optional list of file extensions to filter by (e.g. [".py", ".js"]). When set, only files with matching extensions are searched.
     """
     root = _root()
+    if len(pattern) > _REGEX_MAX_LENGTH:
+        return f"Regex pattern too long ({len(pattern)} chars, max {_REGEX_MAX_LENGTH})"
     try:
-        re.compile(pattern)
+        compiled = re.compile(pattern)
     except re.error as e:
         return f"Invalid regex: {e}"
     target = _resolve(path)
@@ -161,7 +257,9 @@ def grep(
         files = [
             p
             for p in target.rglob("*")
-            if p.is_file() and not any(s in p.parts for s in SKIP_DIRS)
+            if p.is_file()
+            and not any(s in p.parts for s in SKIP_DIRS)
+            and _matches_file_types(p, file_types)
         ]
     else:
         return f"Path not found: {path}"
@@ -182,7 +280,7 @@ def grep(
             for i, line in enumerate(lines):
                 if len(results) >= max_results:
                     break
-                if re.search(pattern, line):
+                if compiled.search(line):
                     start = max(0, i - ctx)
                     end = min(len(lines), i + ctx + 1)
                     block = "\n".join(

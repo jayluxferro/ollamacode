@@ -60,3 +60,7 @@ class BaseProvider(abc.ABC):
     def capabilities(self) -> ProviderCapabilities:
         """Feature flags for the provider (tools/streaming/embeddings/model listing)."""
         return ProviderCapabilities()
+
+    def set_tool_executor(self, executor) -> None:
+        """Optional hook for providers that support native tool execution."""
+        _ = executor

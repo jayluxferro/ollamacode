@@ -114,6 +114,7 @@ def test_log_command_writes_when_enabled(monkeypatch, tmp_path):
     log_file = tmp_path / "cmd.log"
     monkeypatch.setenv("OLLAMACODE_LOG_COMMANDS", "1")
     monkeypatch.setenv("OLLAMACODE_COMMAND_LOG", str(log_file))
+    monkeypatch.setenv("OLLAMACODE_FS_ROOT", str(tmp_path))
     monkeypatch.delenv("OLLAMACODE_BLOCK_DANGEROUS_COMMANDS", raising=False)
     monkeypatch.delenv("OLLAMACODE_ALLOWED_COMMANDS", raising=False)
     out = terminal_mcp.run_command("echo hi", cwd=str(tmp_path))

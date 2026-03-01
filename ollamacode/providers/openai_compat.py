@@ -112,15 +112,22 @@ def _parse_tool_calls(raw_tcs: list[Any]) -> list[dict[str, Any]]:
         )
         if fn is None:
             continue
-        name = getattr(fn, "name", None) or (
-            fn.get("name") if isinstance(fn, dict) else ""
-        )
-        args_raw = getattr(fn, "arguments", "{}") or (
-            fn.get("arguments", "{}") if isinstance(fn, dict) else "{}"
-        )
+        if isinstance(fn, dict):
+            name = fn.get("name") or ""
+            args_raw = fn.get("arguments", "{}")
+        else:
+            name = getattr(fn, "name", None) or ""
+            args_raw = getattr(fn, "arguments", "{}")
+        if args_raw is None:
+            args_raw = "{}"
         try:
             args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
-        except Exception:
+        except (json.JSONDecodeError, ValueError):
+            logger.warning(
+                "Failed to parse tool arguments for %s: %s",
+                name,
+                args_raw[:200] if isinstance(args_raw, str) else type(args_raw),
+            )
             args = {}
         tool_calls.append({"function": {"name": name or "", "arguments": args}})
     return tool_calls
@@ -178,8 +185,11 @@ class OpenAICompatProvider(BaseProvider):
         except Exception as e:
             raise RuntimeError(f"{self._provider_name} API error: {e}") from e
         finally:
-            if hasattr(client, "close"):
-                await client.close()
+            try:
+                if hasattr(client, "close"):
+                    await client.close()
+            except Exception:
+                pass
 
     def chat_stream_sync(
         self,
@@ -209,6 +219,7 @@ class OpenAICompatProvider(BaseProvider):
                 False,
                 "The 'openai' package is required. Install: pip install openai",
             )
+        client = None
         try:
             client = openai.OpenAI(api_key=self._api_key, base_url=self._base_url)
             client.models.list()
@@ -234,6 +245,12 @@ class OpenAICompatProvider(BaseProvider):
                     f"{self._provider_name}: endpoint reachable (models list not supported).",
                 )
             return False, f"{self._provider_name} error: {e}"
+        finally:
+            if client is not None and hasattr(client, "close"):
+                try:
+                    client.close()
+                except Exception:
+                    pass
 
     def list_models(self) -> list[str]:
         try:
