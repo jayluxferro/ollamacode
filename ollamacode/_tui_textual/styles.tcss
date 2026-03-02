@@ -1,0 +1,466 @@
+/* OllamaCode TUI Stylesheet — OpenCode-inspired layout */
+
+/* ─── Default Theme Variables (opencode) ─── */
+$primary: #fab283;
+$secondary: #7dc4e4;
+$accent: #a6da95;
+$error: #f38ba8;
+$warning: #fab387;
+$success: #a6e3a1;
+$info: #89b4fa;
+$text: #cdd6f4;
+$text-muted: #313244;
+$background: #1e1e2e;
+$background-panel: #252534;
+$background-element: #2c2c3b;
+$border: #313244;
+$border-active: #fab283;
+$border-subtle: #2a2a3a;
+$diff-added: #a6e3a1;
+$diff-removed: #f38ba8;
+
+/* ─── Global ─── */
+Screen {
+    background: $background;
+    color: $text;
+}
+
+/* ─── Home Screen ─── */
+HomeScreen {
+    layout: vertical;
+    align: center middle;
+}
+
+#home-container {
+    width: 100%;
+    height: 100%;
+    align: center middle;
+}
+
+#home-spacer-top {
+    height: 1fr;
+}
+
+#home-spacer-bottom {
+    height: 1fr;
+}
+
+#home-logo {
+    width: auto;
+    height: auto;
+    content-align: center middle;
+    text-align: center;
+    margin-bottom: 1;
+}
+
+#home-prompt-container {
+    width: 80;
+    max-width: 90%;
+    height: auto;
+}
+
+#home-prompt {
+    width: 100%;
+}
+
+Tips {
+    text-align: center;
+    color: $text-muted;
+    margin-top: 1;
+    margin-bottom: 1;
+}
+
+#home-tips {
+    text-align: center;
+    color: $text-muted;
+    margin-top: 1;
+}
+
+#home-footer {
+    dock: bottom;
+    height: 1;
+    background: $background-panel;
+    color: $text-muted;
+    padding: 0 2;
+    content-align: center middle;
+    text-align: center;
+}
+
+/* ─── Session Screen ─── */
+SessionScreen {
+    layout: vertical;
+}
+
+#session-body {
+    layout: horizontal;
+    height: 1fr;
+}
+
+#session-main {
+    width: 1fr;
+    height: 100%;
+    layout: vertical;
+    padding: 0 2;
+}
+
+/* ─── Session Header ─── */
+SessionHeader {
+    dock: top;
+    height: 1;
+    background: $background-panel;
+    color: $text;
+    padding: 0 2;
+    layout: horizontal;
+}
+
+#header-title {
+    width: 1fr;
+    text-style: bold;
+}
+
+#header-tokens {
+    width: auto;
+    color: $text-muted;
+    margin-right: 2;
+}
+
+#header-cost {
+    width: auto;
+    color: $text-muted;
+    margin-right: 2;
+}
+
+#header-model {
+    width: auto;
+    color: $accent;
+}
+
+/* ─── Message List ─── */
+MessageList {
+    height: 1fr;
+    scrollbar-color: $border;
+    scrollbar-color-hover: $primary;
+    scrollbar-color-active: $primary;
+    padding: 0 0 1 0;
+}
+
+#message-list {
+    height: 1fr;
+}
+
+/* ─── User Message ─── */
+UserMessage {
+    margin: 1 0 0 0;
+    padding: 0 1;
+    border-left: thick $primary;
+    background: $background-panel;
+    height: auto;
+}
+
+.user-message {
+    margin: 1 0 0 0;
+    padding: 0 1;
+    border-left: thick $primary;
+    background: $background-panel;
+}
+
+.user-message-text {
+    margin: 0;
+}
+
+/* ─── Assistant Message ─── */
+AssistantMessage {
+    margin: 1 0 0 0;
+    padding: 0 1;
+    height: auto;
+}
+
+.assistant-message {
+    margin: 1 0 0 0;
+    padding: 0 1;
+}
+
+.assistant-markdown {
+    margin: 0;
+}
+
+/* ─── Tool Calls ─── */
+InlineToolCall {
+    height: 1;
+    margin: 0 0 0 1;
+    color: $text-muted;
+}
+
+BlockToolCall {
+    margin: 0 0 0 1;
+    padding: 0 1;
+    border-left: tall $border;
+}
+
+.tool-call {
+    margin: 0 0 0 1;
+    padding: 0 1;
+    border-left: tall $border;
+    color: $text-muted;
+}
+
+.tool-call-header {
+    text-style: bold;
+    color: $secondary;
+    height: 1;
+}
+
+.tool-call-body {
+    color: $text-muted;
+    max-height: 15;
+    overflow-y: auto;
+}
+
+.tool-call-output {
+    color: $text-muted;
+    max-height: 10;
+    overflow-y: auto;
+}
+
+.tool-call-inline {
+    height: 1;
+    margin: 0 0 0 1;
+    color: $text-muted;
+}
+
+/* ─── Reasoning ─── */
+.reasoning-block {
+    margin: 0 0 0 1;
+    padding: 0 1;
+    border-left: tall $border-subtle;
+    color: $text-muted;
+    text-style: italic;
+}
+
+/* ─── Prompt Area ─── */
+PromptInput {
+    height: auto;
+    max-height: 12;
+    min-height: 3;
+    margin: 0 0 0 0;
+    border: tall $border;
+    background: $background-element;
+}
+
+PromptInput:focus {
+    border: tall $border-active;
+}
+
+#prompt-status {
+    height: 1;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+/* ─── Sidebar ─── */
+Sidebar {
+    dock: right;
+    width: 42;
+    height: 100%;
+    background: $background-panel;
+    border-left: tall $border;
+    padding: 1;
+    overflow-y: auto;
+}
+
+Sidebar.-hidden {
+    display: none;
+}
+
+.sidebar-section-title {
+    text-style: bold;
+    color: $text-muted;
+    margin: 1 0 0 0;
+}
+
+.sidebar-item {
+    height: 1;
+    color: $text;
+    padding: 0 1;
+}
+
+.sidebar-value {
+    color: $text-muted;
+}
+
+.sidebar-muted {
+    color: $text-muted;
+}
+
+.sidebar-ok {
+    color: $success;
+}
+
+.sidebar-err {
+    color: $error;
+}
+
+.sidebar-warn {
+    color: $warning;
+}
+
+.sidebar-status-ok {
+    color: $success;
+}
+
+.sidebar-status-err {
+    color: $error;
+}
+
+/* ─── Session Footer ─── */
+SessionFooter {
+    dock: bottom;
+    height: 1;
+    background: $background-panel;
+    color: $text-muted;
+    padding: 0 2;
+    layout: horizontal;
+}
+
+#footer-directory {
+    width: 1fr;
+}
+
+#footer-mcp {
+    width: auto;
+    margin-right: 2;
+}
+
+#footer-permissions {
+    width: auto;
+    margin-right: 2;
+}
+
+#footer-agent {
+    width: auto;
+    color: $accent;
+}
+
+/* ─── Dialogs / Modals ─── */
+ToolConfirmDialog {
+    align: center middle;
+}
+
+#tool-confirm-container {
+    width: 70;
+    max-width: 90%;
+    max-height: 80%;
+    background: $background-panel;
+    border: thick $border-active;
+    padding: 1 2;
+}
+
+#tool-confirm-title {
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+#tool-confirm-args {
+    max-height: 20;
+    overflow-y: auto;
+    margin-bottom: 1;
+    color: $text-muted;
+}
+
+#tool-confirm-buttons {
+    layout: horizontal;
+    height: 3;
+    align: center middle;
+}
+
+#tool-confirm-buttons Button {
+    margin: 0 1;
+}
+
+/* Session List Dialog */
+SessionListDialog {
+    align: center middle;
+}
+
+#session-list-container {
+    width: 80;
+    max-width: 90%;
+    height: 70%;
+    background: $background-panel;
+    border: thick $border-active;
+    padding: 1 2;
+}
+
+#session-search {
+    margin-bottom: 1;
+}
+
+#session-options {
+    height: 1fr;
+    overflow-y: auto;
+}
+
+.session-option {
+    height: 2;
+    padding: 0 1;
+}
+
+.session-option:hover {
+    background: $background-element;
+}
+
+.session-option.-selected {
+    background: $primary 30%;
+}
+
+/* Model Picker */
+ModelPickerDialog {
+    align: center middle;
+}
+
+#model-picker-container {
+    width: 60;
+    max-width: 90%;
+    max-height: 60%;
+    background: $background-panel;
+    border: thick $border-active;
+    padding: 1 2;
+}
+
+/* Question Dialog */
+QuestionDialog {
+    align: center middle;
+}
+
+#question-container {
+    width: 70;
+    max-width: 90%;
+    background: $background-panel;
+    border: thick $border-active;
+    padding: 1 2;
+}
+
+/* ─── Spinner ─── */
+BrailleSpinner {
+    height: 1;
+    width: auto;
+    color: $primary;
+}
+
+/* ─── Context Bar (below prompt) ─── */
+#context-bar {
+    height: 1;
+    color: $text-muted;
+    padding: 0 1;
+    layout: horizontal;
+}
+
+#context-model {
+    width: auto;
+    margin-right: 2;
+}
+
+#context-agent {
+    width: auto;
+    color: $accent;
+}
