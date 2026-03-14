@@ -219,7 +219,9 @@ class SessionScreen(Screen):
 
         self._handle_user_input(text)
 
-    def _handle_user_input(self, text: str, *, image_paths: list[str] | None = None) -> None:
+    def _handle_user_input(
+        self, text: str, *, image_paths: list[str] | None = None
+    ) -> None:
         """Process a user message and start generation."""
         app = self.app
 
@@ -271,7 +273,9 @@ class SessionScreen(Screen):
             self._handle_compact(rest)
         elif cmd == "/trace":
             self.app.session_state.trace_filter = rest
-            self.app.notify(f"Trace filter: {rest!r}" if rest else "Trace filter cleared")
+            self.app.notify(
+                f"Trace filter: {rest!r}" if rest else "Trace filter cleared"
+            )
         elif cmd == "/reset-state":
             self._reset_state()
 
@@ -332,21 +336,31 @@ class SessionScreen(Screen):
 
         # Multi-agent
         elif cmd == "/multi":
-            self._handle_user_input(f"[multi-agent] {rest}" if rest else "What multi-agent task should I run?")
+            self._handle_user_input(
+                f"[multi-agent] {rest}"
+                if rest
+                else "What multi-agent task should I run?"
+            )
         elif cmd == "/agents":
-            self._handle_user_input(f"[agents] {rest}" if rest else "Usage: /agents <N> <task>")
+            self._handle_user_input(
+                f"[agents] {rest}" if rest else "Usage: /agents <N> <task>"
+            )
         elif cmd == "/agents_show":
             self.app.notify("No agent outputs to display", severity="warning")
         elif cmd == "/agents_summary":
             self.app.notify("No agent outputs to summarize", severity="warning")
         elif cmd == "/subagent":
-            self._handle_user_input(f"[subagent] {rest}" if rest else "Usage: /subagent <type> <task>")
+            self._handle_user_input(
+                f"[subagent] {rest}" if rest else "Usage: /subagent <type> <task>"
+            )
 
         # Media
         elif cmd == "/image":
             self._handle_image(rest)
         elif cmd == "/listen":
-            self.app.notify("Voice input not available in this environment", severity="warning")
+            self.app.notify(
+                "Voice input not available in this environment", severity="warning"
+            )
         elif cmd == "/say":
             self.app.notify("TTS not available in this environment", severity="warning")
 
@@ -402,7 +416,9 @@ class SessionScreen(Screen):
                 proc.kill()
                 self.app.notify("Command timed out (30s)", severity="error")
                 return
-            output = (stdout or b"").decode(errors="replace") + (stderr or b"").decode(errors="replace")
+            output = (stdout or b"").decode(errors="replace") + (stderr or b"").decode(
+                errors="replace"
+            )
             if output:
                 from ..widgets.tool_display import BlockToolCall
 
@@ -1156,9 +1172,7 @@ class SessionScreen(Screen):
             )
             after_count = len(result)
             self.app.session_history = result
-            self.app.notify(
-                f"Compacted: {before_count} -> {after_count} messages"
-            )
+            self.app.notify(f"Compacted: {before_count} -> {after_count} messages")
         except Exception as e:
             self.app.notify(f"Compaction failed: {e}", severity="error")
 
@@ -1314,7 +1328,9 @@ class SessionScreen(Screen):
             from ollamacode.vector_memory import build_vector_index
 
             loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(None, lambda: build_vector_index(workspace))
+            result = await loop.run_in_executor(
+                None, lambda: build_vector_index(workspace)
+            )
             self.app.notify(
                 f"Indexed {result.get('indexed_files', 0)} files, "
                 f"{result.get('chunk_count', 0)} chunks"
@@ -1443,7 +1459,9 @@ class SessionScreen(Screen):
         if r not in ("good", "bad"):
             self.app.notify("Usage: /rate good|bad", severity="warning")
             return
-        logger.info("User rated response: %s (session=%s)", r, self.app.session_state.session_id)
+        logger.info(
+            "User rated response: %s (session=%s)", r, self.app.session_state.session_id
+        )
         self.app.notify(f"Feedback recorded: {r}")
 
     def _show_refactor_dialog(self) -> None:
@@ -1491,7 +1509,9 @@ class SessionScreen(Screen):
                     *cmd,
                     stdin=asyncio.subprocess.PIPE,
                 )
-                await asyncio.wait_for(proc.communicate(input=content.encode()), timeout=5)
+                await asyncio.wait_for(
+                    proc.communicate(input=content.encode()), timeout=5
+                )
                 if proc.returncode == 0:
                     self.app.notify("Copied to clipboard")
                     return
@@ -1528,7 +1548,9 @@ class SessionScreen(Screen):
                 proc.kill()
                 self.app.notify("Command timed out (120s)", severity="error")
                 return
-            output = (stdout or b"").decode(errors="replace") + (stderr or b"").decode(errors="replace")
+            output = (stdout or b"").decode(errors="replace") + (stderr or b"").decode(
+                errors="replace"
+            )
             prompt = f"I ran `{command}` and got:\n```\n{output[:8000]}\n```\nPlease analyze and fix any issues."
             self._handle_user_input(prompt)
         except Exception as e:

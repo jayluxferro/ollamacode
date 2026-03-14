@@ -57,7 +57,9 @@ class HomeScreen(Screen):
             app.session_state.session_id = session_id
             app.session_state.title = event.text[:60]
         except Exception:
-            logger.warning("Failed to create session, using ephemeral ID", exc_info=True)
+            logger.warning(
+                "Failed to create session, using ephemeral ID", exc_info=True
+            )
             import uuid
 
             app.session_state.session_id = str(uuid.uuid4())

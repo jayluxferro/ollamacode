@@ -119,6 +119,7 @@ class TestOllamaCodeApp:
         app = OllamaCodeApp(model="test", system_extra="")
         # Just verify the method exists and has the right signature
         import inspect
+
         sig = inspect.signature(app.show_toast)
         params = list(sig.parameters.keys())
         assert "message" in params
@@ -142,7 +143,7 @@ class TestOllamaCodeAppAsync:
 
         app = OllamaCodeApp(model="test", system_extra="")
 
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 40)) as _pilot:
             assert isinstance(app.screen, HomeScreen)
 
     async def test_app_mounts_session_screen_with_id(self) -> None:
@@ -156,7 +157,7 @@ class TestOllamaCodeAppAsync:
             session_id="test-session-id",
         )
 
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 40)) as _pilot:
             assert isinstance(app.screen, SessionScreen)
 
     async def test_home_screen_has_logo(self) -> None:
@@ -166,7 +167,7 @@ class TestOllamaCodeAppAsync:
 
         app = OllamaCodeApp(model="test", system_extra="")
 
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 40)) as _pilot:
             logos = app.screen.query(Logo)
             assert len(logos) >= 1
 
@@ -177,7 +178,7 @@ class TestOllamaCodeAppAsync:
 
         app = OllamaCodeApp(model="test", system_extra="")
 
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 40)) as _pilot:
             prompts = app.screen.query(PromptInput)
             assert len(prompts) >= 1
 
@@ -192,7 +193,7 @@ class TestOllamaCodeAppAsync:
             session_id="test-session",
         )
 
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 40)) as _pilot:
             headers = app.screen.query(SessionHeader)
             assert len(headers) >= 1
 
@@ -207,7 +208,7 @@ class TestOllamaCodeAppAsync:
             session_id="test-session",
         )
 
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 40)) as _pilot:
             sidebars = app.screen.query(Sidebar)
             assert len(sidebars) >= 1
 
@@ -222,7 +223,7 @@ class TestOllamaCodeAppAsync:
             session_id="test-session",
         )
 
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(120, 40)) as _pilot:
             footers = app.screen.query(SessionFooter)
             assert len(footers) >= 1
 

@@ -48,7 +48,11 @@ class ModelPickerDialog(ModalScreen[str]):
             raw_models = getattr(response, "models", None) or response.get("models", [])
             self._models = []
             for m in raw_models:
-                name = getattr(m, "model", None) or (m.get("model") if isinstance(m, dict) else None) or ""
+                name = (
+                    getattr(m, "model", None)
+                    or (m.get("model") if isinstance(m, dict) else None)
+                    or ""
+                )
                 if name:
                     self._models.append(name)
         except Exception:

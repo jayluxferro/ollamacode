@@ -86,7 +86,11 @@ class ModelCommands(Provider):
             raw_models = getattr(response, "models", None) or response.get("models", [])
             models = []
             for m in raw_models:
-                name = getattr(m, "model", None) or (m.get("model") if isinstance(m, dict) else None) or ""
+                name = (
+                    getattr(m, "model", None)
+                    or (m.get("model") if isinstance(m, dict) else None)
+                    or ""
+                )
                 if name:
                     models.append(name)
             for name in models:

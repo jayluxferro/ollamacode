@@ -307,7 +307,12 @@ class OllamaCodeApp(App):
         duration: float = 5.0,
     ) -> None:
         """Show a toast notification via Textual's built-in notify."""
-        severity_map = {"error": "error", "warning": "warning", "success": "information", "info": "information"}
+        severity_map = {
+            "error": "error",
+            "warning": "warning",
+            "success": "information",
+            "info": "information",
+        }
         self.notify(
             message,
             title=title,
