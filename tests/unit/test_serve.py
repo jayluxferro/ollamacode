@@ -503,8 +503,8 @@ async def test_http_authz_principal_admin_and_scope(tmp_path, monkeypatch):
     from ollamacode.workspaces import create_workspace
     from ollamacode.sessions import create_session
 
-    admin = create_principal(name="Admin", role="admin", api_key="admin-token")
-    viewer = create_principal(
+    create_principal(name="Admin", role="admin", api_key="admin-token")
+    create_principal(
         name="Viewer",
         role="viewer",
         api_key="viewer-token",

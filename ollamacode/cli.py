@@ -941,6 +941,8 @@ async def _run(
         else HookManager(workspace_root, None)
     )
     current_prompt_ref: list[str | None] = [None]
+    _active_conn: list[Any] = [None]  # mutable ref for current MCP connection
+    _active_model: list[str] = [model]  # mutable ref for current model name
     checkpoints_enabled = os.environ.get("OLLAMACODE_CHECKPOINTS", "1") != "0"
     _allowed_tools = list(allowed_tools or [])
     mcp_servers = _prepare_mcp_servers(
@@ -1323,12 +1325,12 @@ async def _run(
     async def _handle_task_tool_cli(arguments: dict[str, Any]) -> tuple[str, str]:
         """Delegate work to a configured subagent and return the synthetic tool result."""
         result = await run_task_delegation(
-            session=conn,
+            session=_active_conn[0],
             session_id=session_id,
             workspace_root=workspace_root,
             subagents=subagents,
             arguments=arguments,
-            default_model=current_model,
+            default_model=_active_model[0],
             system_prompt=last_system_prompt[0] or _SYSTEM,
             max_messages=max_messages,
             max_tool_rounds=max_tool_rounds,
@@ -1517,6 +1519,8 @@ async def _run(
         message_history: list[dict],
         system_prompt_override: str | None = None,
     ) -> str:
+        _active_conn[0] = conn
+        _active_model[0] = current_model
         local = _local_math_answer(q)
         if local is not None:
             return local
@@ -1770,6 +1774,8 @@ async def _run(
         message_history: list[dict],
         system_prompt_override: str | None = None,
     ) -> str:
+        _active_conn[0] = conn
+        _active_model[0] = current_model
         local = _local_math_answer(q)
         if local is not None:
             print(local, flush=True)
