@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 import time
 from typing import Any
 
@@ -15,6 +16,9 @@ from textual.message import Message
 from textual.screen import Screen
 from textual.widgets import Static
 
+from ...question_runtime import format_question_answers, normalize_question_list
+from ...task_runtime import run_task_delegation
+from ...permission_runtime import evaluate_permission
 from ..widgets.footer import SessionFooter
 from ..widgets.header import SessionHeader
 from ..widgets.messages import AssistantMessage, MessageList, UserMessage
@@ -127,9 +131,8 @@ class SessionScreen(Screen):
         footer.agent_mode = state.agent_mode
 
         # Configure sidebar
-        sidebar = self.query_one(Sidebar)
-        sidebar.session_title = state.title or "New Session"
-        sidebar.context_limit = state.context_limit
+        self.app.load_session_todos()
+        self.app._refresh_sidebar()
 
         # Hide spinner initially
         spinner = self.query_one("#prompt-spinner", BrailleSpinner)
@@ -265,6 +268,24 @@ class SessionScreen(Screen):
             self._handle_user_input("Continue with the next step of the plan.")
         elif cmd == "/summary":
             self._handle_user_input("Please summarize our conversation so far.")
+        elif cmd == "/todo":
+            self._handle_todo_command(rest)
+        elif cmd == "/export":
+            self._show_export_dialog()
+        elif cmd == "/import":
+            self._show_import_dialog()
+        elif cmd == "/workspace":
+            self._show_workspace_info()
+        elif cmd == "/workspaces":
+            self._show_workspaces()
+        elif cmd == "/workspace_health":
+            self._show_workspace_health(rest)
+        elif cmd == "/workspace_add_remote":
+            self._add_remote_workspace(rest)
+        elif cmd == "/branch":
+            self._branch_session()
+        elif cmd == "/checkpoints":
+            self._show_checkpoints()
         else:
             self.app.notify(f"Unknown command: {cmd}", severity="warning")
 
@@ -339,6 +360,23 @@ class SessionScreen(Screen):
                 name: str, args: dict[str, Any]
             ) -> str | tuple[str, dict[str, Any]]:
                 """Handle tool confirmation."""
+                normalized_name = name.removeprefix("functions::")
+                if name.endswith("question") or name == "question":
+                    return await self._handle_question_tool(args)
+                if name.endswith("task") or name == "task":
+                    return await self._handle_task_tool(args)
+                permission = evaluate_permission(
+                    app.app_state.permissions_manager,
+                    app.app_state.permission_state,
+                    app.session_state.session_id,
+                    [name, normalized_name],
+                )
+                if permission.value == "deny":
+                    app.session_state.permissions_denied += 1
+                    return ("skip", f"Blocked by permission rule for tool: {normalized_name}")
+                if permission.value == "allow":
+                    app.session_state.permissions_granted += 1
+                    return "run"
                 if app.autonomous_mode or app.session_state.autonomous:
                     return "run"
                 if not app.confirm_tool_calls:
@@ -349,10 +387,18 @@ class SessionScreen(Screen):
 
                 result = await app.push_screen_wait(ToolConfirmDialog(name, args))
                 if result == "allow":
+                    app.session_state.permissions_granted += 1
                     return "run"
                 elif result == "always":
+                    if app.app_state.permission_state is not None:
+                        app.app_state.permission_state.allow(
+                            app.session_state.session_id,
+                            [name, normalized_name],
+                        )
+                    app.session_state.permissions_granted += 1
                     return "run"
                 else:
+                    app.session_state.permissions_denied += 1
                     return "skip"
 
             # Build messages list for the agent
@@ -371,6 +417,7 @@ class SessionScreen(Screen):
                 on_tool_start=on_tool_start,
                 on_tool_end=on_tool_end,
                 before_tool_call=before_tool_call,
+                confirm_tool_calls=app.mcp_session is not None,
                 provider=app.provider,
             )
 
@@ -465,12 +512,147 @@ class SessionScreen(Screen):
     def _update_sidebar_stats(self) -> None:
         """Update sidebar with current session stats."""
         try:
-            sidebar = self.query_one(Sidebar)
-            state = self.app.session_state
-            sidebar.token_count = state.token_count
-            sidebar.cost = state.cost
+            self.app._refresh_sidebar()
         except Exception:
             pass
+
+    def _handle_todo_command(self, rest: str) -> None:
+        """Manage the per-session TODO list."""
+        todos = list(self.app.app_state.todos)
+        try:
+            parts = shlex.split(rest)
+        except ValueError as exc:
+            self.app.notify(f"Invalid /todo arguments: {exc}", severity="warning")
+            return
+
+        if not parts or parts[0].lower() == "list":
+            self._show_todo_summary(todos)
+            return
+
+        action = parts[0].lower()
+        if action == "add":
+            content = rest.partition(" ")[2].strip()
+            if not content:
+                self.app.notify("Usage: /todo add <task>", severity="warning")
+                return
+            todos.append(
+                {"content": content, "status": "pending", "priority": "medium"}
+            )
+            self.app.set_session_todos(todos)
+            self.app.notify(f"Added todo #{len(todos)}")
+            return
+
+        if action == "clear":
+            self.app.set_session_todos([])
+            self.app.notify("Cleared todos")
+            return
+
+        if len(parts) < 2:
+            self.app.notify(
+                "Usage: /todo <list|add|start|done|pending|remove|clear> ...",
+                severity="warning",
+            )
+            return
+
+        try:
+            index = int(parts[1]) - 1
+        except ValueError:
+            self.app.notify("Todo index must be a number", severity="warning")
+            return
+
+        if index < 0 or index >= len(todos):
+            self.app.notify("Todo index out of range", severity="warning")
+            return
+
+        if action == "start":
+            todos[index]["status"] = "in_progress"
+            self.app.set_session_todos(todos)
+            self.app.notify(f"Todo #{index + 1} in progress")
+        elif action == "done":
+            todos[index]["status"] = "completed"
+            self.app.set_session_todos(todos)
+            self.app.notify(f"Completed todo #{index + 1}")
+        elif action == "pending":
+            todos[index]["status"] = "pending"
+            self.app.set_session_todos(todos)
+            self.app.notify(f"Reset todo #{index + 1}")
+        elif action == "remove":
+            removed = todos.pop(index)
+            self.app.set_session_todos(todos)
+            self.app.notify(f"Removed todo: {removed.get('content', '')[:40]}")
+        else:
+            self.app.notify(f"Unknown /todo action: {action}", severity="warning")
+
+    def _show_todo_summary(self, todos: list[dict[str, Any]]) -> None:
+        """Show a compact TODO summary notification."""
+        if not todos:
+            self.app.notify("No todos for this session")
+            return
+        lines = []
+        for index, todo in enumerate(todos[:8], start=1):
+            status = str(todo.get("status") or "pending").lower()
+            icon = {
+                "pending": "\u2610",
+                "in_progress": "\u25d0",
+                "completed": "\u2611",
+                "cancelled": "\u2298",
+            }.get(status, "\u2610")
+            lines.append(f"{index}. {icon} {todo.get('content', '')}")
+        self.app.notify("\n".join(lines), title="Session TODOs", timeout=10)
+
+    async def _handle_question_tool(self, arguments: dict[str, Any]) -> tuple[str, str]:
+        """Collect answers for the interactive question tool."""
+        questions = normalize_question_list(arguments)
+        if not questions:
+            return ("skip", "Question tool called without valid questions.")
+        from ..dialogs.question import QuestionDialog
+
+        answers: list[str] = []
+        for item in questions:
+            answer = await self.app.push_screen_wait(
+                QuestionDialog(item["question"], item.get("options") or [])
+            )
+            answers.append(str(answer or ""))
+        return ("skip", format_question_answers(questions, answers))
+
+    async def _handle_task_tool(self, arguments: dict[str, Any]) -> tuple[str, str]:
+        """Delegate work to a configured subagent."""
+        result = await run_task_delegation(
+            session=self.app.mcp_session,
+            session_id=self.app.session_state.session_id,
+            workspace_root=self.app.app_state.workspace_root,
+            subagents=self.app._config.get("subagents") or [],
+            arguments=arguments,
+            default_model=self.app.session_state.model or self.app.model,
+            system_prompt=self.app.system_extra,
+            max_messages=self.app.max_messages,
+            max_tool_rounds=self.app.max_tool_rounds,
+            max_tool_result_chars=self.app.max_tool_result_chars,
+            provider=self.app.provider,
+            before_tool_call=self._task_before_tool_call,
+        )
+        return ("skip", result)
+
+    async def _task_before_tool_call(
+        self, name: str, args: dict[str, Any]
+    ) -> str | tuple[str, dict[str, Any]] | tuple[str, str]:
+        """Nested tool interception used by delegated subagent tasks."""
+        if name.endswith("question") or name == "question":
+            return await self._handle_question_tool(args)
+        if name.endswith("task") or name == "task":
+            return ("skip", "Nested task delegation is disabled for subagents.")
+        if self.app.autonomous_mode or self.app.session_state.autonomous:
+            return "run"
+        if not self.app.confirm_tool_calls:
+            return "run"
+        from ..dialogs.tool_confirm import ToolConfirmDialog
+
+        result = await self.app.push_screen_wait(ToolConfirmDialog(name, args))
+        if result == "allow":
+            return "run"
+        if result == "always":
+            return "run"
+        return "skip"
 
     # ── Session Persistence ──────────────────────────────────────────
 
@@ -527,6 +709,8 @@ class SessionScreen(Screen):
                 self._resume_session_id = session_id
                 self.clear_messages()
                 self._load_session_messages()
+                self.app.load_session_todos(session_id)
+                self.app._refresh_sidebar()
 
         self.app.push_screen(SessionListDialog(), on_result)
 
@@ -543,11 +727,157 @@ class SessionScreen(Screen):
 
         self.app.push_screen(ThemePickerDialog(), on_result)
 
+    def _show_export_dialog(self) -> None:
+        from ..dialogs.export_import import ExportDialog
+
+        session_id = self.app.session_state.session_id
+        if not session_id:
+            self.app.notify("No active session to export", severity="warning")
+            return
+        try:
+            from ollamacode.sessions import export_session
+
+            data = export_session(session_id)
+        except Exception:
+            logger.debug("Failed to export session", exc_info=True)
+            data = None
+        if not data:
+            self.app.notify("Failed to export session", severity="error")
+            return
+        self.app.push_screen(ExportDialog(data))
+
+    def _show_import_dialog(self) -> None:
+        from ..dialogs.export_import import ImportDialog
+
+        def on_result(json_text: str) -> None:
+            if not json_text.strip():
+                return
+            try:
+                from ollamacode.sessions import import_session
+
+                session_id = import_session(json_text)
+            except Exception as exc:
+                self.app.notify(f"Import failed: {exc}", severity="error")
+                return
+            self.app.session_state.session_id = session_id
+            self._resume_session_id = session_id
+            self.clear_messages()
+            self._load_session_messages()
+            self.app.load_session_todos(session_id)
+            self.app._refresh_sidebar()
+            self.app.notify("Session imported")
+
+        self.app.push_screen(ImportDialog(), on_result)
+
+    def _show_workspace_info(self) -> None:
+        try:
+            from ollamacode.sessions import list_sessions
+
+            count = len(list_sessions(limit=1000, workspace_root=self.app.app_state.workspace_root))
+        except Exception:
+            count = 0
+        self.app.notify(
+            f"Workspace: {self.app.app_state.workspace_root}\nSessions: {count}",
+            title="Workspace",
+            timeout=10,
+        )
+
+    def _show_workspaces(self) -> None:
+        try:
+            from ollamacode.workspaces import list_workspaces
+
+            rows = list_workspaces()
+        except Exception:
+            rows = []
+        if not rows:
+            self.app.notify("No registered workspaces", title="Workspaces", timeout=8)
+            return
+        text = "\n".join(
+            f"{row.get('name', 'Workspace')} [{row.get('type', 'local')}]"
+            for row in rows[:10]
+        )
+        self.app.notify(text, title="Workspaces", timeout=10)
+
+    def _show_workspace_health(self, rest: str) -> None:
+        workspace_id = rest.strip()
+        if not workspace_id:
+            self.app.notify("Usage: /workspace_health <workspace-id>", severity="warning")
+            return
+        try:
+            from ollamacode.workspaces import get_workspace
+
+            row = get_workspace(workspace_id)
+        except Exception:
+            row = None
+        if row is None:
+            self.app.notify("Workspace not found", severity="warning")
+            return
+        status = row.get("last_status") or "unknown"
+        error = row.get("last_error") or ""
+        body = f"{row.get('name', 'Workspace')}: {status}"
+        if error:
+            body += f"\n{error}"
+        self.app.notify(body, title="Workspace Health", timeout=10)
+
+    def _add_remote_workspace(self, rest: str) -> None:
+        parts = rest.split(None, 1)
+        if len(parts) < 2:
+            self.app.notify(
+                "Usage: /workspace_add_remote <name> <base_url>",
+                severity="warning",
+            )
+            return
+        name, base_url = parts[0].strip(), parts[1].strip()
+        try:
+            from ollamacode.workspaces import create_workspace
+
+            row = create_workspace(name=name, kind="remote", base_url=base_url)
+        except Exception as exc:
+            self.app.notify(f"Failed to create workspace: {exc}", severity="error")
+            return
+        self.app.notify(
+            f"Added remote workspace {row['name']}",
+            title="Workspaces",
+            timeout=8,
+        )
+
+    def _branch_session(self) -> None:
+        session_id = self.app.session_state.session_id
+        if not session_id:
+            self.app.notify("No active session to branch", severity="warning")
+            return
+        try:
+            from ollamacode.sessions import branch_session
+
+            new_id = branch_session(session_id)
+        except Exception as exc:
+            self.app.notify(f"Branch failed: {exc}", severity="error")
+            return
+        if not new_id:
+            self.app.notify("Branch failed", severity="error")
+            return
+        self.app.session_state.session_id = new_id
+        self._resume_session_id = new_id
+        self.clear_messages()
+        self._load_session_messages()
+        self.app.load_session_todos(new_id)
+        self.app._refresh_sidebar()
+        self.app.notify("Session branched")
+
+    def _show_checkpoints(self) -> None:
+        session_id = self.app.session_state.session_id
+        if not session_id:
+            self.app.notify("No active session", severity="warning")
+            return
+        from ..dialogs.checkpoint_list import CheckpointListDialog
+
+        self.app.push_screen(CheckpointListDialog(session_id))
+
     def _show_help(self) -> None:
         """Show help text as a notification."""
         help_text = (
             "Commands: /new /clear /model /sessions /theme /auto /fix /test "
-            "/plan /continue /summary /copy /help /quit\n"
+            "/plan /continue /summary /todo /copy /help /quit\n"
             "Keys: Ctrl+N=New Ctrl+P=Palette Ctrl+\\=Sidebar Esc=Cancel"
         )
         self.app.notify(help_text, title="Help", timeout=15)

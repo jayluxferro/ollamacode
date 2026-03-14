@@ -17,13 +17,33 @@ class TodoItem(Widget):
     }
     """
 
-    def __init__(self, text: str, done: bool = False, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        text: str,
+        done: bool = False,
+        status: str = "pending",
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
         self.todo_text = text
         self.done = done
+        self.status = "completed" if done else status
 
     def render(self) -> str:
-        check = "\u2611" if self.done else "\u2610"
-        style = "[dim strike]" if self.done else ""
-        end = "[/]" if self.done else ""
+        if self.status == "completed":
+            check = "\u2611"
+            style = "[dim strike]"
+            end = "[/]"
+        elif self.status == "in_progress":
+            check = "\u25d0"
+            style = ""
+            end = ""
+        elif self.status == "cancelled":
+            check = "\u2298"
+            style = "[dim]"
+            end = "[/]"
+        else:
+            check = "\u2610"
+            style = ""
+            end = ""
         return f"{check} {style}{self.todo_text}{end}"

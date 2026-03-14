@@ -20,7 +20,7 @@ class SessionState:
     title: str = ""
     model: str = ""
     provider_name: str = "ollama"
-    agent_mode: str = "build"  # "build" or "plan"
+    agent_mode: str = "build"  # "build", "plan", or "review"
     token_count: int = 0
     cost: float = 0.0
     context_limit: int = 128_000
@@ -31,6 +31,10 @@ class SessionState:
     current_tool: str = ""
     permissions_granted: int = 0
     autonomous: bool = False
+    compact_mode: str = "off"  # "on", "off", "auto"
+    trace_filter: str = ""
+    variant_name: str = ""
+    checkpoint_count: int = 0
 
 
 @dataclass
@@ -43,3 +47,11 @@ class AppState:
     todos: list[dict[str, Any]] = field(default_factory=list)
     modified_files: list[dict[str, Any]] = field(default_factory=list)
     message_history: list[dict[str, Any]] = field(default_factory=list)
+    # Manager references (set in app.__init__)
+    permissions_manager: Any = None
+    permission_state: Any = None
+    mode_manager: Any = None
+    command_manager: Any = None
+    variant_manager: Any = None
+    plugin_manager: Any = None
+    file_watcher_handle: Any = None

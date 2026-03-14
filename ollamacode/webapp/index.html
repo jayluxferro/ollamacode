@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OllamaCode Control Plane</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="rail">
+        <div class="brand">
+          <div class="brand-mark">OC</div>
+          <div>
+            <h1>OllamaCode</h1>
+            <p>Control Plane</p>
+          </div>
+        </div>
+        <section class="panel">
+          <h2>Remote Workspaces</h2>
+          <form id="workspace-form" class="stack">
+            <input id="workspace-name" placeholder="Workspace name" />
+            <input id="workspace-url" placeholder="https://remote-host" />
+            <input id="workspace-key" placeholder="Optional API key" />
+            <button type="submit">Add Remote Workspace</button>
+          </form>
+          <div id="workspace-list" class="stack"></div>
+        </section>
+        <section class="panel">
+          <h2>Fleet</h2>
+          <div id="fleet-summary" class="stack"></div>
+        </section>
+        <section class="panel">
+          <h2>Principals</h2>
+          <form id="principal-form" class="stack">
+            <input id="principal-name" placeholder="Principal name" />
+            <input id="principal-role" placeholder="Role (admin/editor/viewer)" />
+            <button type="submit">Create Principal</button>
+          </form>
+          <div id="principal-list" class="stack"></div>
+        </section>
+      </aside>
+
+      <main class="main">
+        <section class="hero panel">
+          <div>
+            <h2 id="workspace-title">Local Workspace</h2>
+            <p id="workspace-meta">Loading workspace info…</p>
+          </div>
+          <div class="hero-actions">
+            <button id="refresh-workspace">Refresh</button>
+          </div>
+        </section>
+
+        <section class="grid">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Sessions</h2>
+              <button id="new-session">New Session</button>
+            </div>
+            <input id="session-search" placeholder="Search sessions" />
+            <div id="session-list" class="stack"></div>
+          </section>
+
+          <section class="stack">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Activity</h2>
+                <button id="clear-activity">Clear</button>
+              </div>
+              <div id="activity-log" class="activity-log"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Session Detail</h2>
+                <span id="session-badge" class="badge">No session</span>
+              </div>
+              <div id="session-detail" class="stack">
+                <p class="muted">Select a session to inspect messages, todos, and checkpoints.</p>
+              </div>
+              <div class="panel-head compact">
+                <h2>Import Session</h2>
+              </div>
+              <textarea id="import-json" rows="5" placeholder="Paste exported session JSON"></textarea>
+              <button id="import-session">Import Session</button>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Chat</h2>
+                <button id="clear-chat">Clear</button>
+              </div>
+              <div id="chat-log" class="chat-log"></div>
+              <form id="chat-form" class="stack">
+                <label class="toggle">
+                  <input id="chat-stream" type="checkbox" />
+                  <span>Stream responses when possible</span>
+                </label>
+                <textarea id="chat-input" rows="4" placeholder="Ask OllamaCode something..."></textarea>
+                <button type="submit">Send</button>
+              </form>
+            </section>
+          </section>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

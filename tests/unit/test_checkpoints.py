@@ -4,7 +4,9 @@ import pytest
 
 from ollamacode.checkpoints import (
     CheckpointRecorder,
+    get_checkpoint_info,
     get_checkpoint_files,
+    get_checkpoint_diff,
     list_checkpoints,
     restore_checkpoint,
 )
@@ -171,3 +173,46 @@ class TestRestoreCheckpoint:
         modified = restore_checkpoint(cp_id, str(workspace))
         assert "new.txt" in modified
         assert not new_file.exists()
+
+    def test_restore_uses_stored_workspace_root(self, tmp_path, checkpoint_db):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        test_file = workspace / "test.txt"
+        test_file.write_text("original")
+
+        recorder = CheckpointRecorder(
+            session_id="sess-1",
+            workspace_root=str(workspace),
+            prompt="test",
+            message_index=0,
+        )
+        recorder.record_pre("test.txt")
+        test_file.write_text("modified")
+        cp_id = recorder.finalize()
+
+        modified = restore_checkpoint(cp_id)
+        assert "test.txt" in modified
+        assert test_file.read_text() == "original"
+
+
+def test_checkpoint_info_and_diff(tmp_path, checkpoint_db):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    test_file = workspace / "demo.txt"
+    test_file.write_text("before\n")
+
+    recorder = CheckpointRecorder(
+        session_id="sess-1",
+        workspace_root=str(workspace),
+        prompt="demo",
+        message_index=0,
+    )
+    recorder.record_pre("demo.txt")
+    test_file.write_text("after\n")
+    cp_id = recorder.finalize()
+
+    info = get_checkpoint_info(cp_id)
+    assert info is not None
+    assert info["workspace_root"] == str(workspace)
+    diff = get_checkpoint_diff(cp_id)
+    assert "--- a/demo.txt" in diff

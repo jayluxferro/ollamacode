@@ -25,6 +25,11 @@ class Sidebar(VerticalScroll):
     lsp_servers: reactive[list[dict[str, Any]]] = reactive(list, always_update=True)
     todos: reactive[list[dict[str, Any]]] = reactive(list, always_update=True)
     modified_files: reactive[list[dict[str, Any]]] = reactive(list, always_update=True)
+    permissions_granted = reactive(0)
+    permissions_denied = reactive(0)
+    agent_mode = reactive("build")
+    checkpoint_count = reactive(0)
+    plugin_count = reactive(0)
 
     def compose(self) -> ComposeResult:
         # Session section
@@ -48,6 +53,24 @@ class Sidebar(VerticalScroll):
                 classes="sidebar-item sidebar-muted",
             )
 
+        # Agent Mode section
+        with Vertical(classes="sidebar-section", id="sidebar-mode-section"):
+            yield Static("AGENT MODE", classes="sidebar-section-title")
+            yield Static(
+                "BUILD",
+                id="sidebar-mode-value",
+                classes="sidebar-item",
+            )
+
+        # Permissions section
+        with Vertical(classes="sidebar-section", id="sidebar-permissions-section"):
+            yield Static("PERMISSIONS", classes="sidebar-section-title")
+            yield Static(
+                "0 granted / 0 denied",
+                id="sidebar-permissions-value",
+                classes="sidebar-item sidebar-muted",
+            )
+
         # MCP Servers section
         with Vertical(classes="sidebar-section", id="sidebar-mcp-section"):
             yield Static("MCP SERVERS", classes="sidebar-section-title")
@@ -63,6 +86,24 @@ class Sidebar(VerticalScroll):
             yield Static(
                 "None active",
                 id="sidebar-lsp-list",
+                classes="sidebar-item sidebar-muted",
+            )
+
+        # Checkpoints section
+        with Vertical(classes="sidebar-section", id="sidebar-checkpoints-section"):
+            yield Static("CHECKPOINTS", classes="sidebar-section-title")
+            yield Static(
+                "0 checkpoints",
+                id="sidebar-checkpoints-value",
+                classes="sidebar-item sidebar-muted",
+            )
+
+        # Plugins section
+        with Vertical(classes="sidebar-section", id="sidebar-plugins-section"):
+            yield Static("PLUGINS", classes="sidebar-section-title")
+            yield Static(
+                "0 loaded",
+                id="sidebar-plugins-value",
                 classes="sidebar-item sidebar-muted",
             )
 
@@ -108,6 +149,54 @@ class Sidebar(VerticalScroll):
         except Exception:
             pass
 
+    def watch_mcp_servers(self, value: list[dict[str, Any]]) -> None:
+        self.update_mcp_servers(value)
+
+    def watch_lsp_servers(self, value: list[dict[str, Any]]) -> None:
+        self.update_lsp_servers(value)
+
+    def watch_todos(self, value: list[dict[str, Any]]) -> None:
+        self.update_todos(value)
+
+    def watch_modified_files(self, value: list[dict[str, Any]]) -> None:
+        self.update_modified_files(value)
+
+    def watch_agent_mode(self, value: str) -> None:
+        try:
+            self.query_one("#sidebar-mode-value", Static).update(value.upper())
+        except Exception:
+            pass
+
+    def watch_permissions_granted(self, value: int) -> None:
+        self._update_permissions_display()
+
+    def watch_permissions_denied(self, value: int) -> None:
+        self._update_permissions_display()
+
+    def _update_permissions_display(self) -> None:
+        try:
+            self.query_one("#sidebar-permissions-value", Static).update(
+                f"{self.permissions_granted} granted / {self.permissions_denied} denied"
+            )
+        except Exception:
+            pass
+
+    def watch_checkpoint_count(self, value: int) -> None:
+        try:
+            self.query_one("#sidebar-checkpoints-value", Static).update(
+                f"{value} checkpoint{'s' if value != 1 else ''}"
+            )
+        except Exception:
+            pass
+
+    def watch_plugin_count(self, value: int) -> None:
+        try:
+            self.query_one("#sidebar-plugins-value", Static).update(
+                f"{value} loaded"
+            )
+        except Exception:
+            pass
+
     def update_mcp_servers(self, servers: list[dict[str, Any]]) -> None:
         """Update MCP server list display."""
         try:
@@ -126,6 +215,24 @@ class Sidebar(VerticalScroll):
         except Exception:
             pass
 
+    def update_lsp_servers(self, servers: list[dict[str, Any]]) -> None:
+        """Update LSP server list display."""
+        try:
+            widget = self.query_one("#sidebar-lsp-list", Static)
+            if not servers:
+                widget.update("None active")
+                return
+            lines = []
+            for server in servers:
+                name = server.get("name", "unknown")
+                status = server.get("status", "connected")
+                dot = "\u25cf" if status == "connected" else "\u25cb"
+                color = "green" if status == "connected" else "red"
+                lines.append(f"[{color}]{dot}[/] {name}")
+            widget.update("\n".join(lines[:10]))
+        except Exception:
+            pass
+
     def update_todos(self, todos: list[dict[str, Any]]) -> None:
         """Update TODO list display."""
         try:
@@ -135,10 +242,24 @@ class Sidebar(VerticalScroll):
                 return
             lines = []
             for t in todos:
-                done = t.get("done", False)
-                text = t.get("text", "")
-                check = "\u2611" if done else "\u2610"
-                lines.append(f"{check} {text}")
+                status = str(
+                    t.get("status") or ("completed" if t.get("done") else "pending")
+                ).lower()
+                text = t.get("content") or t.get("text", "")
+                priority = str(t.get("priority") or "").lower()
+                if status == "completed":
+                    prefix = "[green]\u2611[/]"
+                elif status == "in_progress":
+                    prefix = "[yellow]\u25d0[/]"
+                elif status == "cancelled":
+                    prefix = "[red]\u2298[/]"
+                else:
+                    prefix = "\u2610"
+                if priority == "high":
+                    text = f"[bold]{text}[/]"
+                elif status == "completed":
+                    text = f"[dim]{text}[/]"
+                lines.append(f"{prefix} {text}")
             widget.update("\n".join(lines[:10]))
         except Exception:
             pass
@@ -155,7 +276,17 @@ class Sidebar(VerticalScroll):
                 path = f.get("path", "")
                 added = f.get("added", 0)
                 removed = f.get("removed", 0)
-                lines.append(f"[green]+{added}[/] [red]-{removed}[/] {path}")
+                event = str(f.get("event", "")).lower()
+                if added or removed:
+                    lines.append(f"[green]+{added}[/] [red]-{removed}[/] {path}")
+                elif event == "created":
+                    lines.append(f"[green]new[/] {path}")
+                elif event == "deleted":
+                    lines.append(f"[red]del[/] {path}")
+                elif event:
+                    lines.append(f"[yellow]{event[:3]}[/] {path}")
+                else:
+                    lines.append(path)
             widget.update("\n".join(lines[:15]))
         except Exception:
             pass

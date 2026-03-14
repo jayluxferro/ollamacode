@@ -23,6 +23,9 @@ BUILTIN_SERVER_PREFIXES = (
     "ollamacode-skills_",
     "ollamacode-state_",
     "ollamacode-semantic_",
+    "ollamacode-todo_",
+    "ollamacode-question_",
+    "ollamacode-task_",
 )
 
 

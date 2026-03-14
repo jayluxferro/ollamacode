@@ -52,6 +52,9 @@ from .edits import (
     parse_review,
 )
 from .memory import build_dynamic_memory_context
+from .permission_runtime import SessionApprovalStore, evaluate_permission
+from .question_runtime import format_question_answers, normalize_question_list
+from .task_runtime import run_task_delegation
 from .mcp_client import (
     McpConnection,
     connect_mcp_servers,
@@ -663,20 +666,9 @@ async def _run_list_tools(
         )
         return
     workspace_root = os.path.abspath(os.getcwd())
-    _env_base = dict(os.environ)
-    servers_with_env = [
-        {
-            **entry,
-            "env": {
-                **_env_base,
-                **(entry.get("env") or {}),
-                "OLLAMACODE_FS_ROOT": workspace_root,
-            },
-        }
-        if (entry.get("type") or "stdio").lower() == "stdio"
-        else entry
-        for entry in mcp_servers
-    ]
+    servers_with_env = _prepare_mcp_servers(
+        mcp_servers, workspace_root, subagents=None
+    )
     try:
         if len(servers_with_env) == 1 and servers_with_env[0].get("type") == "stdio":
             cmd = servers_with_env[0].get("command", "python")
@@ -728,6 +720,108 @@ def _append_history(path: str, user: str, assistant: str) -> None:
         pass
 
 
+def _is_todo_server_entry(entry: dict[str, Any]) -> bool:
+    """Return True when an MCP entry targets the built-in todo server."""
+    args = entry.get("args") or []
+    return any(str(part) == "ollamacode.servers.todo_mcp" for part in args)
+
+
+def _is_question_server_entry(entry: dict[str, Any]) -> bool:
+    """Return True when an MCP entry targets the built-in question server."""
+    args = entry.get("args") or []
+    return any(str(part) == "ollamacode.servers.question_mcp" for part in args)
+
+
+def _is_task_server_entry(entry: dict[str, Any]) -> bool:
+    """Return True when an MCP entry targets the built-in task server."""
+    args = entry.get("args") or []
+    return any(str(part) == "ollamacode.servers.task_mcp" for part in args)
+
+
+def _prepare_mcp_servers(
+    mcp_servers: list[dict[str, Any]],
+    workspace_root: str,
+    *,
+    session_id: str | None = None,
+    python_executable: str | None = None,
+    subagents: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Inject stdio env vars and append the session todo server when available."""
+    env_base = dict(os.environ)
+    prepared: list[dict[str, Any]] = []
+    for entry in mcp_servers:
+        if (entry.get("type") or "stdio").lower() != "stdio":
+            prepared.append(entry)
+            continue
+        env = {
+            **env_base,
+            **(entry.get("env") or {}),
+            "OLLAMACODE_FS_ROOT": workspace_root,
+        }
+        if session_id:
+            env["OLLAMACODE_SESSION_ID"] = session_id
+        prepared.append({**entry, "env": env})
+    if not any(_is_question_server_entry(entry) for entry in prepared):
+        prepared.append(
+            {
+                "type": "stdio",
+                "command": python_executable or sys.executable,
+                "args": ["-m", "ollamacode.servers.question_mcp"],
+                "env": {
+                    **env_base,
+                    "OLLAMACODE_FS_ROOT": workspace_root,
+                    **({"OLLAMACODE_SESSION_ID": session_id} if session_id else {}),
+                },
+            }
+        )
+    if subagents and not any(_is_task_server_entry(entry) for entry in prepared):
+        prepared.append(
+            {
+                "type": "stdio",
+                "command": python_executable or sys.executable,
+                "args": ["-m", "ollamacode.servers.task_mcp"],
+                "env": {
+                    **env_base,
+                    "OLLAMACODE_FS_ROOT": workspace_root,
+                    **({"OLLAMACODE_SESSION_ID": session_id} if session_id else {}),
+                },
+            }
+        )
+    if session_id and not any(_is_todo_server_entry(entry) for entry in prepared):
+        prepared.append(
+            {
+                "type": "stdio",
+                "command": python_executable or sys.executable,
+                "args": ["-m", "ollamacode.servers.todo_mcp"],
+                "env": {
+                    **env_base,
+                    "OLLAMACODE_FS_ROOT": workspace_root,
+                    "OLLAMACODE_SESSION_ID": session_id,
+                },
+            }
+        )
+    return prepared
+
+
+def _ensure_interactive_session(
+    query: str | None,
+    session_id: str | None,
+    session_title: str | None,
+    workspace_root: str,
+    session_history: list[dict[str, Any]] | None,
+) -> tuple[str | None, list[dict[str, Any]] | None]:
+    """Create a session automatically for interactive chats when none exists."""
+    if query or session_id:
+        return session_id, session_history
+    try:
+        from .sessions import create_session
+
+        return create_session(session_title or "", workspace_root=workspace_root), []
+    except Exception:
+        logger.debug("Interactive session bootstrap failed", exc_info=True)
+        return session_id, session_history
+
+
 async def _run(
     model: str,
     mcp_servers: list[dict],
@@ -768,6 +862,7 @@ async def _run(
     blocked_tools: list[str] | None = None,
     prompt_snippets: list[str] | None = None,
     confirm_tool_calls: bool = False,
+    permissions_config: dict[str, Any] | None = None,
     code_style: str | None = None,
     safety_output_patterns: list[str] | None = None,
     planner_model: str | None = None,
@@ -805,6 +900,7 @@ async def _run(
 ) -> int | None:
     from .bridge import BUILTIN_SERVER_PREFIXES
     from .checkpoints import CheckpointRecorder
+    from .permissions import PermissionManager, ToolPermission
     from .hooks import HookManager
 
     use_mcp = bool(mcp_servers)
@@ -849,20 +945,20 @@ async def _run(
     current_prompt_ref: list[str | None] = [None]
     checkpoints_enabled = os.environ.get("OLLAMACODE_CHECKPOINTS", "1") != "0"
     _allowed_tools = list(allowed_tools or [])
-    _env_base = dict(os.environ)
-    mcp_servers = [
-        {
-            **entry,
-            "env": {
-                **_env_base,
-                **(entry.get("env") or {}),
-                "OLLAMACODE_FS_ROOT": workspace_root,
-            },
-        }
-        if (entry.get("type") or "stdio").lower() == "stdio"
-        else entry
+    mcp_servers = _prepare_mcp_servers(
+        mcp_servers,
+        workspace_root,
+        session_id=session_id,
+        subagents=subagents,
+    )
+    permission_manager = PermissionManager.from_config(
+        {"permissions": permissions_config} if permissions_config is not None else None
+    )
+    approval_store = SessionApprovalStore()
+    tool_intercept_enabled = confirm_tool_calls or any(
+        _is_question_server_entry(entry) or _is_task_server_entry(entry)
         for entry in mcp_servers
-    ]
+    )
 
     def _normalize_tool_name(name: str) -> str:
         n = (name or "").strip()
@@ -970,6 +1066,7 @@ async def _run(
                         allowed_tools=allowed_tools,
                         blocked_tools=blocked_tools,
                         confirm_tool_calls=confirm_tool_calls,
+                        permissions_config=permissions_config,
                         code_style=code_style,
                         planner_model=planner_model,
                         executor_model=executor_model,
@@ -1036,6 +1133,7 @@ async def _run(
                     prompt_snippets=prompt_snippets or [],
                     allowed_tools=allowed_tools,
                     blocked_tools=blocked_tools,
+                    permissions_config=permissions_config,
                     subagents=subagents or [],
                     session_id=session_id,
                     session_title=session_title,
@@ -1192,8 +1290,72 @@ async def _run(
                 pass
         return data if isinstance(data, dict) else None
 
+    async def _handle_question_tool_cli(arguments: dict[str, Any]) -> tuple[str, str]:
+        """Collect structured answers for the interactive question tool."""
+        questions = normalize_question_list(arguments)
+        if not questions:
+            return ("skip", "Question tool called without valid questions.")
+        loop = asyncio.get_event_loop()
+        answers: list[str] = []
+        for item in questions:
+            if not quiet:
+                print(
+                    f"[OllamaCode] {item['header']}: {item['question']}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                for index, option in enumerate(item.get("options") or [], start=1):
+                    print(f"  {index}. {option}", file=sys.stderr, flush=True)
+            raw = await loop.run_in_executor(
+                None, lambda: input("[answer/number/blank=skip] ").strip()
+            )
+            answer = raw
+            if raw.isdigit() and item.get("options"):
+                idx = int(raw) - 1
+                if 0 <= idx < len(item["options"]):
+                    answer = item["options"][idx]
+            answers.append(answer)
+        return ("skip", format_question_answers(questions, answers))
+
+    async def _handle_task_tool_cli(arguments: dict[str, Any]) -> tuple[str, str]:
+        """Delegate work to a configured subagent and return the synthetic tool result."""
+        result = await run_task_delegation(
+            session=conn,
+            session_id=session_id,
+            workspace_root=workspace_root,
+            subagents=subagents,
+            arguments=arguments,
+            default_model=current_model,
+            system_prompt=last_system_prompt[0] or _SYSTEM,
+            max_messages=max_messages,
+            max_tool_rounds=max_tool_rounds,
+            max_tool_result_chars=max_tool_result_chars,
+            provider=provider,
+            quiet=quiet,
+            timing=timing,
+            before_tool_call=_before_tool_call_cli,
+        )
+        return ("skip", result)
+
     async def _before_tool_call_cli(tool_name: str, arguments: dict):
         """Prompt [y/N/e] per tool when confirm_tool_calls; e = edit args in $EDITOR. Returns run | skip | (edit, dict)."""
+        normalized_name = _normalize_tool_name(tool_name)
+        if normalized_name == "question":
+            return await _handle_question_tool_cli(arguments)
+        if normalized_name == "task":
+            return await _handle_task_tool_cli(arguments)
+        permission = evaluate_permission(
+            permission_manager,
+            approval_store,
+            session_id,
+            [tool_name, normalized_name],
+        )
+        if permission is ToolPermission.DENY:
+            approval_store.record_deny(session_id)
+            return ("skip", f"Blocked by permission rule for tool: {normalized_name}")
+        if permission is ToolPermission.ALLOW:
+            approval_store.record_grant(session_id)
+            return "run"
         modified_by_hook = False
         # Hooks (pre tool) can deny or modify.
         try:
@@ -1218,25 +1380,33 @@ async def _run(
         loop = asyncio.get_event_loop()
         while True:
             choice = await loop.run_in_executor(
-                None, lambda: input("[y/N/e(dit)]? ").strip().lower() or "n"
+                None, lambda: input("[y/a/N/e(dit)]? ").strip().lower() or "n"
             )
             if choice in ("y", "yes"):
+                approval_store.record_grant(session_id)
+                return ("edit", arguments) if modified_by_hook else "run"
+            if choice in ("a", "always"):
+                approval_store.allow(session_id, [tool_name, normalized_name])
+                approval_store.record_grant(session_id)
                 return ("edit", arguments) if modified_by_hook else "run"
             if choice in ("n", "no", ""):
+                approval_store.record_deny(session_id)
                 return "skip"
             if choice in ("e", "edit"):
                 edited = _edit_tool_args_in_editor(arguments, workspace_root)
                 if edited is not None:
+                    approval_store.record_grant(session_id)
                     return ("edit", edited)
                 if not quiet:
                     print(
                         "[OllamaCode] Invalid JSON or cancel; running with original args.",
                         file=sys.stderr,
                     )
+                approval_store.record_grant(session_id)
                 return "run"
             if not quiet:
                 print(
-                    "[OllamaCode] Choose y (run), N (skip), or e (edit).",
+                    "[OllamaCode] Choose y (run once), a (always), N (skip), or e (edit).",
                     file=sys.stderr,
                 )
 
@@ -1413,9 +1583,9 @@ async def _run(
                     timing=timing,
                     allowed_tools=allowed_tools,
                     blocked_tools=blocked_tools,
-                    confirm_tool_calls=confirm_tool_calls,
+                    confirm_tool_calls=tool_intercept_enabled,
                     before_tool_call=_before_tool_call_cli
-                    if confirm_tool_calls
+                    if tool_intercept_enabled
                     else None,
                     on_tool_start=lambda n, a: _emit_tool_trace("tool_start", n, a),
                     on_tool_end=lambda n, a, s: _emit_tool_trace("tool_end", n, a, s),
@@ -1513,8 +1683,10 @@ async def _run(
                 timing=timing,
                 allowed_tools=allowed_tools,
                 blocked_tools=blocked_tools,
-                confirm_tool_calls=confirm_tool_calls,
-                before_tool_call=_before_tool_call_cli if confirm_tool_calls else None,
+                confirm_tool_calls=tool_intercept_enabled,
+                before_tool_call=_before_tool_call_cli
+                if tool_intercept_enabled
+                else None,
                 on_tool_start=lambda n, a: (
                     _emit_tool_trace("tool_start", n, a),
                     [recorder.record_pre(p) for p in _tool_paths_from_args(n, a)]
@@ -1694,9 +1866,9 @@ async def _run(
                         tool_progress_brief=True,
                         allowed_tools=allowed_tools,
                         blocked_tools=blocked_tools,
-                        confirm_tool_calls=confirm_tool_calls,
+                        confirm_tool_calls=tool_intercept_enabled,
                         before_tool_call=_before_tool_call_cli
-                        if confirm_tool_calls
+                        if tool_intercept_enabled
                         else None,
                         on_tool_start=lambda n, a: (
                             _emit_tool_trace("tool_start", n, a),
@@ -1739,9 +1911,9 @@ async def _run(
                     tool_progress_brief=True,
                     allowed_tools=allowed_tools,
                     blocked_tools=blocked_tools,
-                    confirm_tool_calls=confirm_tool_calls,
+                    confirm_tool_calls=tool_intercept_enabled,
                     before_tool_call=_before_tool_call_cli
-                    if confirm_tool_calls
+                    if tool_intercept_enabled
                     else None,
                     on_tool_start=lambda n, a: _emit_tool_trace("tool_start", n, a),
                     on_tool_end=lambda n, a, s: _emit_tool_trace("tool_end", n, a, s),
@@ -2099,9 +2271,9 @@ async def _run(
                     timing=timing,
                     allowed_tools=allowed_tools,
                     blocked_tools=blocked_tools,
-                    confirm_tool_calls=confirm_tool_calls,
+                    confirm_tool_calls=tool_intercept_enabled,
                     before_tool_call=_before_tool_call_cli
-                    if confirm_tool_calls
+                    if tool_intercept_enabled
                     else None,
                     provider=provider,
                 )
@@ -2817,20 +2989,9 @@ def main() -> None:
         max_messages = merged.get("max_messages", 0)
         max_tool_result_chars = merged.get("max_tool_result_chars", 0)
         workspace_root = os.path.abspath(os.getcwd())
-        _env_base = dict(os.environ)
-        mcp_servers = [
-            {
-                **entry,
-                "env": {
-                    **_env_base,
-                    **(entry.get("env") or {}),
-                    "OLLAMACODE_FS_ROOT": workspace_root,
-                },
-            }
-            if (entry.get("type") or "stdio").lower() == "stdio"
-            else entry
-            for entry in mcp_servers
-        ]
+        mcp_servers = _prepare_mcp_servers(
+            mcp_servers, workspace_root, subagents=merged.get("subagents") or []
+        )
         _protocol_provider = (
             get_provider(merged)
             if merged.get("provider", "ollama") != "ollama"
@@ -2883,6 +3044,8 @@ def main() -> None:
                     memory_rag_snippet_chars=merged.get(
                         "memory_rag_snippet_chars", 220
                     ),
+                    subagents=merged.get("subagents") or [],
+                    permissions_config=merged.get("permissions"),
                 )
 
         asyncio.run(_protocol_main())
@@ -3034,6 +3197,13 @@ def main() -> None:
             logger.debug("Session create failed: %s", e)
             print("[OllamaCode] Could not create session.", file=sys.stderr)
             raise SystemExit(1) from e
+    session_id, session_history = _ensure_interactive_session(
+        args.query,
+        session_id,
+        session_title,
+        workspace_root,
+        session_history,
+    )
     timing = getattr(args, "timing", False) or merged.get("timing", False)
     allowed_tools_merged = list(merged.get("allowed_tools") or [])
     if getattr(args, "allowed_tools", None):
@@ -3146,6 +3316,7 @@ def main() -> None:
             blocked_tools=blocked_tools_merged if blocked_tools_merged else None,
             prompt_snippets=merged.get("prompt_snippets") or [],
             confirm_tool_calls=merged.get("confirm_tool_calls", False),
+            permissions_config=merged.get("permissions"),
             code_style=merged.get("code_style"),
             safety_output_patterns=merged.get("safety_output_patterns") or [],
             planner_model=merged.get("planner_model"),

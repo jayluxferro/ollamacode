@@ -9,6 +9,7 @@ from mcp.types import CallToolResult, ListToolsResult, TextContent
 
 from ollamacode.mcp_client import (
     MCP_SERVER_TYPES_ENTRY_POINT_GROUP,
+    _unknown_tool_result,
     _resolve_tool_name_for_tools,
     _server_params_from_config,
     get_registered_mcp_server_types,
@@ -90,6 +91,14 @@ def test_resolve_tool_name_for_tools_unknown_raises():
         assert "only_tool" in str(e)
     else:
         raise AssertionError("Expected KeyError")
+
+
+def test_unknown_tool_result_patch_hint_mentions_apply_patch():
+    """Unknown patch-like tool names should point the model at supported edit tools."""
+    result = _unknown_tool_result("patch_file", ["ollamacode-fs_apply_patch"])
+    text = tool_result_to_content(result)
+    assert "apply_patch" in text
+    assert "multi_edit" in text
 
 
 def test_server_params_from_config_stdio_default():

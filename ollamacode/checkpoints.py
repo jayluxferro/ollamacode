@@ -6,6 +6,7 @@ Stored in ~/.ollamacode/checkpoints.db (SQLite).
 
 from __future__ import annotations
 
+import difflib
 import sqlite3
 import time
 import uuid
@@ -184,6 +185,27 @@ def list_checkpoints(session_id: str, limit: int = 20) -> list[dict[str, Any]]:
     ]
 
 
+def get_checkpoint_info(checkpoint_id: str) -> dict[str, Any] | None:
+    with sqlite3.connect(_db_path()) as conn:
+        _init_schema(conn)
+        cur = conn.execute(
+            "SELECT id, session_id, workspace_root, created_at, prompt, message_index, file_count FROM checkpoints WHERE id = ?",
+            (checkpoint_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "session_id": row[1],
+        "workspace_root": row[2],
+        "created_at": row[3],
+        "prompt": row[4],
+        "message_index": row[5],
+        "file_count": row[6],
+    }
+
+
 def get_checkpoint_files(checkpoint_id: str) -> list[dict[str, Any]]:
     with sqlite3.connect(_db_path()) as conn:
         _init_schema(conn)
@@ -204,9 +226,41 @@ def get_checkpoint_files(checkpoint_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def restore_checkpoint(checkpoint_id: str, workspace_root: str) -> list[str]:
+def get_checkpoint_diff(checkpoint_id: str, max_lines: int = 400) -> str:
+    """Return a unified-diff style preview for a checkpoint."""
+    parts: list[str] = []
+    for item in get_checkpoint_files(checkpoint_id):
+        path = item["path"]
+        before = item.get("before_content") or ""
+        after = item.get("after_content") or ""
+        diff = list(
+            difflib.unified_diff(
+                before.splitlines(),
+                after.splitlines(),
+                fromfile=f"a/{path}",
+                tofile=f"b/{path}",
+                lineterm="",
+            )
+        )
+        if not diff:
+            continue
+        parts.extend(diff)
+        parts.append("")
+        if len(parts) >= max_lines:
+            parts.append("... [truncated]")
+            break
+    return "\n".join(parts).strip()
+
+
+def restore_checkpoint(
+    checkpoint_id: str,
+    workspace_root: str | None = None,
+) -> list[str]:
     """Restore file contents to the 'before' snapshot. Returns list of modified paths."""
-    root = Path(workspace_root).resolve()
+    info = get_checkpoint_info(checkpoint_id)
+    if info is None:
+        raise ValueError(f"Checkpoint not found: {checkpoint_id}")
+    root = Path((workspace_root or info.get("workspace_root") or "")).resolve()
     modified: list[str] = []
     for item in get_checkpoint_files(checkpoint_id):
         path = item["path"]

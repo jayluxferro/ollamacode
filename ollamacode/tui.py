@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import importlib
 import json
 import logging
 import os
@@ -37,12 +38,50 @@ from .edits import (
     apply_unified_diff_filtered,
 )
 from .memory import build_dynamic_memory_context
+from .permission_runtime import SessionApprovalStore, evaluate_permission
+from .question_runtime import format_question_answers, normalize_question_list
+from .task_runtime import run_task_delegation
 from .multi_agent import run_multi_agent
 from .context import expand_at_refs
 from .skills import load_skills_text
 from .templates import load_prompt_template
 
 logger = logging.getLogger(__name__)
+
+
+def _register_textual_compat_modules() -> None:
+    """Expose the Textual rewrite under `ollamacode.tui.*` compatibility imports."""
+    module = sys.modules.get(__name__)
+    if module is None:
+        return
+    if not hasattr(module, "__path__"):
+        module.__path__ = []  # type: ignore[attr-defined]
+    compat_map = {
+        "ollamacode.tui.app": "ollamacode._tui_textual.app",
+        "ollamacode.tui.context": "ollamacode._tui_textual.context",
+        "ollamacode.tui.context.state": "ollamacode._tui_textual.context.state",
+        "ollamacode.tui.context.theme": "ollamacode._tui_textual.context.theme",
+        "ollamacode.tui.context.keybinds": "ollamacode._tui_textual.context.keybinds",
+        "ollamacode.tui.screens": "ollamacode._tui_textual.screens",
+        "ollamacode.tui.screens.home": "ollamacode._tui_textual.screens.home",
+        "ollamacode.tui.screens.session": "ollamacode._tui_textual.screens.session",
+        "ollamacode.tui.widgets": "ollamacode._tui_textual.widgets",
+        "ollamacode.tui.widgets.logo": "ollamacode._tui_textual.widgets.logo",
+        "ollamacode.tui.widgets.prompt": "ollamacode._tui_textual.widgets.prompt",
+        "ollamacode.tui.widgets.header": "ollamacode._tui_textual.widgets.header",
+        "ollamacode.tui.widgets.footer": "ollamacode._tui_textual.widgets.footer",
+        "ollamacode.tui.widgets.sidebar": "ollamacode._tui_textual.widgets.sidebar",
+    }
+    for alias, target in compat_map.items():
+        if alias in sys.modules:
+            continue
+        try:
+            sys.modules[alias] = importlib.import_module(target)
+        except Exception:
+            logger.debug("Failed to register Textual compatibility module %s", alias)
+
+
+_register_textual_compat_modules()
 
 if TYPE_CHECKING:
     from .mcp_client import McpConnection
@@ -1366,6 +1405,7 @@ async def run_tui(
     allowed_tools: list[str] | None = None,
     blocked_tools: list[str] | None = None,
     confirm_tool_calls: bool = False,
+    permissions_config: dict[str, Any] | None = None,
     code_style: str | None = None,
     planner_model: str | None = None,
     executor_model: str | None = None,
@@ -1497,6 +1537,7 @@ async def run_tui(
     from .bridge import BUILTIN_SERVER_PREFIXES
     from .checkpoints import CheckpointRecorder
     from .hooks import HookManager
+    from .permissions import PermissionManager, ToolPermission
 
     root = workspace_root if workspace_root is not None else os.getcwd()
     # Update workspace root ref so path completion always uses current root.
@@ -1543,6 +1584,10 @@ async def run_tui(
     pending_image_ref: list[tuple[str, str] | None] = [None]
     model_ref = [model]
     autonomous_ref = [autonomous_mode]
+    permission_manager = PermissionManager.from_config(
+        {"permissions": permissions_config} if permissions_config is not None else None
+    )
+    approval_store = SessionApprovalStore()
     hook_mgr = HookManager(
         workspace_root or os.getcwd(), session_ref[0] if session_ref else None
     )
@@ -1977,6 +2022,62 @@ async def run_tui(
 
     async def _before_tool_call_tui(tool_name: str, arguments: dict):
         """Prompt [y/N/e] per tool with Rich panel when confirm_tool_calls; e = edit args in $EDITOR."""
+        normalized_name = _normalize_tool_name(tool_name)
+        if normalized_name == "question":
+            questions = normalize_question_list(arguments)
+            if not questions:
+                return ("skip", "Question tool called without valid questions.")
+            answers: list[str] = []
+            for item in questions:
+                console.print(
+                    Panel(
+                        item["question"],
+                        title=item["header"],
+                        border_style="cyan",
+                    )
+                )
+                for index, option in enumerate(item.get("options") or [], start=1):
+                    console.print(f"  {index}. {option}")
+                raw = await loop.run_in_executor(
+                    None, lambda: input("[answer/number/blank=skip] ").strip()
+                )
+                answer = raw
+                if raw.isdigit() and item.get("options"):
+                    idx = int(raw) - 1
+                    if 0 <= idx < len(item["options"]):
+                        answer = item["options"][idx]
+                answers.append(answer)
+            return ("skip", format_question_answers(questions, answers))
+        if normalized_name == "task":
+            result = await run_task_delegation(
+                session=session,
+                session_id=session_ref[0] if session_ref else None,
+                workspace_root=root,
+                subagents=subagents,
+                arguments=arguments,
+                default_model=model_ref[0],
+                system_prompt=_SYSTEM,
+                max_messages=max_messages,
+                max_tool_rounds=max_tool_rounds_eff(),
+                max_tool_result_chars=max_tool_result_chars,
+                provider=provider,
+                quiet=quiet,
+                before_tool_call=_before_tool_call_tui,
+            )
+            return ("skip", result)
+        session_key = session_ref[0] if session_ref else None
+        permission = evaluate_permission(
+            permission_manager,
+            approval_store,
+            session_key,
+            [tool_name, normalized_name],
+        )
+        if permission is ToolPermission.DENY:
+            approval_store.record_deny(session_key)
+            return ("skip", f"Blocked by permission rule for tool: {normalized_name}")
+        if permission is ToolPermission.ALLOW:
+            approval_store.record_grant(session_key)
+            return "run"
         modified_by_hook = False
         try:
             decision = await hook_mgr.run_pre_tool_use(
@@ -2004,14 +2105,23 @@ async def run_tui(
             )
         )
         choice = await loop.run_in_executor(
-            None, lambda: input("[y/N/e(dit)]? ").strip().lower() or "n"
+            None, lambda: input("[y/a/N/e(dit)]? ").strip().lower() or "n"
         )
         if choice in ("y", "yes"):
+            approval_store.record_grant(session_key)
+            _status_update(
+                phase="streaming" if status.get("has_output") else "thinking", tool=""
+            )
+            return ("edit", arguments) if modified_by_hook else "run"
+        if choice in ("a", "always"):
+            approval_store.allow(session_key, [tool_name, normalized_name])
+            approval_store.record_grant(session_key)
             _status_update(
                 phase="streaming" if status.get("has_output") else "thinking", tool=""
             )
             return ("edit", arguments) if modified_by_hook else "run"
         if choice in ("n", "no", ""):
+            approval_store.record_deny(session_key)
             _status_update(
                 phase="streaming" if status.get("has_output") else "thinking", tool=""
             )
@@ -2019,18 +2129,23 @@ async def run_tui(
         if choice in ("e", "edit"):
             edited = _edit_tool_args_in_editor(arguments, root)
             if edited is not None:
+                approval_store.record_grant(session_key)
                 _status_update(
                     phase="streaming" if status.get("has_output") else "thinking",
                     tool="",
                 )
                 return ("edit", edited)
             console.print("[dim]Invalid JSON or cancel; running with original args.[/]")
+            approval_store.record_grant(session_key)
             _status_update(
                 phase="streaming" if status.get("has_output") else "thinking", tool=""
             )
             return "run"
-        console.print("[dim]Choose y (run), N (skip), or e (edit).[/]")
+        console.print("[dim]Choose y (run once), a (always), N (skip), or e (edit).[/]")
         return await _before_tool_call_tui(tool_name, arguments)  # re-prompt
+
+    def _tool_intercept_enabled() -> bool:
+        return session is not None
 
     queue_inputs_requested = os.environ.get("OLLAMACODE_TUI_QUEUE_INPUT", "1") != "0"
     # prompt_toolkit does not behave well with background queued reads while Rich Live is rendering.
@@ -2327,9 +2442,9 @@ async def run_tui(
                         max_tool_rounds=max_tool_rounds,
                         allowed_tools=tools if tools else None,
                         blocked_tools=None,
-                        confirm_tool_calls=effective_confirm(),
+                        confirm_tool_calls=_tool_intercept_enabled(),
                         before_tool_call=_before_tool_call_tui
-                        if effective_confirm()
+                        if _tool_intercept_enabled()
                         else None,
                         provider=provider,
                     )
@@ -2396,9 +2511,9 @@ async def run_tui(
                         max_tool_result_chars=max_tool_result_chars,
                         allowed_tools=allowed_tools,
                         blocked_tools=blocked_tools,
-                        confirm_tool_calls=effective_confirm(),
+                        confirm_tool_calls=_tool_intercept_enabled(),
                         before_tool_call=_before_tool_call_tui
-                        if effective_confirm()
+                        if _tool_intercept_enabled()
                         else None,
                         planner_model=planner_model,
                         executor_model=executor_model,
@@ -2955,9 +3070,9 @@ async def run_tui(
                             system_prompt=_SYSTEM,
                             message_history=[],
                             max_tool_rounds=1,
-                            confirm_tool_calls=effective_confirm(),
+                            confirm_tool_calls=_tool_intercept_enabled(),
                             before_tool_call=_before_tool_call_tui
-                            if effective_confirm()
+                            if _tool_intercept_enabled()
                             else None,
                             provider=provider,
                         )
@@ -3067,9 +3182,9 @@ async def run_tui(
                         timing=timing,
                         allowed_tools=allowed_tools,
                         blocked_tools=blocked_tools,
-                        confirm_tool_calls=effective_confirm(),
+                        confirm_tool_calls=_tool_intercept_enabled(),
                         before_tool_call=_before_tool_call_tui
-                        if effective_confirm()
+                        if _tool_intercept_enabled()
                         else None,
                         provider=provider,
                     )
@@ -3510,9 +3625,9 @@ async def run_tui(
                     tool_progress_brief=True,
                     allowed_tools=allowed_tools,
                     blocked_tools=blocked_tools,
-                    confirm_tool_calls=effective_confirm(),
+                    confirm_tool_calls=_tool_intercept_enabled(),
                     before_tool_call=_before_tool_call_tui
-                    if effective_confirm()
+                    if _tool_intercept_enabled()
                     else None,
                     on_tool_start=_on_tool_start,
                     on_tool_end=_on_tool_end,

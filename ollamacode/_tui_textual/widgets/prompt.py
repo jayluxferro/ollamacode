@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from textual.binding import Binding
@@ -110,6 +111,20 @@ class PromptInput(TextArea):
             self.load_text(self._current_text)
         else:
             self.load_text(self._history[self._history_index])
+
+    # -- @file expansion ---------------------------------------------------------
+
+    def expand_at_refs(self, text: str) -> str:
+        """Expand @path references in text using the context module."""
+        if "@" not in text:
+            return text
+        try:
+            from ollamacode.context import expand_at_refs
+
+            return expand_at_refs(text, self._workspace_root)
+        except Exception:
+            logger.debug("Failed to expand @-refs", exc_info=True)
+            return text
 
     # -- Properties --------------------------------------------------------------
 

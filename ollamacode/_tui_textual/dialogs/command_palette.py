@@ -140,23 +140,88 @@ class SlashCommands(Provider):
     """Command provider for slash commands."""
 
     COMMANDS = [
+        # Core
         ("/help", "Show available commands"),
+        ("/quit", "Exit OllamaCode"),
+        ("/new", "Start a new session"),
+        ("/clear", "Clear messages"),
+
+        # Model & display
         ("/model", "Change model"),
+        ("/theme", "Change theme"),
+        ("/auto", "Toggle autonomous mode"),
+        ("/compact", "Toggle compact view or compact messages"),
+        ("/trace", "Set tool trace filter"),
+        ("/reset-state", "Clear persistent state"),
+
+        # Sessions
         ("/sessions", "List sessions"),
+        ("/search", "Search sessions"),
+        ("/resume", "Resume a session by ID"),
+        ("/session", "Show/set session info"),
+        ("/branch", "Branch current session"),
+        ("/export", "Export session as JSON"),
+        ("/import", "Import session from JSON"),
+
+        # Checkpoints
+        ("/checkpoints", "List checkpoints"),
+        ("/rewind", "Restore a checkpoint"),
+
+        # Context & memory
+        ("/kg_add", "Add knowledge graph entry"),
+        ("/kg_query", "Query knowledge graph"),
+        ("/rag_index", "Build vector index"),
+        ("/rag_query", "Query vector memory"),
+
+        # Dev commands
         ("/fix", "Run linter and send output"),
         ("/test", "Run tests and send output"),
+        ("/docs", "Run docs command"),
+        ("/profile", "Run profiler"),
+
+        # Agent
         ("/plan", "Set a multi-step plan"),
         ("/continue", "Continue with current plan"),
-        ("/auto", "Toggle autonomous mode"),
-        ("/compact", "Toggle compact view"),
-        ("/copy", "Copy last response to clipboard"),
         ("/summary", "Summarize conversation"),
-        ("/quit", "Exit OllamaCode"),
+        ("/copy", "Copy last response to clipboard"),
+        ("/mode", "Switch agent mode (build/plan/review)"),
+        ("/variant", "Switch model variant"),
+        ("/commands", "List all commands"),
+
+        # Multi-agent
+        ("/multi", "Run multi-agent task"),
+        ("/agents", "Dispatch concurrent agents"),
+        ("/agents_show", "Show agent outputs"),
+        ("/agents_summary", "Summarize agent outputs"),
+        ("/subagent", "Dispatch a subagent"),
+
+        # Media
+        ("/image", "Attach image to message"),
+        ("/listen", "Voice recording input"),
+        ("/say", "Text-to-speech output"),
+
+        # Feedback & tools
+        ("/rate", "Rate last response"),
+        ("/refactor", "Refactoring tools"),
+        ("/palette", "Open command palette"),
     ]
 
     async def search(self, query: str) -> Hits:
         matcher = self.matcher(query)
-        for cmd, desc in self.COMMANDS:
+
+        # Include custom commands from manager
+        all_commands = list(self.COMMANDS)
+        try:
+            cm = self.app.app_state.command_manager
+            if cm is not None:
+                for info in cm.list_commands():
+                    name = info.get("name", "")
+                    desc = info.get("description", "Custom command")
+                    all_commands.append((f"/{name}", desc))
+        except Exception:
+            pass
+
+        for cmd, desc in all_commands:
             score = matcher.match(cmd)
             if score > 0:
                 yield Hit(

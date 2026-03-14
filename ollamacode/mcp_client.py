@@ -320,7 +320,7 @@ def _unknown_tool_result(name: str, available: List[str]) -> CallToolResult:
     """Return a CallToolResult for an unknown tool so the model can retry with a valid tool."""
     short = ["_".join(k.split("_", 1)[1:]) if "_" in k else k for k in available]
     hint = (
-        "Use read_file and write_file to read and modify files (no apply_patch)."
+        "Use read_file, edit_file, multi_edit, or apply_patch to modify files."
         if "apply_patch" in name or "patch" in name.lower()
         else ""
     )

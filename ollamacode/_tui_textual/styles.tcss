@@ -1,6 +1,10 @@
-/* OllamaCode TUI Stylesheet — OpenCode-inspired layout */
+/* OllamaCode TUI Stylesheet — OpenCode-inspired layout
+ *
+ * Theme variables are injected at runtime via generate_css().
+ * Defaults below match the "opencode" theme.
+ */
 
-/* ─── Default Theme Variables (opencode) ─── */
+/* ─── Default Theme Variables ─── */
 $primary: #fab283;
 $secondary: #7dc4e4;
 $accent: #a6da95;
@@ -17,15 +21,21 @@ $border: #313244;
 $border-active: #fab283;
 $border-subtle: #2a2a3a;
 $diff-added: #a6e3a1;
+$diff-added-bg: #29422e;
 $diff-removed: #f38ba8;
+$diff-removed-bg: #3d2529;
 
 /* ─── Global ─── */
 Screen {
     background: $background;
     color: $text;
+    layers: base toast;
 }
 
-/* ─── Home Screen ─── */
+/* ═══════════════════════════════════════════════════════════════════
+   HOME SCREEN
+   ═══════════════════════════════════════════════════════════════════ */
+
 HomeScreen {
     layout: vertical;
     align: center middle;
@@ -86,7 +96,10 @@ Tips {
     text-align: center;
 }
 
-/* ─── Session Screen ─── */
+/* ═══════════════════════════════════════════════════════════════════
+   SESSION SCREEN
+   ═══════════════════════════════════════════════════════════════════ */
+
 SessionScreen {
     layout: vertical;
 }
@@ -100,7 +113,7 @@ SessionScreen {
     width: 1fr;
     height: 100%;
     layout: vertical;
-    padding: 0 2;
+    padding: 0 1;
 }
 
 /* ─── Session Header ─── */
@@ -116,6 +129,7 @@ SessionHeader {
 #header-title {
     width: 1fr;
     text-style: bold;
+    color: $text;
 }
 
 #header-tokens {
@@ -133,6 +147,7 @@ SessionHeader {
 #header-model {
     width: auto;
     color: $accent;
+    text-style: bold;
 }
 
 /* ─── Message List ─── */
@@ -157,15 +172,9 @@ UserMessage {
     height: auto;
 }
 
-.user-message {
-    margin: 1 0 0 0;
-    padding: 0 1;
-    border-left: thick $primary;
-    background: $background-panel;
-}
-
 .user-message-text {
     margin: 0;
+    color: $text;
 }
 
 /* ─── Assistant Message ─── */
@@ -175,13 +184,33 @@ AssistantMessage {
     height: auto;
 }
 
-.assistant-message {
-    margin: 1 0 0 0;
-    padding: 0 1;
-}
-
 .assistant-markdown {
     margin: 0;
+}
+
+/* Markdown code blocks */
+Markdown .code_inline {
+    background: $background-element;
+    color: $accent;
+}
+
+/* ─── Reasoning/Thinking Block ─── */
+.reasoning-block {
+    margin: 0 0 1 1;
+    padding: 0 1;
+    border-left: tall $border-subtle;
+    color: $text-muted;
+    text-style: italic;
+    height: auto;
+    max-height: 20;
+    overflow-y: auto;
+}
+
+.reasoning-header {
+    text-style: bold italic;
+    color: $secondary;
+    height: 1;
+    margin: 0 0 0 1;
 }
 
 /* ─── Tool Calls ─── */
@@ -195,13 +224,7 @@ BlockToolCall {
     margin: 0 0 0 1;
     padding: 0 1;
     border-left: tall $border;
-}
-
-.tool-call {
-    margin: 0 0 0 1;
-    padding: 0 1;
-    border-left: tall $border;
-    color: $text-muted;
+    height: auto;
 }
 
 .tool-call-header {
@@ -212,29 +235,42 @@ BlockToolCall {
 
 .tool-call-body {
     color: $text-muted;
-    max-height: 15;
+    max-height: 20;
     overflow-y: auto;
+    height: auto;
 }
 
-.tool-call-output {
-    color: $text-muted;
-    max-height: 10;
-    overflow-y: auto;
+.tool-call-status-running {
+    color: $warning;
+    text-style: bold;
 }
 
-.tool-call-inline {
-    height: 1;
-    margin: 0 0 0 1;
-    color: $text-muted;
+.tool-call-status-done {
+    color: $success;
 }
 
-/* ─── Reasoning ─── */
-.reasoning-block {
-    margin: 0 0 0 1;
-    padding: 0 1;
-    border-left: tall $border-subtle;
+.tool-call-status-error {
+    color: $error;
+}
+
+/* ─── Diff Rendering ─── */
+.diff-added {
+    color: $diff-added;
+    background: $diff-added-bg;
+}
+
+.diff-removed {
+    color: $diff-removed;
+    background: $diff-removed-bg;
+}
+
+.diff-header {
+    color: $secondary;
+    text-style: bold;
+}
+
+.diff-context {
     color: $text-muted;
-    text-style: italic;
 }
 
 /* ─── Prompt Area ─── */
@@ -251,13 +287,32 @@ PromptInput:focus {
     border: tall $border-active;
 }
 
-#prompt-status {
+/* ─── Spinner ─── */
+KnightRiderSpinner {
+    height: 1;
+    width: auto;
+    color: $primary;
+    margin: 0 0 0 1;
+}
+
+BrailleSpinner {
+    height: 1;
+    width: auto;
+    color: $primary;
+    margin: 0 0 0 1;
+}
+
+/* ─── Context Bar (below prompt) ─── */
+#context-bar {
     height: 1;
     color: $text-muted;
     padding: 0 1;
 }
 
-/* ─── Sidebar ─── */
+/* ═══════════════════════════════════════════════════════════════════
+   SIDEBAR
+   ═══════════════════════════════════════════════════════════════════ */
+
 Sidebar {
     dock: right;
     width: 42;
@@ -272,31 +327,37 @@ Sidebar.-hidden {
     display: none;
 }
 
+.sidebar-section {
+    height: auto;
+    margin: 0 0 1 0;
+}
+
 .sidebar-section-title {
     text-style: bold;
     color: $text-muted;
-    margin: 1 0 0 0;
+    height: 1;
+    margin: 0 0 0 0;
+}
+
+.sidebar-section-title:hover {
+    color: $primary;
 }
 
 .sidebar-item {
-    height: 1;
+    height: auto;
     color: $text;
     padding: 0 1;
-}
-
-.sidebar-value {
-    color: $text-muted;
 }
 
 .sidebar-muted {
     color: $text-muted;
 }
 
-.sidebar-ok {
+.sidebar-ok, .sidebar-status-ok {
     color: $success;
 }
 
-.sidebar-err {
+.sidebar-err, .sidebar-status-err {
     color: $error;
 }
 
@@ -304,15 +365,24 @@ Sidebar.-hidden {
     color: $warning;
 }
 
-.sidebar-status-ok {
-    color: $success;
+/* Sidebar progress bar */
+.sidebar-progress {
+    height: 1;
+    margin: 0 1;
 }
 
-.sidebar-status-err {
-    color: $error;
+.sidebar-progress-fill {
+    color: $primary;
 }
 
-/* ─── Session Footer ─── */
+.sidebar-progress-empty {
+    color: $border;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SESSION FOOTER
+   ═══════════════════════════════════════════════════════════════════ */
+
 SessionFooter {
     dock: bottom;
     height: 1;
@@ -339,9 +409,48 @@ SessionFooter {
 #footer-agent {
     width: auto;
     color: $accent;
+    text-style: bold;
 }
 
-/* ─── Dialogs / Modals ─── */
+/* ═══════════════════════════════════════════════════════════════════
+   DIALOGS / MODALS
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Base dialog styles */
+.dialog-container {
+    width: 70;
+    max-width: 90%;
+    max-height: 80%;
+    background: $background-panel;
+    border: thick $border-active;
+    padding: 1 2;
+}
+
+.dialog-title {
+    text-style: bold;
+    color: $text;
+    margin-bottom: 1;
+    height: 1;
+}
+
+.dialog-subtitle {
+    color: $text-muted;
+    margin-bottom: 1;
+    height: auto;
+}
+
+.dialog-buttons {
+    layout: horizontal;
+    height: 3;
+    align: center middle;
+    margin-top: 1;
+}
+
+.dialog-buttons Button {
+    margin: 0 1;
+}
+
+/* ─── Tool Confirm Dialog ─── */
 ToolConfirmDialog {
     align: center middle;
 }
@@ -377,7 +486,7 @@ ToolConfirmDialog {
     margin: 0 1;
 }
 
-/* Session List Dialog */
+/* ─── Session List Dialog ─── */
 SessionListDialog {
     align: center middle;
 }
@@ -413,7 +522,7 @@ SessionListDialog {
     background: $primary 30%;
 }
 
-/* Model Picker */
+/* ─── Model Picker Dialog ─── */
 ModelPickerDialog {
     align: center middle;
 }
@@ -427,7 +536,35 @@ ModelPickerDialog {
     padding: 1 2;
 }
 
-/* Question Dialog */
+/* ─── Theme Picker Dialog ─── */
+ThemePickerDialog {
+    align: center middle;
+}
+
+#theme-picker-container {
+    width: 60;
+    max-width: 90%;
+    max-height: 70%;
+    background: $background-panel;
+    border: thick $border-active;
+    padding: 1 2;
+}
+
+.theme-option {
+    height: 1;
+    padding: 0 1;
+}
+
+.theme-option:hover {
+    background: $background-element;
+}
+
+.theme-option.-current {
+    color: $primary;
+    text-style: bold;
+}
+
+/* ─── Question Dialog ─── */
 QuestionDialog {
     align: center middle;
 }
@@ -440,27 +577,146 @@ QuestionDialog {
     padding: 1 2;
 }
 
-/* ─── Spinner ─── */
-BrailleSpinner {
-    height: 1;
-    width: auto;
-    color: $primary;
+/* ─── Agent Picker Dialog ─── */
+AgentPickerDialog {
+    align: center middle;
 }
 
-/* ─── Context Bar (below prompt) ─── */
-#context-bar {
-    height: 1;
-    color: $text-muted;
+.agent-option {
+    height: 2;
     padding: 0 1;
-    layout: horizontal;
 }
 
-#context-model {
-    width: auto;
-    margin-right: 2;
+.agent-option:hover {
+    background: $background-element;
 }
 
-#context-agent {
-    width: auto;
-    color: $accent;
+.agent-option.-selected {
+    background: $primary 30%;
+}
+
+/* ─── Branch Dialog ─── */
+BranchDialog {
+    align: center middle;
+}
+
+/* ─── Timeline Dialog ─── */
+TimelineDialog {
+    align: center middle;
+}
+
+.timeline-entry {
+    height: 2;
+    padding: 0 1;
+}
+
+.timeline-entry:hover {
+    background: $background-element;
+}
+
+.timeline-entry.-fork-point {
+    border-left: thick $accent;
+}
+
+.timeline-role-user {
+    color: $primary;
+    text-style: bold;
+}
+
+.timeline-role-assistant {
+    color: $secondary;
+}
+
+.timeline-role-tool {
+    color: $text-muted;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   TOAST NOTIFICATIONS
+   ═══════════════════════════════════════════════════════════════════ */
+
+ToastContainer {
+    dock: right;
+    width: 52;
+    height: auto;
+    max-height: 50%;
+    layer: toast;
+    padding: 1;
+}
+
+ToastItem {
+    width: 50;
+    max-width: 50;
+    height: auto;
+    padding: 0 1;
+    margin: 0 0 1 0;
+    background: $background-element;
+    border-left: thick $info;
+}
+
+.toast-header {
+    text-style: bold;
+    height: 1;
+}
+
+.toast-body {
+    color: $text;
+    height: auto;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   BUTTON STYLES
+   ═══════════════════════════════════════════════════════════════════ */
+
+Button {
+    background: $background-element;
+    color: $text;
+    border: tall $border;
+    height: 3;
+    min-width: 10;
+}
+
+Button:hover {
+    background: $border;
+    border: tall $border-active;
+}
+
+Button:focus {
+    border: tall $border-active;
+}
+
+Button.-primary {
+    background: $primary;
+    color: $background;
+    text-style: bold;
+}
+
+Button.-primary:hover {
+    background: $primary 80%;
+}
+
+Button.-success {
+    background: $success;
+    color: $background;
+    text-style: bold;
+}
+
+Button.-error {
+    background: $error;
+    color: $background;
+    text-style: bold;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   INPUT STYLES
+   ═══════════════════════════════════════════════════════════════════ */
+
+Input {
+    background: $background-element;
+    border: tall $border;
+    color: $text;
+}
+
+Input:focus {
+    border: tall $border-active;
 }

@@ -4,7 +4,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from ollamacode.cli import _parse_args, _resolve_mcp_servers, _run
+from ollamacode.cli import (
+    _ensure_interactive_session,
+    _parse_args,
+    _prepare_mcp_servers,
+    _resolve_mcp_servers,
+    _run,
+)
 
 
 def test_parse_args_defaults():
@@ -104,12 +110,12 @@ async def test_run_respects_system_extra(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_uses_mcp_args_from_env(monkeypatch):
-    """_run with single stdio MCP server config uses connect_mcp_stdio."""
+    """_run prepares stdio MCP servers with the interactive auxiliaries attached."""
     mcp_servers = [
         {"type": "stdio", "command": "python", "args": ["examples/demo_server.py"]}
     ]
     with (
-        patch("ollamacode.cli.connect_mcp_stdio") as connect,
+        patch("ollamacode.cli.connect_mcp_servers") as connect,
         patch(
             "ollamacode.cli.run_agent_loop", new_callable=AsyncMock, return_value="5"
         ),
@@ -119,8 +125,12 @@ async def test_run_uses_mcp_args_from_env(monkeypatch):
         await _run("test-model", mcp_servers, "", "What is 2+3?", False, False, 0, None)
     connect.assert_called_once()
     call_args = connect.call_args[0]
-    assert call_args[0] == "python"
-    assert call_args[1] == ["examples/demo_server.py"]
+    assert call_args[0][0]["command"] == "python"
+    assert call_args[0][0]["args"] == ["examples/demo_server.py"]
+    assert any(
+        entry["args"] == ["-m", "ollamacode.servers.question_mcp"]
+        for entry in call_args[0]
+    )
 
 
 def test_resolve_mcp_servers_returns_using_builtin(tmp_path):
@@ -143,3 +153,47 @@ def test_resolve_mcp_servers_returns_using_builtin(tmp_path):
     # Default: built-in + custom (1); custom server is last
     assert len(servers2) == len(DEFAULT_MCP_SERVERS) + 1
     assert servers2[-1]["command"] == "npx"
+
+
+def test_prepare_mcp_servers_injects_session_env_and_todo_server():
+    """Session-aware MCP prep should inject env and append the todo server."""
+    servers = _prepare_mcp_servers(
+        [{"type": "stdio", "command": "python", "args": ["-m", "ollamacode.servers.fs_mcp"]}],
+        "/tmp/workspace",
+        session_id="session-123",
+        python_executable="/usr/bin/python3",
+        subagents=[{"name": "reviewer", "tools": ["read_file"]}],
+    )
+    assert len(servers) == 4
+    assert servers[0]["env"]["OLLAMACODE_FS_ROOT"] == "/tmp/workspace"
+    assert servers[0]["env"]["OLLAMACODE_SESSION_ID"] == "session-123"
+    assert servers[1]["command"] == "/usr/bin/python3"
+    assert servers[1]["args"] == ["-m", "ollamacode.servers.question_mcp"]
+    assert servers[2]["args"] == ["-m", "ollamacode.servers.task_mcp"]
+    assert servers[3]["args"] == ["-m", "ollamacode.servers.todo_mcp"]
+    assert servers[3]["env"]["OLLAMACODE_SESSION_ID"] == "session-123"
+
+
+def test_prepare_mcp_servers_without_session_does_not_append_todo_server():
+    """Stateless prep should expose question, but not todo or task by default."""
+    servers = _prepare_mcp_servers(
+        [{"type": "stdio", "command": "python", "args": ["demo.py"]}],
+        "/tmp/workspace",
+    )
+    assert len(servers) == 2
+    assert "OLLAMACODE_SESSION_ID" not in servers[0]["env"]
+    assert servers[1]["args"] == ["-m", "ollamacode.servers.question_mcp"]
+
+
+def test_ensure_interactive_session_bootstraps_when_query_missing(tmp_path, monkeypatch):
+    """Interactive mode should auto-create a session so session-scoped tools can work."""
+    monkeypatch.setattr("ollamacode.sessions._DB_PATH", tmp_path / "sessions.db")
+    session_id, session_history = _ensure_interactive_session(
+        None,
+        None,
+        "Interactive",
+        str(tmp_path),
+        None,
+    )
+    assert session_id
+    assert session_history == []

@@ -1,11 +1,15 @@
-from ollamacode.tui.widgets.footer import SessionFooter
-from ollamacode.tui.widgets.header import SessionHeader
-from ollamacode.tui.widgets.messages import AssistantMessage, MessageList, UserMessage
-from ollamacode.tui.widgets.prompt import PromptInput
-from ollamacode.tui.widgets.sidebar import Sidebar
-from ollamacode.tui.widgets.tips import Tips
-from ollamacode.tui.widgets.todo_item import TodoItem
-from ollamacode.tui.widgets.tool_display import (
+"""Re-export all widgets from the _tui_textual widget package."""
+
+from .footer import SessionFooter
+from .header import SessionHeader
+from .messages import AssistantMessage, MessageList, UserMessage
+from .prompt import PromptInput
+from .sidebar import Sidebar
+from .spinner import BrailleSpinner, KnightRiderSpinner
+from .tips import Tips
+from .toast import ToastContainer, ToastItem
+from .todo_item import TodoItem
+from .tool_display import (
     BlockToolCall,
     InlineToolCall,
     make_tool_widget,
@@ -14,13 +18,17 @@ from ollamacode.tui.widgets.tool_display import (
 __all__ = [
     "AssistantMessage",
     "BlockToolCall",
+    "BrailleSpinner",
     "InlineToolCall",
+    "KnightRiderSpinner",
     "MessageList",
     "PromptInput",
     "SessionFooter",
     "SessionHeader",
     "Sidebar",
     "Tips",
+    "ToastContainer",
+    "ToastItem",
     "TodoItem",
     "UserMessage",
     "make_tool_widget",
