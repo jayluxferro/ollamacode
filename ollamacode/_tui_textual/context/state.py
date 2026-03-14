@@ -30,6 +30,7 @@ class SessionState:
     tool_errors: int = 0
     current_tool: str = ""
     permissions_granted: int = 0
+    permissions_denied: int = 0
     autonomous: bool = False
     compact_mode: str = "off"  # "on", "off", "auto"
     trace_filter: str = ""

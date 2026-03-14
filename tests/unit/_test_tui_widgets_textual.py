@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 
-
 # ---------------------------------------------------------------------------
 # Theme helpers
 # ---------------------------------------------------------------------------
@@ -201,16 +200,23 @@ class TestLogo:
 
 
 class TestSpinner:
-    """Tests for the braille spinner."""
+    """Tests for the knight-rider scanner spinner."""
 
-    def test_spinner_frames(self) -> None:
-        from ollamacode.tui.widgets.spinner import BrailleSpinner
+    def test_spinner_alias(self) -> None:
+        from ollamacode._tui_textual.widgets.spinner import (
+            BrailleSpinner,
+            KnightRiderSpinner,
+        )
 
-        assert len(BrailleSpinner.FRAMES) == 10
-        # All frames should be single braille chars
-        for frame in BrailleSpinner.FRAMES:
-            assert len(frame) == 1
-            assert 0x2800 <= ord(frame) <= 0x28FF
+        # BrailleSpinner is an alias for KnightRiderSpinner
+        assert BrailleSpinner is KnightRiderSpinner
+
+    def test_spinner_has_label(self) -> None:
+        from ollamacode._tui_textual.widgets.spinner import KnightRiderSpinner
+
+        spinner = KnightRiderSpinner()
+        # label is a reactive property
+        assert hasattr(spinner, "label")
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +297,7 @@ class TestToolConfirmIcons:
     """Tests for tool confirmation dialog icon map."""
 
     def test_tool_icons_subset(self) -> None:
-        from ollamacode.tui.dialogs.tool_confirm import TOOL_ICONS
+        from ollamacode._tui_textual.dialogs.tool_confirm import TOOL_ICONS
 
         assert "run_command" in TOOL_ICONS
         assert "bash" in TOOL_ICONS
@@ -307,7 +313,7 @@ class TestSlashCommands:
     """Tests for slash command definitions."""
 
     def test_slash_commands_defined(self) -> None:
-        from ollamacode.tui.dialogs.command_palette import SlashCommands
+        from ollamacode._tui_textual.dialogs.command_palette import SlashCommands
 
         assert len(SlashCommands.COMMANDS) >= 10
         # Each should be a tuple of (command, description)
@@ -315,6 +321,215 @@ class TestSlashCommands:
             assert cmd.startswith("/")
             assert isinstance(desc, str)
             assert len(desc) > 0
+
+
+# ---------------------------------------------------------------------------
+# Sanitize stream text (backward compat import)
+# ---------------------------------------------------------------------------
+
+
+class TestNewStateFields:
+    """Tests for new state fields added during Textual TUI implementation."""
+
+    def test_session_state_permissions_denied(self) -> None:
+        from ollamacode._tui_textual.context.state import SessionState
+
+        state = SessionState()
+        assert state.permissions_denied == 0
+        state.permissions_denied = 5
+        assert state.permissions_denied == 5
+
+    def test_session_state_compact_mode(self) -> None:
+        from ollamacode._tui_textual.context.state import SessionState
+
+        state = SessionState()
+        assert state.compact_mode == "off"
+        state.compact_mode = "auto"
+        assert state.compact_mode == "auto"
+
+    def test_session_state_variant_name(self) -> None:
+        from ollamacode._tui_textual.context.state import SessionState
+
+        state = SessionState()
+        assert state.variant_name == ""
+        state.variant_name = "fast"
+        assert state.variant_name == "fast"
+
+    def test_session_state_checkpoint_count(self) -> None:
+        from ollamacode._tui_textual.context.state import SessionState
+
+        state = SessionState()
+        assert state.checkpoint_count == 0
+
+    def test_session_state_trace_filter(self) -> None:
+        from ollamacode._tui_textual.context.state import SessionState
+
+        state = SessionState()
+        assert state.trace_filter == ""
+
+    def test_app_state_managers_default_none(self) -> None:
+        from ollamacode._tui_textual.context.state import AppState
+
+        state = AppState()
+        assert state.permissions_manager is None
+        assert state.permission_state is None
+        assert state.mode_manager is None
+        assert state.command_manager is None
+        assert state.variant_manager is None
+        assert state.plugin_manager is None
+        assert state.file_watcher_handle is None
+
+
+# ---------------------------------------------------------------------------
+# New dialog tests
+# ---------------------------------------------------------------------------
+
+
+class TestNewDialogs:
+    """Tests for the new dialogs added during Textual TUI implementation."""
+
+    def test_checkpoint_list_dialog_import(self) -> None:
+        from ollamacode._tui_textual.dialogs.checkpoint_list import (
+            CheckpointListDialog,
+        )
+
+        assert CheckpointListDialog is not None
+
+    def test_export_import_dialog_import(self) -> None:
+        from ollamacode._tui_textual.dialogs.export_import import (
+            ExportDialog,
+            ImportDialog,
+        )
+
+        assert ExportDialog is not None
+        assert ImportDialog is not None
+
+    def test_refactor_dialog_import(self) -> None:
+        from ollamacode._tui_textual.dialogs.refactor import RefactorDialog
+
+        assert RefactorDialog is not None
+        assert len(RefactorDialog.OPERATIONS) >= 4
+
+    def test_refactor_operations_have_ids(self) -> None:
+        from ollamacode._tui_textual.dialogs.refactor import RefactorDialog
+
+        for op_id, label, desc in RefactorDialog.OPERATIONS:
+            assert isinstance(op_id, str)
+            assert len(op_id) > 0
+            assert isinstance(label, str)
+            assert isinstance(desc, str)
+
+
+# ---------------------------------------------------------------------------
+# App COMMANDS provider registration
+# ---------------------------------------------------------------------------
+
+
+class TestAppCommands:
+    """Tests for the command palette provider registration."""
+
+    def test_commands_are_provider_classes(self) -> None:
+        from textual.command import Provider
+
+        from ollamacode._tui_textual.app import OllamaCodeApp
+
+        assert len(OllamaCodeApp.COMMANDS) == 4
+        for cmd in OllamaCodeApp.COMMANDS:
+            assert isinstance(cmd, type)
+            assert issubclass(cmd, Provider)
+
+    def test_app_accepts_tool_params(self) -> None:
+        from ollamacode._tui_textual.app import OllamaCodeApp
+
+        app = OllamaCodeApp(
+            model="test",
+            allowed_tools=["read_file"],
+            blocked_tools=["bash"],
+        )
+        assert app.allowed_tools == ["read_file"]
+        assert app.blocked_tools == ["bash"]
+
+    def test_app_accepts_config(self) -> None:
+        from ollamacode._tui_textual.app import OllamaCodeApp
+
+        app = OllamaCodeApp(model="test", config={"key": "val"})
+        assert app._config == {"key": "val"}
+
+
+# ---------------------------------------------------------------------------
+# Footer reactives
+# ---------------------------------------------------------------------------
+
+
+class TestFooterReactives:
+    """Tests for the new footer reactive properties."""
+
+    def test_footer_has_variant_name(self) -> None:
+        from ollamacode._tui_textual.widgets.footer import SessionFooter
+
+        f = SessionFooter()
+        assert hasattr(f, "variant_name")
+
+    def test_footer_has_sandbox_level(self) -> None:
+        from ollamacode._tui_textual.widgets.footer import SessionFooter
+
+        f = SessionFooter()
+        assert hasattr(f, "sandbox_level")
+
+
+# ---------------------------------------------------------------------------
+# Sidebar reactives
+# ---------------------------------------------------------------------------
+
+
+class TestSidebarReactives:
+    """Tests for the new sidebar reactive properties."""
+
+    def test_sidebar_has_permissions_denied(self) -> None:
+        from ollamacode._tui_textual.widgets.sidebar import Sidebar
+
+        s = Sidebar()
+        assert hasattr(s, "permissions_denied")
+
+    def test_sidebar_has_checkpoint_count(self) -> None:
+        from ollamacode._tui_textual.widgets.sidebar import Sidebar
+
+        s = Sidebar()
+        assert hasattr(s, "checkpoint_count")
+
+    def test_sidebar_has_plugin_count(self) -> None:
+        from ollamacode._tui_textual.widgets.sidebar import Sidebar
+
+        s = Sidebar()
+        assert hasattr(s, "plugin_count")
+
+    def test_sidebar_has_agent_mode(self) -> None:
+        from ollamacode._tui_textual.widgets.sidebar import Sidebar
+
+        s = Sidebar()
+        assert hasattr(s, "agent_mode")
+
+
+# ---------------------------------------------------------------------------
+# Prompt @-ref expansion
+# ---------------------------------------------------------------------------
+
+
+class TestPromptExpansion:
+    """Tests for the prompt @-ref expansion method."""
+
+    def test_expand_at_refs_noop_without_at(self) -> None:
+        from ollamacode._tui_textual.widgets.prompt import PromptInput
+
+        p = PromptInput()
+        assert p.expand_at_refs("hello world") == "hello world"
+
+    def test_expand_at_refs_returns_string(self) -> None:
+        from ollamacode._tui_textual.widgets.prompt import PromptInput
+
+        p = PromptInput()
+        result = p.expand_at_refs("check @nonexistent_file_xyz")
+        assert isinstance(result, str)
 
 
 # ---------------------------------------------------------------------------

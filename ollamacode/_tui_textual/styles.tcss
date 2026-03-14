@@ -412,6 +412,16 @@ SessionFooter {
     text-style: bold;
 }
 
+#footer-variant {
+    width: auto;
+    color: $text-muted;
+}
+
+#footer-sandbox {
+    width: auto;
+    color: $warning;
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    DIALOGS / MODALS
    ═══════════════════════════════════════════════════════════════════ */
@@ -582,6 +592,15 @@ AgentPickerDialog {
     align: center middle;
 }
 
+#agent-picker-container {
+    width: 60;
+    max-width: 90%;
+    max-height: 60%;
+    background: $background-panel;
+    border: thick $border-active;
+    padding: 1 2;
+}
+
 .agent-option {
     height: 2;
     padding: 0 1;
@@ -593,6 +612,53 @@ AgentPickerDialog {
 
 .agent-option.-selected {
     background: $primary 30%;
+}
+
+/* ─── Checkpoint List Dialog ─── */
+CheckpointListDialog {
+    align: center middle;
+}
+
+#checkpoint-dialog {
+    width: 70;
+    max-width: 90%;
+    max-height: 80%;
+    background: $background-panel;
+    border: thick $accent;
+    padding: 1 2;
+}
+
+/* ─── Export / Import Dialogs ─── */
+ExportDialog {
+    align: center middle;
+}
+
+ImportDialog {
+    align: center middle;
+}
+
+#export-dialog,
+#import-dialog {
+    width: 80;
+    max-width: 90%;
+    max-height: 80%;
+    background: $background-panel;
+    border: thick $accent;
+    padding: 1 2;
+}
+
+/* ─── Refactor Dialog ─── */
+RefactorDialog {
+    align: center middle;
+}
+
+#refactor-dialog {
+    width: 50;
+    max-width: 90%;
+    height: auto;
+    background: $background-panel;
+    border: thick $accent;
+    padding: 1 2;
 }
 
 /* ─── Branch Dialog ─── */

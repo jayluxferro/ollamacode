@@ -45,9 +45,12 @@ class ModelPickerDialog(ModalScreen[str]):
             import ollama
 
             response = ollama.list()
-            self._models = [
-                m.get("name", "") for m in response.get("models", []) if m.get("name")
-            ]
+            raw_models = getattr(response, "models", None) or response.get("models", [])
+            self._models = []
+            for m in raw_models:
+                name = getattr(m, "model", None) or (m.get("model") if isinstance(m, dict) else None) or ""
+                if name:
+                    self._models.append(name)
         except Exception:
             logger.debug("Failed to load models from ollama", exc_info=True)
 
@@ -98,7 +101,7 @@ class ModelPickerDialog(ModalScreen[str]):
         options[self._selected_index].add_class("-selected")
         options[self._selected_index].scroll_visible()
 
-    def on_static_click(self, event: Static.Click) -> None:
+    def on_click(self, event) -> None:
         widget = event.widget
         name = getattr(widget, "name", None)
         if name and name in self._filtered:

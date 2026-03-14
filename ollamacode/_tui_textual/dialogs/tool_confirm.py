@@ -61,7 +61,7 @@ class ToolConfirmDialog(ModalScreen[str]):
                 args_text = str(self.tool_args)
             if len(args_text) > 2000:
                 args_text = args_text[:2000] + "\n..."
-            yield Static(args_text, id="tool-confirm-args")
+            yield Static(args_text, id="tool-confirm-args", markup=False)
             with Horizontal(id="tool-confirm-buttons"):
                 yield Button("Allow (y)", variant="success", id="btn-allow")
                 yield Button("Always (a)", variant="primary", id="btn-always")

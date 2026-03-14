@@ -1013,15 +1013,19 @@ async def _run(
             print(f"[OllamaCode] {err}", file=sys.stderr)
         return
 
-    # Interactive mode (no query) always uses the TUI.
+    # Interactive mode (no query) always uses the Textual TUI.
+    # Set OLLAMACODE_TUI=rich to use the legacy Rich TUI.
     if query == "evals":
         pass
     elif not query:
         try:
-            from .tui import run_tui
+            if os.environ.get("OLLAMACODE_TUI", "").lower() == "rich":
+                from .tui import run_tui  # type: ignore[assignment]
+            else:
+                from ._tui_textual import run_tui
         except ImportError as e:
             print(
-                "TUI requires rich. Install with: pip install ollamacode[tui]",
+                "TUI requires textual. Install with: pip install ollamacode",
                 file=sys.stderr,
             )
             raise SystemExit(1) from e
@@ -1140,8 +1144,9 @@ async def _run(
                     provider_name=provider.name if provider is not None else "ollama",
                 )
         except ImportError as e:
+            logger.error("TUI dependency missing: %s", e)
             print(
-                "TUI requires rich. Install with: pip install ollamacode[tui]",
+                f"TUI dependency missing: {e}. Install with: pip install ollamacode",
                 file=sys.stderr,
             )
             raise SystemExit(1) from e

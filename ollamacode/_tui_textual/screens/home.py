@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from textual.app import ComposeResult
 from textual.containers import Center, Vertical
 from textual.screen import Screen
@@ -10,6 +12,8 @@ from textual.widgets import Static
 from ..widgets.logo import Logo
 from ..widgets.prompt import PromptInput
 from ..widgets.tips import Tips
+
+logger = logging.getLogger(__name__)
 
 
 class HomeScreen(Screen):
@@ -53,10 +57,12 @@ class HomeScreen(Screen):
             app.session_state.session_id = session_id
             app.session_state.title = event.text[:60]
         except Exception:
+            logger.warning("Failed to create session, using ephemeral ID", exc_info=True)
             import uuid
 
             app.session_state.session_id = str(uuid.uuid4())
             app.session_state.title = event.text[:60]
+            app.notify("Session won't be persisted", severity="warning")
 
         # Switch to session screen with the initial prompt
         session_screen = SessionScreen(initial_prompt=event.text)

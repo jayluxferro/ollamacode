@@ -25,14 +25,14 @@ class ThemePickerDialog(ModalScreen[str]):
         self._selected_index = 0
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="model-picker-container"):
+        with Vertical(id="theme-picker-container"):
             yield Static("[bold]Select Theme[/]")
             with VerticalScroll(id="theme-options"):
                 for i, name in enumerate(self._themes):
                     theme = get_theme(name)
                     primary = theme.get("primary", "#ffffff")
                     marker = " \u2713" if name == self._current else ""
-                    cls = "session-option" + (" -selected" if i == 0 else "")
+                    cls = "theme-option" + (" -selected" if i == 0 else "")
                     yield Static(
                         f"[{primary}]\u2588\u2588[/] {name}{marker}",
                         classes=cls,
@@ -50,7 +50,7 @@ class ThemePickerDialog(ModalScreen[str]):
             self.dismiss(self._themes[self._selected_index])
 
     def _move(self, delta: int) -> None:
-        options = list(self.query(".session-option"))
+        options = list(self.query(".theme-option"))
         if not options:
             return
         if 0 <= self._selected_index < len(options):
@@ -61,7 +61,7 @@ class ThemePickerDialog(ModalScreen[str]):
         options[self._selected_index].add_class("-selected")
         options[self._selected_index].scroll_visible()
 
-    def on_static_click(self, event: Static.Click) -> None:
+    def on_click(self, event) -> None:
         name = getattr(event.widget, "name", None)
         if name and name in self._themes:
             self.dismiss(name)

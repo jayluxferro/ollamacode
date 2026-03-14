@@ -83,9 +83,12 @@ class ModelCommands(Provider):
             import ollama
 
             response = ollama.list()
-            models = [
-                m.get("name", "") for m in response.get("models", []) if m.get("name")
-            ]
+            raw_models = getattr(response, "models", None) or response.get("models", [])
+            models = []
+            for m in raw_models:
+                name = getattr(m, "model", None) or (m.get("model") if isinstance(m, dict) else None) or ""
+                if name:
+                    models.append(name)
             for name in models:
                 display = f"Model: {name}"
                 score = matcher.match(display)
@@ -223,7 +226,14 @@ class SlashCommands(Provider):
                 )
 
     def _run_slash(self, cmd: str) -> None:
-        """Execute a slash command by posting it as a prompt."""
-        from ..widgets.prompt import PromptInput
+        """Execute a slash command by posting it on the active screen."""
+        from ..screens.session import SessionScreen
 
-        self.app.post_message(PromptInput.Submitted(cmd))
+        screen = self.app.screen
+        if isinstance(screen, SessionScreen):
+            screen._handle_slash_command(cmd)
+        else:
+            # Fallback: post on the screen so it bubbles up
+            from ..widgets.prompt import PromptInput
+
+            self.app.screen.post_message(PromptInput.Submitted(cmd))

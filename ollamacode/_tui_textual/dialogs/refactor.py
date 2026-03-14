@@ -20,7 +20,7 @@ class RefactorDialog(ModalScreen[str]):
         height: auto;
         padding: 1 2;
         border: thick $accent;
-        background: $surface;
+        background: $background-panel;
     }
     """
 

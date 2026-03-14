@@ -21,7 +21,7 @@ class CheckpointListDialog(ModalScreen[str]):
         max-height: 80%;
         padding: 1 2;
         border: thick $accent;
-        background: $surface;
+        background: $background-panel;
     }
     .checkpoint-row {
         height: 3;

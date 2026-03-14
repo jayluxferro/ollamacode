@@ -20,7 +20,7 @@ class ExportDialog(ModalScreen[None]):
         max-height: 80%;
         padding: 1 2;
         border: thick $accent;
-        background: $surface;
+        background: $background-panel;
     }
     #export-text {
         height: 20;
@@ -77,7 +77,7 @@ class ImportDialog(ModalScreen[str]):
         max-height: 80%;
         padding: 1 2;
         border: thick $accent;
-        background: $surface;
+        background: $background-panel;
     }
     #import-text {
         height: 15;

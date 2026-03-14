@@ -11,6 +11,12 @@ from textual.binding import Binding
 
 from .context.state import AppState, SessionState
 from .context.theme import generate_css, get_theme
+from .dialogs.command_palette import (
+    ModelCommands,
+    SessionCommands,
+    SlashCommands,
+    ThemeCommands,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +27,8 @@ class OllamaCodeApp(App):
     CSS_PATH = "styles.tcss"
 
     TITLE = "OllamaCode"
+
+    COMMANDS = {SessionCommands, ModelCommands, ThemeCommands, SlashCommands}
 
     BINDINGS = [
         Binding("ctrl+n", "new_session", "New Session", show=True),
@@ -58,6 +66,8 @@ class OllamaCodeApp(App):
         docs_command: str | None = None,
         profile_command: str | None = None,
         config: dict[str, Any] | None = None,
+        allowed_tools: list[str] | None = None,
+        blocked_tools: list[str] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -75,6 +85,8 @@ class OllamaCodeApp(App):
         self.test_command = test_command
         self.docs_command = docs_command
         self.profile_command = profile_command
+        self.allowed_tools = allowed_tools
+        self.blocked_tools = blocked_tools
         self._config = config or {}
 
         self.app_state = AppState(
@@ -152,12 +164,6 @@ class OllamaCodeApp(App):
             self.app_state.plugin_manager = pm
         except Exception:
             logger.debug("Failed to init PluginManager", exc_info=True)
-
-    def compose(self):
-        """Mount the toast layer."""
-        from .widgets.toast import ToastContainer
-
-        yield ToastContainer(id="toast-container")
 
     def on_mount(self) -> None:
         """Set up theme and push initial screen."""
@@ -278,7 +284,7 @@ class OllamaCodeApp(App):
             sidebar.cost = self.session_state.cost
             sidebar.agent_mode = self.session_state.agent_mode
             sidebar.permissions_granted = self.session_state.permissions_granted
-            sidebar.permissions_denied = 0
+            sidebar.permissions_denied = self.session_state.permissions_denied
             sidebar.checkpoint_count = self.session_state.checkpoint_count
             sidebar.plugin_count = (
                 len(self.app_state.plugin_manager.plugins)
@@ -300,15 +306,14 @@ class OllamaCodeApp(App):
         variant: str = "info",
         duration: float = 5.0,
     ) -> None:
-        """Show a toast notification."""
-        try:
-            from .widgets.toast import ToastContainer
-
-            container = self.query_one("#toast-container", ToastContainer)
-            container.show(message, title=title, variant=variant, duration=duration)
-        except Exception:
-            # Fall back to Textual's built-in notify
-            self.notify(message, title=title, timeout=int(duration))
+        """Show a toast notification via Textual's built-in notify."""
+        severity_map = {"error": "error", "warning": "warning", "success": "information", "info": "information"}
+        self.notify(
+            message,
+            title=title,
+            timeout=max(1, int(duration)),
+            severity=severity_map.get(variant, "information"),
+        )
 
     def action_new_session(self) -> None:
         """Start a new session."""
@@ -320,7 +325,7 @@ class OllamaCodeApp(App):
         )
         self.session_history = []
         self.app_state.todos = []
-        self.push_screen(HomeScreen())
+        self.switch_screen(HomeScreen())
 
     def action_toggle_sidebar(self) -> None:
         """Toggle sidebar visibility."""
@@ -336,6 +341,12 @@ class OllamaCodeApp(App):
         """Cancel any running generation."""
         self.session_state.is_busy = False
         self.session_state.is_streaming = False
+        # Delegate to the active screen if it's a SessionScreen
+        from .screens.session import SessionScreen
+
+        screen = self.screen
+        if isinstance(screen, SessionScreen):
+            screen.action_cancel_generation()
 
     def action_clear_screen(self) -> None:
         """Clear the current screen."""

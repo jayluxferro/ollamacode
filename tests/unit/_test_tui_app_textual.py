@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 
-
 # ---------------------------------------------------------------------------
 # OllamaCodeApp construction
 # ---------------------------------------------------------------------------
@@ -87,6 +86,44 @@ class TestOllamaCodeApp:
         assert "ctrl+backslash" in binding_keys
         assert "escape" in binding_keys
         assert "ctrl+c" in binding_keys
+
+    def test_app_has_commands_providers(self) -> None:
+        from ollamacode.tui.app import OllamaCodeApp
+
+        assert hasattr(OllamaCodeApp, "COMMANDS")
+        assert len(OllamaCodeApp.COMMANDS) == 4
+
+    def test_app_allowed_blocked_tools(self) -> None:
+        from ollamacode.tui.app import OllamaCodeApp
+
+        app = OllamaCodeApp(
+            model="test",
+            system_extra="",
+            allowed_tools=["read_file", "glob"],
+            blocked_tools=["bash"],
+        )
+        assert app.allowed_tools == ["read_file", "glob"]
+        assert app.blocked_tools == ["bash"]
+
+    def test_app_config_forwarded(self) -> None:
+        from ollamacode.tui.app import OllamaCodeApp
+
+        cfg = {"permissions": {"default": "ask"}}
+        app = OllamaCodeApp(model="test", system_extra="", config=cfg)
+        assert app._config == cfg
+
+    def test_app_show_toast(self) -> None:
+        """show_toast should not crash (uses notify internally)."""
+        from ollamacode.tui.app import OllamaCodeApp
+
+        app = OllamaCodeApp(model="test", system_extra="")
+        # Just verify the method exists and has the right signature
+        import inspect
+        sig = inspect.signature(app.show_toast)
+        params = list(sig.parameters.keys())
+        assert "message" in params
+        assert "variant" in params
+        assert "duration" in params
 
 
 # ---------------------------------------------------------------------------

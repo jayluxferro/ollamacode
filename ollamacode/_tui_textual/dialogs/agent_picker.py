@@ -39,7 +39,7 @@ class AgentPickerDialog(ModalScreen[str]):
         self._current = current
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="model-picker-container"):
+        with Vertical(id="agent-picker-container"):
             yield Static("[bold]Select Agent Mode[/]")
             for mode in AGENT_MODES:
                 marker = " \u2713" if mode["name"] == self._current else ""

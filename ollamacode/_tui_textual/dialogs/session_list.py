@@ -91,7 +91,7 @@ class SessionListDialog(ModalScreen[str]):
     def on_input_changed(self, event: Input.Changed) -> None:
         self._load_sessions(event.value)
 
-    def on_static_click(self, event: Static.Click) -> None:
+    def on_click(self, event) -> None:
         """Handle click on a session option."""
         widget = event.widget
         if isinstance(widget, SessionOption):

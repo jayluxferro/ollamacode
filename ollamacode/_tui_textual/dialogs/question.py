@@ -29,7 +29,7 @@ class QuestionDialog(ModalScreen[str]):
     def compose(self) -> ComposeResult:
         with Vertical(id="question-container"):
             yield Static("[bold]Agent Question[/]")
-            yield Static(self._question, id="question-text")
+            yield Static(self._question, id="question-text", markup=False)
             if self._options:
                 with Horizontal(id="question-options"):
                     for i, opt in enumerate(self._options):

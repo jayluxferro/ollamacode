@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from textual.binding import Binding
+from textual.events import Key
 from textual.message import Message
 from textual.widgets import TextArea
 
@@ -20,7 +21,6 @@ class PromptInput(TextArea):
     """
 
     BINDINGS = [
-        Binding("enter", "submit", "Send", show=False),
         Binding("up", "history_prev", "Previous", show=False, priority=True),
         Binding("down", "history_next", "Next", show=False, priority=True),
     ]
@@ -51,15 +51,24 @@ class PromptInput(TextArea):
     def on_mount(self) -> None:
         self.show_line_numbers = False
 
-    # -- Rendering ---------------------------------------------------------------
+    # -- Key handling ------------------------------------------------------------
 
-    def render(self) -> object:
-        """Show placeholder text when the input is empty."""
-        if not self.text:
-            from rich.text import Text
-
-            return Text(self._placeholder, style="dim italic")
-        return super().render()
+    async def _on_key(self, event: Key) -> None:
+        """Intercept Enter to submit, Shift+Enter/Escape+Enter for newline."""
+        if event.key == "enter":
+            # Plain Enter = submit
+            event.prevent_default()
+            event.stop()
+            self.action_submit()
+            return
+        if event.key in ("shift+enter", "escape,enter"):
+            # Shift+Enter = insert newline
+            event.prevent_default()
+            event.stop()
+            self.insert("\n")
+            return
+        # Let TextArea handle everything else
+        await super()._on_key(event)
 
     # -- Actions -----------------------------------------------------------------
 

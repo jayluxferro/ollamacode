@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shlex
 import time
 from typing import Any
@@ -129,6 +130,8 @@ class SessionScreen(Screen):
         footer = self.query_one(SessionFooter)
         footer.directory = app.app_state.workspace_root
         footer.agent_mode = state.agent_mode
+        footer.variant_name = state.variant_name
+        footer.sandbox_level = os.environ.get("OLLAMACODE_SANDBOX_LEVEL", "")
 
         # Configure sidebar
         self.app.load_session_todos()
@@ -159,7 +162,8 @@ class SessionScreen(Screen):
             self._handle_user_input(self._initial_prompt)
             self._initial_prompt = ""
 
-    def _load_session_messages(self) -> None:
+    @work(group="load_session")
+    async def _load_session_messages(self) -> None:
         """Load messages from a resumed session."""
         try:
             from ollamacode.sessions import load_session
@@ -172,13 +176,13 @@ class SessionScreen(Screen):
                     role = msg.get("role", "")
                     content = msg.get("content", "")
                     if role == "user":
-                        message_list.mount(UserMessage(content))
+                        await message_list.mount(UserMessage(content))
                     elif role == "assistant":
                         am = AssistantMessage()
-                        message_list.mount(am)
+                        await message_list.mount(am)
                         am._accumulated_text = content
                         if am._markdown_widget:
-                            am._markdown_widget.update(content)
+                            await am._markdown_widget.update(content)
                 message_list.scroll_to_latest()
         except Exception:
             logger.debug("Failed to load session messages", exc_info=True)
@@ -215,9 +219,16 @@ class SessionScreen(Screen):
 
         self._handle_user_input(text)
 
-    def _handle_user_input(self, text: str) -> None:
+    def _handle_user_input(self, text: str, *, image_paths: list[str] | None = None) -> None:
         """Process a user message and start generation."""
         app = self.app
+
+        # Expand @file references
+        try:
+            prompt_widget = self.query_one("#session-prompt", PromptInput)
+            text = prompt_widget.expand_at_refs(text)
+        except Exception:
+            logger.debug("@-ref expansion failed", exc_info=True)
 
         # Mount user message
         message_list = self.query_one("#message-list", MessageList)
@@ -229,7 +240,7 @@ class SessionScreen(Screen):
 
         # Start generation
         self._generation_cancelled = False
-        self._start_generation(text)
+        self._start_generation(text, image_paths=image_paths)
 
     def _handle_slash_command(self, command: str) -> None:
         """Handle slash commands."""
@@ -237,28 +248,70 @@ class SessionScreen(Screen):
         cmd = parts[0].lower()
         rest = parts[1] if len(parts) > 1 else ""
 
+        # Core
         if cmd in ("/quit", "/exit"):
             self.app.exit()
         elif cmd == "/new":
             self.app.action_new_session()
         elif cmd == "/clear":
             self.clear_messages()
+        elif cmd == "/help":
+            self._show_help()
+
+        # Model & display
         elif cmd == "/model":
             self._show_model_picker()
-        elif cmd == "/sessions":
-            self._show_session_list()
         elif cmd == "/theme":
             self._show_theme_picker()
         elif cmd == "/auto":
             self.app.session_state.autonomous = not self.app.session_state.autonomous
             mode = "ON" if self.app.session_state.autonomous else "OFF"
             self.app.notify(f"Autonomous mode: {mode}")
-        elif cmd == "/help":
-            self._show_help()
-        elif cmd == "/copy":
-            self._copy_last_response()
+        elif cmd == "/compact":
+            self._handle_compact(rest)
+        elif cmd == "/trace":
+            self.app.session_state.trace_filter = rest
+            self.app.notify(f"Trace filter: {rest!r}" if rest else "Trace filter cleared")
+        elif cmd == "/reset-state":
+            self._reset_state()
+
+        # Sessions
+        elif cmd == "/sessions":
+            self._show_session_list()
+        elif cmd == "/search":
+            self._search_sessions(rest)
+        elif cmd == "/resume":
+            self._resume_session(rest)
+        elif cmd == "/session":
+            self._show_session_info(rest)
+        elif cmd == "/branch":
+            self._branch_session()
+        elif cmd == "/export":
+            self._show_export_dialog()
+        elif cmd == "/import":
+            self._show_import_dialog()
+
+        # Checkpoints
+        elif cmd == "/checkpoints":
+            self._show_checkpoints()
+        elif cmd == "/rewind":
+            self._rewind_checkpoint(rest)
+
+        # Context & memory
+        elif cmd == "/kg_add":
+            self._kg_add(rest)
+        elif cmd == "/kg_query":
+            self._kg_query(rest)
+        elif cmd == "/rag_index":
+            self._rag_index(rest)
+        elif cmd == "/rag_query":
+            self._rag_query(rest)
+
+        # Dev commands
         elif cmd in ("/fix", "/test", "/docs", "/profile"):
             self._run_dev_command(cmd, rest)
+
+        # Agent
         elif cmd == "/plan":
             if rest:
                 self._handle_user_input(f"Create a plan for: {rest}")
@@ -268,12 +321,44 @@ class SessionScreen(Screen):
             self._handle_user_input("Continue with the next step of the plan.")
         elif cmd == "/summary":
             self._handle_user_input("Please summarize our conversation so far.")
-        elif cmd == "/todo":
-            self._handle_todo_command(rest)
-        elif cmd == "/export":
-            self._show_export_dialog()
-        elif cmd == "/import":
-            self._show_import_dialog()
+        elif cmd == "/copy":
+            self._copy_last_response()
+        elif cmd == "/mode":
+            self._switch_mode(rest)
+        elif cmd == "/variant":
+            self._switch_variant(rest)
+        elif cmd == "/commands":
+            self._list_commands()
+
+        # Multi-agent
+        elif cmd == "/multi":
+            self._handle_user_input(f"[multi-agent] {rest}" if rest else "What multi-agent task should I run?")
+        elif cmd == "/agents":
+            self._handle_user_input(f"[agents] {rest}" if rest else "Usage: /agents <N> <task>")
+        elif cmd == "/agents_show":
+            self.app.notify("No agent outputs to display", severity="warning")
+        elif cmd == "/agents_summary":
+            self.app.notify("No agent outputs to summarize", severity="warning")
+        elif cmd == "/subagent":
+            self._handle_user_input(f"[subagent] {rest}" if rest else "Usage: /subagent <type> <task>")
+
+        # Media
+        elif cmd == "/image":
+            self._handle_image(rest)
+        elif cmd == "/listen":
+            self.app.notify("Voice input not available in this environment", severity="warning")
+        elif cmd == "/say":
+            self.app.notify("TTS not available in this environment", severity="warning")
+
+        # Feedback & tools
+        elif cmd == "/rate":
+            self._rate_response(rest)
+        elif cmd == "/refactor":
+            self._show_refactor_dialog()
+        elif cmd == "/palette":
+            self.app.action_command_palette()
+
+        # Workspace
         elif cmd == "/workspace":
             self._show_workspace_info()
         elif cmd == "/workspaces":
@@ -282,37 +367,47 @@ class SessionScreen(Screen):
             self._show_workspace_health(rest)
         elif cmd == "/workspace_add_remote":
             self._add_remote_workspace(rest)
-        elif cmd == "/branch":
-            self._branch_session()
-        elif cmd == "/checkpoints":
-            self._show_checkpoints()
+
+        # Todo
+        elif cmd == "/todo":
+            self._handle_todo_command(rest)
+
         else:
+            # Check custom commands
+            cm = self.app.app_state.command_manager
+            if cm is not None:
+                cmd_name = cmd.lstrip("/")
+                result = cm.execute_command(cmd_name, rest)
+                if result is not None:
+                    self._handle_user_input(result)
+                    return
             self.app.notify(f"Unknown command: {cmd}", severity="warning")
 
-    def _handle_shell_command(self, command: str) -> None:
-        """Run a shell command and display output."""
-        import subprocess
-
+    @work(group="shell")
+    async def _handle_shell_command(self, command: str) -> None:
+        """Run a shell command in a background worker and display output."""
         message_list = self.query_one("#message-list", MessageList)
-        message_list.mount(UserMessage(f"!{command}"))
+        await message_list.mount(UserMessage(f"!{command}"))
 
         try:
-            result = subprocess.run(
+            proc = await asyncio.create_subprocess_shell(
                 command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=30,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
                 cwd=self.app.app_state.workspace_root,
             )
-            output = result.stdout + result.stderr
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            except asyncio.TimeoutError:
+                proc.kill()
+                self.app.notify("Command timed out (30s)", severity="error")
+                return
+            output = (stdout or b"").decode(errors="replace") + (stderr or b"").decode(errors="replace")
             if output:
                 from ..widgets.tool_display import BlockToolCall
 
                 widget = BlockToolCall("run_command", {"command": command}, output)
-                message_list.mount(widget)
-        except subprocess.TimeoutExpired:
-            self.app.notify("Command timed out (30s)", severity="error")
+                await message_list.mount(widget)
         except Exception as e:
             self.app.notify(f"Command failed: {e}", severity="error")
 
@@ -321,7 +416,9 @@ class SessionScreen(Screen):
     # ── Generation / Streaming ───────────────────────────────────────
 
     @work(exclusive=True, group="llm")
-    async def _start_generation(self, prompt: str) -> None:
+    async def _start_generation(
+        self, prompt: str, *, image_paths: list[str] | None = None
+    ) -> None:
         """Run the agent loop and stream results."""
         app = self.app
         state = app.session_state
@@ -345,22 +442,120 @@ class SessionScreen(Screen):
 
         start_time = time.monotonic()
 
+        # Emit plugin event
+        pm = app.app_state.plugin_manager
+        if pm is not None:
+            try:
+                pm.emit_event("message_sent", prompt=prompt)
+            except Exception:
+                pass
+
+        # Build system prompt with mode prefix and dynamic memory
+        system_extra = app.system_extra or ""
+        mm = app.app_state.mode_manager
+        if mm is not None:
+            try:
+                prefix = mm.get_system_prompt_prefix()
+                if prefix:
+                    system_extra = prefix + "\n\n" + system_extra
+            except Exception:
+                pass
+
         try:
-            # Import agent
-            from ollamacode.agent import run_agent_loop_stream
+            from ollamacode.memory import build_dynamic_memory_context
+
+            mem_block = build_dynamic_memory_context(prompt)
+            if mem_block:
+                system_extra = (
+                    system_extra + "\n\n--- Retrieved memory ---\n\n" + mem_block
+                )
+        except Exception:
+            logger.debug("Dynamic memory context failed", exc_info=True)
+
+        # Collect blocked tools from mode manager
+        blocked_tools: list[str] | None = None
+        if mm is not None:
+            try:
+                bt = mm.get_blocked_tools()
+                if bt:
+                    blocked_tools = bt
+            except Exception:
+                pass
+
+        # Checkpoint recorder
+        checkpoint_recorder = None
+        try:
+            from ollamacode.checkpoints import CheckpointRecorder
+
+            if state.session_id:
+                checkpoint_recorder = CheckpointRecorder(
+                    session_id=state.session_id,
+                    workspace_root=app.app_state.workspace_root,
+                    prompt=prompt,
+                    message_index=len(app.session_history) - 1,
+                )
+        except Exception:
+            logger.debug("CheckpointRecorder init failed", exc_info=True)
+
+        try:
+            # Import agent — use no-MCP variant when session is None
+            from ollamacode.agent import (
+                run_agent_loop_no_mcp_stream,
+                run_agent_loop_stream,
+            )
+
+            has_mcp = app.mcp_session is not None
 
             # Tool callbacks
             def on_tool_start(name: str, args: dict[str, Any]) -> None:
                 self.post_message(ToolStarted(name, args))
+                if pm is not None:
+                    try:
+                        pm.emit_event("tool_start", name=name, args=args)
+                    except Exception:
+                        pass
 
             def on_tool_end(name: str, args: dict[str, Any], summary: str) -> None:
                 self.post_message(ToolFinished(name, args, summary))
+                if pm is not None:
+                    try:
+                        pm.emit_event("tool_end", name=name, args=args, summary=summary)
+                    except Exception:
+                        pass
 
             async def before_tool_call(
                 name: str, args: dict[str, Any]
-            ) -> str | tuple[str, dict[str, Any]]:
+            ) -> str | tuple[str, str] | tuple[str, dict[str, Any]]:
                 """Handle tool confirmation."""
                 normalized_name = name.removeprefix("functions::")
+
+                # Record pre-change state for checkpointing
+                if checkpoint_recorder is not None:
+                    if normalized_name in (
+                        "write_file",
+                        "edit_file",
+                        "create_directory",
+                        "run_command",
+                        "bash",
+                    ):
+                        path = args.get("path") or args.get("file_path", "")
+                        if path:
+                            try:
+                                checkpoint_recorder.record_pre(path)
+                            except Exception:
+                                pass
+
+                # Check mode manager tool restrictions
+                if mm is not None:
+                    try:
+                        if not mm.is_tool_allowed(normalized_name):
+                            return (
+                                "skip",
+                                f"Tool '{normalized_name}' blocked in {mm.current.value} mode",
+                            )
+                    except Exception:
+                        pass
+
                 if name.endswith("question") or name == "question":
                     return await self._handle_question_tool(args)
                 if name.endswith("task") or name == "task":
@@ -404,25 +599,44 @@ class SessionScreen(Screen):
                     app.session_state.permissions_denied += 1
                     return "skip"
 
-            # Build messages list for the agent
-            messages = list(app.session_history)
+            # Build messages list for the agent — exclude the last user
+            # message because run_agent_loop_stream appends `prompt` itself.
+            messages = list(app.session_history[:-1]) if app.session_history else []
 
             # Stream response
             accumulated = ""
-            stream = run_agent_loop_stream(
-                session=app.mcp_session,
-                model=state.model,
-                messages=messages,
-                system_extra=app.system_extra,
-                max_tool_rounds=app.max_tool_rounds,
-                max_messages=app.max_messages,
-                max_tool_result_chars=app.max_tool_result_chars,
-                on_tool_start=on_tool_start,
-                on_tool_end=on_tool_end,
-                before_tool_call=before_tool_call,
-                confirm_tool_calls=app.mcp_session is not None,
-                provider=app.provider,
-            )
+            # Merge mode-blocked tools with app-level blocked tools
+            all_blocked = list(blocked_tools or [])
+            if app.blocked_tools:
+                all_blocked.extend(app.blocked_tools)
+
+            if has_mcp:
+                stream = run_agent_loop_stream(
+                    app.mcp_session,
+                    state.model,
+                    prompt,
+                    system_prompt=system_extra or None,
+                    max_tool_rounds=app.max_tool_rounds,
+                    max_messages=app.max_messages,
+                    max_tool_result_chars=app.max_tool_result_chars,
+                    message_history=messages,
+                    on_tool_start=on_tool_start,
+                    on_tool_end=on_tool_end,
+                    before_tool_call=before_tool_call,
+                    confirm_tool_calls=app.confirm_tool_calls,
+                    allowed_tools=app.allowed_tools,
+                    blocked_tools=all_blocked or None,
+                    image_paths=image_paths,
+                    provider=app.provider,
+                )
+            else:
+                stream = run_agent_loop_no_mcp_stream(
+                    state.model,
+                    prompt,
+                    system_prompt=system_extra or None,
+                    message_history=messages,
+                    provider=app.provider,
+                )
 
             async for chunk in stream:
                 if self._generation_cancelled:
@@ -435,18 +649,30 @@ class SessionScreen(Screen):
                         await self._current_assistant_msg.append_text(chunk)
                         message_list.scroll_to_latest()
 
-            # Finalize
-            if self._current_assistant_msg:
-                await self._current_assistant_msg.finalize()
-
             # Save to history
             if accumulated:
                 app.session_history.append(
                     {"role": "assistant", "content": accumulated}
                 )
 
+            # Finalize checkpoint
+            if checkpoint_recorder is not None:
+                try:
+                    cp_id = checkpoint_recorder.finalize()
+                    if cp_id:
+                        state.checkpoint_count += 1
+                except Exception:
+                    logger.debug("Checkpoint finalize failed", exc_info=True)
+
             # Save session
             self._save_session()
+
+            # Emit plugin event
+            if pm is not None:
+                try:
+                    pm.emit_event("message_received", content=accumulated)
+                except Exception:
+                    pass
 
             elapsed = time.monotonic() - start_time
             logger.debug("Generation completed in %.1fs", elapsed)
@@ -454,10 +680,22 @@ class SessionScreen(Screen):
         except Exception as e:
             logger.error("Generation error: %s", e, exc_info=True)
             self.post_message(GenerationError(str(e)))
+            if pm is not None:
+                try:
+                    pm.emit_event("error", error=str(e))
+                except Exception:
+                    pass
 
         finally:
             state.is_busy = False
             state.is_streaming = False
+
+            # Always finalize the assistant message to exit streaming state
+            if self._current_assistant_msg:
+                try:
+                    await self._current_assistant_msg.finalize()
+                except Exception:
+                    pass
             self._current_assistant_msg = None
 
             # Hide spinner
@@ -489,11 +727,11 @@ class SessionScreen(Screen):
 
         self.app.session_state.tool_calls += 1
 
-    def on_tool_finished(self, event: ToolFinished) -> None:
+    async def on_tool_finished(self, event: ToolFinished) -> None:
         """Handle tool end — mount tool widget in assistant message."""
         if self._current_assistant_msg:
             widget = make_tool_widget(event.name, event.args, event.summary)
-            self._current_assistant_msg.mount(widget)
+            await self._current_assistant_msg.add_tool_call(widget)
             try:
                 self.query_one("#message-list", MessageList).scroll_to_latest()
             except Exception:
@@ -679,14 +917,22 @@ class SessionScreen(Screen):
 
     # ── UI Actions ───────────────────────────────────────────────────
 
-    def clear_messages(self) -> None:
-        """Clear all messages from the message list."""
+    def clear_messages(self, *, persist: bool = True) -> None:
+        """Clear all messages from the message list.
+
+        Args:
+            persist: If True, save the cleared state to the database.
+                     Set to False when switching sessions to avoid
+                     overwriting the old session with empty history.
+        """
         try:
             message_list = self.query_one("#message-list", MessageList)
             message_list.remove_children()
         except Exception:
             pass
         self.app.session_history.clear()
+        if persist:
+            self._save_session()
 
     def _show_model_picker(self) -> None:
         from ..dialogs.model_picker import ModelPickerDialog
@@ -710,7 +956,7 @@ class SessionScreen(Screen):
             if session_id:
                 self.app.session_state.session_id = session_id
                 self._resume_session_id = session_id
-                self.clear_messages()
+                self.clear_messages(persist=False)
                 self._load_session_messages()
                 self.app.load_session_todos(session_id)
                 self.app._refresh_sidebar()
@@ -764,7 +1010,7 @@ class SessionScreen(Screen):
                 return
             self.app.session_state.session_id = session_id
             self._resume_session_id = session_id
-            self.clear_messages()
+            self.clear_messages(persist=False)
             self._load_session_messages()
             self.app.load_session_todos(session_id)
             self.app._refresh_sidebar()
@@ -867,7 +1113,7 @@ class SessionScreen(Screen):
             return
         self.app.session_state.session_id = new_id
         self._resume_session_id = new_id
-        self.clear_messages()
+        self.clear_messages(persist=False)
         self._load_session_messages()
         self.app.load_session_todos(new_id)
         self.app._refresh_sidebar()
@@ -882,45 +1128,380 @@ class SessionScreen(Screen):
 
         self.app.push_screen(CheckpointListDialog(session_id))
 
+    # ── New Slash Command Implementations ────────────────────────────
+
+    def _handle_compact(self, rest: str) -> None:
+        """Handle /compact command — toggle or run compaction."""
+        if rest.strip().lower() in ("on", "off", "auto"):
+            self.app.session_state.compact_mode = rest.strip().lower()
+            self.app.notify(f"Compact mode: {rest.strip().lower()}")
+            return
+        if self.app.session_state.is_busy:
+            self.app.notify("Cannot compact during generation", severity="warning")
+            return
+        self._run_compaction()
+
+    @work(group="compact")
+    async def _run_compaction(self) -> None:
+        """Run message compaction in background worker."""
+        try:
+            from ollamacode.compaction import compact_messages
+
+            messages = list(self.app.session_history)
+            before_count = len(messages)
+            result = await compact_messages(
+                messages,
+                self.app.session_state.model,
+                self.app.provider,
+            )
+            after_count = len(result)
+            self.app.session_history = result
+            self.app.notify(
+                f"Compacted: {before_count} -> {after_count} messages"
+            )
+        except Exception as e:
+            self.app.notify(f"Compaction failed: {e}", severity="error")
+
+    def _reset_state(self) -> None:
+        """Clear persistent state."""
+        try:
+            from ollamacode.state import clear_state
+
+            clear_state()
+            self.app.notify("Persistent state cleared")
+        except Exception as e:
+            self.app.notify(f"Failed to clear state: {e}", severity="error")
+
+    def _search_sessions(self, query: str) -> None:
+        """Search sessions by query."""
+        if not query.strip():
+            self.app.notify("Usage: /search <query>", severity="warning")
+            return
+        try:
+            from ollamacode.sessions import search_sessions
+
+            results = search_sessions(query.strip())
+            if not results:
+                self.app.notify("No sessions found", severity="warning")
+                return
+            lines = []
+            for s in results[:10]:
+                sid = s.get("id", "")[:8]
+                title = s.get("title", "Untitled")[:40]
+                lines.append(f"  {sid}  {title}")
+            self.app.notify(
+                "\n".join(lines) + "\n\nUse /resume <id> to load",
+                title=f"Search: {query}",
+                timeout=15,
+            )
+        except Exception as e:
+            self.app.notify(f"Search failed: {e}", severity="error")
+
+    def _resume_session(self, session_id: str) -> None:
+        """Resume a session by ID prefix."""
+        sid = session_id.strip()
+        if not sid:
+            self.app.notify("Usage: /resume <session-id>", severity="warning")
+            return
+        try:
+            from ollamacode.sessions import list_sessions
+
+            sessions = list_sessions(limit=200)
+            match = None
+            for s in sessions:
+                if s.get("id", "").startswith(sid):
+                    match = s.get("id")
+                    break
+            if not match:
+                self.app.notify(f"No session matching '{sid}'", severity="warning")
+                return
+            self.app.session_state.session_id = match
+            self._resume_session_id = match
+            self.clear_messages(persist=False)
+            self._load_session_messages()
+            self.app.load_session_todos(match)
+            self.app._refresh_sidebar()
+            self.app.notify(f"Resumed session {match[:8]}...")
+        except Exception as e:
+            self.app.notify(f"Resume failed: {e}", severity="error")
+
+    def _show_session_info(self, rest: str) -> None:
+        """Show or set session info."""
+        state = self.app.session_state
+        if rest.strip():
+            state.title = rest.strip()
+            self.app._refresh_sidebar()
+            self.app.notify(f"Session title: {state.title}")
+            return
+        try:
+            from ollamacode.sessions import get_session_info
+
+            info = get_session_info(state.session_id) if state.session_id else None
+            if info:
+                self.app.notify(
+                    f"ID: {info.get('id', 'N/A')}\n"
+                    f"Title: {info.get('title', 'Untitled')}\n"
+                    f"Messages: {info.get('message_count', 0)}\n"
+                    f"Created: {info.get('created_at', 'N/A')}\n"
+                    f"Updated: {info.get('updated_at', 'N/A')}",
+                    title="Session Info",
+                    timeout=10,
+                )
+            else:
+                self.app.notify("No active session", severity="warning")
+        except Exception as e:
+            self.app.notify(f"Session info failed: {e}", severity="error")
+
+    def _rewind_checkpoint(self, checkpoint_id: str) -> None:
+        """Restore a checkpoint."""
+        cid = checkpoint_id.strip()
+        if not cid:
+            self._show_checkpoints()
+            return
+        try:
+            from ollamacode.checkpoints import restore_checkpoint
+
+            restored = restore_checkpoint(cid, self.app.app_state.workspace_root)
+            self.app.notify(
+                f"Restored {len(restored)} file(s) from checkpoint {cid[:8]}..."
+            )
+        except Exception as e:
+            self.app.notify(f"Rewind failed: {e}", severity="error")
+
+    def _kg_add(self, rest: str) -> None:
+        """Add knowledge graph entry: topic|summary."""
+        if "|" not in rest:
+            self.app.notify("Usage: /kg_add <topic>|<summary>", severity="warning")
+            return
+        topic, summary = rest.split("|", 1)
+        try:
+            from ollamacode.state import add_knowledge_node
+
+            add_knowledge_node(topic.strip(), summary.strip())
+            self.app.notify(f"Added KG entry: {topic.strip()}")
+        except Exception as e:
+            self.app.notify(f"KG add failed: {e}", severity="error")
+
+    def _kg_query(self, query: str) -> None:
+        """Query knowledge graph."""
+        if not query.strip():
+            self.app.notify("Usage: /kg_query <query>", severity="warning")
+            return
+        try:
+            from ollamacode.state import query_knowledge_graph
+
+            results = query_knowledge_graph(query.strip())
+            if not results:
+                self.app.notify("No KG results found")
+                return
+            lines = []
+            for r in results[:5]:
+                lines.append(f"- {r.get('topic', '')}: {r.get('summary', '')[:80]}")
+            self.app.notify("\n".join(lines), title="KG Results", timeout=10)
+        except Exception as e:
+            self.app.notify(f"KG query failed: {e}", severity="error")
+
+    def _rag_index(self, path: str) -> None:
+        """Build vector index."""
+        workspace = path.strip() or self.app.app_state.workspace_root
+        self.app.notify(f"Indexing {workspace}...")
+        self._run_rag_index(workspace)
+
+    @work(group="rag_index")
+    async def _run_rag_index(self, workspace: str) -> None:
+        """Run RAG indexing in background worker."""
+        try:
+            from ollamacode.vector_memory import build_vector_index
+
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, lambda: build_vector_index(workspace))
+            self.app.notify(
+                f"Indexed {result.get('indexed_files', 0)} files, "
+                f"{result.get('chunk_count', 0)} chunks"
+            )
+        except Exception as e:
+            self.app.notify(f"Indexing failed: {e}", severity="error")
+
+    def _rag_query(self, query: str) -> None:
+        """Query vector memory."""
+        if not query.strip():
+            self.app.notify("Usage: /rag_query <query>", severity="warning")
+            return
+        try:
+            from ollamacode.vector_memory import query_vector_memory
+
+            results = query_vector_memory(
+                query.strip(), self.app.app_state.workspace_root
+            )
+            if not results:
+                self.app.notify("No RAG results found")
+                return
+            lines = []
+            for r in results[:5]:
+                path = r.get("path", "")
+                score = r.get("score", 0.0)
+                snippet = r.get("snippet", "")[:60]
+                lines.append(f"[{score:.2f}] {path}: {snippet}")
+            self.app.notify("\n".join(lines), title="RAG Results", timeout=10)
+        except Exception as e:
+            self.app.notify(f"RAG query failed: {e}", severity="error")
+
+    def _switch_mode(self, mode: str) -> None:
+        """Switch agent mode (build/plan/review)."""
+        mm = self.app.app_state.mode_manager
+        if mm is None:
+            self.app.notify("Mode manager not available", severity="warning")
+            return
+        if not mode.strip():
+            modes = mm.list_modes()
+            current = mm.current.value
+            lines = []
+            for m in modes:
+                marker = " *" if m["name"] == current else ""
+                lines.append(f"  {m['name']}{marker} — {m.get('description', '')}")
+            self.app.notify("\n".join(lines), title="Agent Modes", timeout=10)
+            return
+        try:
+            new_mode = mm.switch(mode.strip())
+            self.app.session_state.agent_mode = new_mode.value
+            self._update_context_bar()
+            self.app._refresh_sidebar()
+            try:
+                self.query_one(SessionFooter).agent_mode = new_mode.value
+            except Exception:
+                pass
+            self.app.notify(f"Mode: {new_mode.value}")
+        except Exception as e:
+            self.app.notify(f"Mode switch failed: {e}", severity="error")
+
+    def _switch_variant(self, name: str) -> None:
+        """Switch model variant."""
+        vm = self.app.app_state.variant_manager
+        if vm is None:
+            self.app.notify("Variant manager not available", severity="warning")
+            return
+        if not name.strip():
+            variants = vm.list_variants()
+            current = vm.current
+            current_name = current.name if current else "default"
+            lines = []
+            for v in variants:
+                marker = " *" if v["name"] == current_name else ""
+                lines.append(f"  {v['name']}{marker}")
+            if not lines:
+                lines.append("  No variants configured")
+            self.app.notify("\n".join(lines), title="Variants", timeout=10)
+            return
+        variant = vm.select(name.strip())
+        if variant is None:
+            self.app.notify(f"Unknown variant: {name}", severity="warning")
+            return
+        self.app.session_state.variant_name = variant.name
+        try:
+            self.query_one(SessionFooter).variant_name = variant.name
+        except Exception:
+            pass
+        self.app.notify(f"Variant: {variant.name}")
+
+    def _list_commands(self) -> None:
+        """List all available commands."""
+        lines = [
+            "Core: /new /clear /help /quit",
+            "Model: /model /theme /auto /compact /trace",
+            "Session: /sessions /search /resume /session /branch /export /import",
+            "Checkpoint: /checkpoints /rewind",
+            "Memory: /kg_add /kg_query /rag_index /rag_query",
+            "Dev: /fix /test /docs /profile",
+            "Agent: /plan /continue /summary /copy /mode /variant",
+            "Media: /image /listen /say",
+            "Tools: /refactor /palette /commands /todo",
+        ]
+        cm = self.app.app_state.command_manager
+        if cm is not None:
+            custom = cm.list_commands()
+            if custom:
+                names = ", ".join(f"/{c['name']}" for c in custom)
+                lines.append(f"Custom: {names}")
+        self.app.notify("\n".join(lines), title="Commands", timeout=15)
+
+    def _handle_image(self, rest: str) -> None:
+        """Attach image to message: /image <path> [message]."""
+        if not rest.strip():
+            self.app.notify("Usage: /image <path> [message]", severity="warning")
+            return
+        parts = rest.strip().split(None, 1)
+        image_path = parts[0]
+        message = parts[1] if len(parts) > 1 else "Please analyze this image."
+        if not os.path.isfile(image_path):
+            self.app.notify(f"File not found: {image_path}", severity="error")
+            return
+        self._handle_user_input(message, image_paths=[image_path])
+
+    def _rate_response(self, rating: str) -> None:
+        """Record feedback on last response."""
+        r = rating.strip().lower()
+        if r not in ("good", "bad"):
+            self.app.notify("Usage: /rate good|bad", severity="warning")
+            return
+        logger.info("User rated response: %s (session=%s)", r, self.app.session_state.session_id)
+        self.app.notify(f"Feedback recorded: {r}")
+
+    def _show_refactor_dialog(self) -> None:
+        """Show refactoring options dialog."""
+        from ..dialogs.refactor import RefactorDialog
+
+        def on_result(op: str) -> None:
+            if not op:
+                return
+            self._handle_user_input(
+                f"Please perform a '{op}' refactoring operation on the codebase."
+            )
+
+        self.app.push_screen(RefactorDialog(), on_result)
+
+    # ── Help ──────────────────────────────────────────────────────────
+
     def _show_help(self) -> None:
         """Show help text as a notification."""
         help_text = (
-            "Commands: /new /clear /model /sessions /theme /auto /fix /test "
-            "/plan /continue /summary /todo /copy /help /quit\n"
-            "Keys: Ctrl+N=New Ctrl+P=Palette Ctrl+\\=Sidebar Esc=Cancel"
+            "Core: /new /clear /help /quit\n"
+            "Model: /model /theme /auto /compact /mode /variant\n"
+            "Session: /sessions /search /resume /branch /export /import\n"
+            "Dev: /fix /test /docs /plan /continue /summary /copy\n"
+            "Memory: /kg_add /kg_query /rag_index /rag_query\n"
+            "Tools: /checkpoints /rewind /refactor /image /todo\n"
+            "Ctrl+N=New Ctrl+P=Palette Ctrl+\\=Sidebar Esc=Cancel"
         )
         self.app.notify(help_text, title="Help", timeout=15)
 
-    def _copy_last_response(self) -> None:
-        """Copy the last assistant response to clipboard."""
+    @work(group="clipboard")
+    async def _copy_last_response(self) -> None:
+        """Copy the last assistant response to clipboard without blocking UI."""
+        content = ""
         for msg in reversed(self.app.session_history):
             if msg.get("role") == "assistant":
-                import subprocess
-
-                try:
-                    subprocess.run(
-                        ["pbcopy"],
-                        input=msg["content"].encode(),
-                        check=True,
-                        timeout=5,
-                    )
+                content = msg.get("content", "")
+                break
+        if not content:
+            self.app.notify("No response to copy", severity="warning")
+            return
+        for cmd in (["pbcopy"], ["xclip", "-selection", "clipboard"]):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                )
+                await asyncio.wait_for(proc.communicate(input=content.encode()), timeout=5)
+                if proc.returncode == 0:
                     self.app.notify("Copied to clipboard")
-                except Exception:
-                    try:
-                        subprocess.run(
-                            ["xclip", "-selection", "clipboard"],
-                            input=msg["content"].encode(),
-                            check=True,
-                            timeout=5,
-                        )
-                        self.app.notify("Copied to clipboard")
-                    except Exception:
-                        self.app.notify("Clipboard not available", severity="warning")
-                return
-        self.app.notify("No response to copy", severity="warning")
+                    return
+            except Exception:
+                continue
+        self.app.notify("Clipboard not available", severity="warning")
 
-    def _run_dev_command(self, cmd: str, args: str) -> None:
-        """Run a dev command (/fix, /test, /docs, /profile) and send output to model."""
+    @work(group="dev_cmd")
+    async def _run_dev_command(self, cmd: str, args: str) -> None:
+        """Run a dev command (/fix, /test, /docs, /profile) without blocking the UI."""
         app = self.app
         cmd_map = {
             "/fix": app.linter_command,
@@ -933,22 +1514,23 @@ class SessionScreen(Screen):
             self.app.notify(f"No command configured for {cmd}", severity="warning")
             return
 
-        import subprocess
-
+        self.app.notify(f"Running: {command}...")
         try:
-            result = subprocess.run(
+            proc = await asyncio.create_subprocess_shell(
                 command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=120,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
                 cwd=app.app_state.workspace_root,
             )
-            output = result.stdout + result.stderr
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            except asyncio.TimeoutError:
+                proc.kill()
+                self.app.notify("Command timed out (120s)", severity="error")
+                return
+            output = (stdout or b"").decode(errors="replace") + (stderr or b"").decode(errors="replace")
             prompt = f"I ran `{command}` and got:\n```\n{output[:8000]}\n```\nPlease analyze and fix any issues."
             self._handle_user_input(prompt)
-        except subprocess.TimeoutExpired:
-            self.app.notify("Command timed out", severity="error")
         except Exception as e:
             self.app.notify(f"Command failed: {e}", severity="error")
 

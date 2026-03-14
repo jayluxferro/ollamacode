@@ -61,6 +61,7 @@ async def run_tui(
     allowed_tools: list[str] | None = None,
     blocked_tools: list[str] | None = None,
     confirm_tool_calls: bool = False,
+    permissions_config: dict[str, Any] | None = None,
     code_style: str | None = None,
     planner_model: str | None = None,
     executor_model: str | None = None,
@@ -101,10 +102,25 @@ async def run_tui(
         _lg = logging.getLogger(_name)
         _lg.setLevel(logging.WARNING)
         _lg.propagate = False
-        _lg.disabled = True
 
     # Determine theme from environment
     theme_name = os.environ.get("OLLAMACODE_THEME", "opencode")
+
+    # Build config dict from yaml if available
+    config: dict[str, Any] = {}
+    try:
+        from ollamacode.config import load_config
+        from pathlib import Path
+
+        config = load_config(cwd=Path(workspace_root) if workspace_root else None)
+    except Exception:
+        pass
+
+    # Merge runtime params into config for manager init
+    if subagents:
+        config["subagents"] = subagents
+    if permissions_config is not None:
+        config.setdefault("permissions", {}).update(permissions_config)
 
     from .app import OllamaCodeApp
 
@@ -128,6 +144,9 @@ async def run_tui(
         test_command=test_command,
         docs_command=docs_command,
         profile_command=profile_command,
+        config=config,
+        allowed_tools=allowed_tools,
+        blocked_tools=blocked_tools,
     )
 
     await app.run_async()
