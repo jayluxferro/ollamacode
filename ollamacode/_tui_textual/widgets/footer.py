@@ -54,14 +54,14 @@ class SessionFooter(Widget):
 
     def watch_agent_mode(self, value: str) -> None:
         try:
-            self.query_one("#footer-agent", Static).update(f"{value} agent")
+            self.query_one("#footer-agent", Static).update(f" {value} agent ")
         except Exception:
             pass
 
     def watch_variant_name(self, value: str) -> None:
         try:
             self.query_one("#footer-variant", Static).update(
-                f"variant: {value}" if value else ""
+                f" variant: {value} " if value else ""
             )
         except Exception:
             pass
@@ -69,7 +69,7 @@ class SessionFooter(Widget):
     def watch_sandbox_level(self, value: str) -> None:
         try:
             self.query_one("#footer-sandbox", Static).update(
-                f"sandbox: {value}" if value else ""
+                f" sandbox: {value} " if value else ""
             )
         except Exception:
             pass

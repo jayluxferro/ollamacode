@@ -410,16 +410,19 @@ SessionFooter {
     width: auto;
     color: $accent;
     text-style: bold;
+    margin: 0 1;
 }
 
 #footer-variant {
     width: auto;
     color: $text-muted;
+    margin: 0 1;
 }
 
 #footer-sandbox {
     width: auto;
     color: $warning;
+    margin: 0 1;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
