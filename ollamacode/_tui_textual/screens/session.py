@@ -373,7 +373,10 @@ class SessionScreen(Screen):
                 )
                 if permission.value == "deny":
                     app.session_state.permissions_denied += 1
-                    return ("skip", f"Blocked by permission rule for tool: {normalized_name}")
+                    return (
+                        "skip",
+                        f"Blocked by permission rule for tool: {normalized_name}",
+                    )
                 if permission.value == "allow":
                     app.session_state.permissions_granted += 1
                     return "run"
@@ -773,7 +776,11 @@ class SessionScreen(Screen):
         try:
             from ollamacode.sessions import list_sessions
 
-            count = len(list_sessions(limit=1000, workspace_root=self.app.app_state.workspace_root))
+            count = len(
+                list_sessions(
+                    limit=1000, workspace_root=self.app.app_state.workspace_root
+                )
+            )
         except Exception:
             count = 0
         self.app.notify(
@@ -801,7 +808,9 @@ class SessionScreen(Screen):
     def _show_workspace_health(self, rest: str) -> None:
         workspace_id = rest.strip()
         if not workspace_id:
-            self.app.notify("Usage: /workspace_health <workspace-id>", severity="warning")
+            self.app.notify(
+                "Usage: /workspace_health <workspace-id>", severity="warning"
+            )
             return
         try:
             from ollamacode.workspaces import get_workspace

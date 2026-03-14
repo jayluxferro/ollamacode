@@ -145,7 +145,6 @@ class SlashCommands(Provider):
         ("/quit", "Exit OllamaCode"),
         ("/new", "Start a new session"),
         ("/clear", "Clear messages"),
-
         # Model & display
         ("/model", "Change model"),
         ("/theme", "Change theme"),
@@ -153,7 +152,6 @@ class SlashCommands(Provider):
         ("/compact", "Toggle compact view or compact messages"),
         ("/trace", "Set tool trace filter"),
         ("/reset-state", "Clear persistent state"),
-
         # Sessions
         ("/sessions", "List sessions"),
         ("/search", "Search sessions"),
@@ -162,23 +160,19 @@ class SlashCommands(Provider):
         ("/branch", "Branch current session"),
         ("/export", "Export session as JSON"),
         ("/import", "Import session from JSON"),
-
         # Checkpoints
         ("/checkpoints", "List checkpoints"),
         ("/rewind", "Restore a checkpoint"),
-
         # Context & memory
         ("/kg_add", "Add knowledge graph entry"),
         ("/kg_query", "Query knowledge graph"),
         ("/rag_index", "Build vector index"),
         ("/rag_query", "Query vector memory"),
-
         # Dev commands
         ("/fix", "Run linter and send output"),
         ("/test", "Run tests and send output"),
         ("/docs", "Run docs command"),
         ("/profile", "Run profiler"),
-
         # Agent
         ("/plan", "Set a multi-step plan"),
         ("/continue", "Continue with current plan"),
@@ -187,19 +181,16 @@ class SlashCommands(Provider):
         ("/mode", "Switch agent mode (build/plan/review)"),
         ("/variant", "Switch model variant"),
         ("/commands", "List all commands"),
-
         # Multi-agent
         ("/multi", "Run multi-agent task"),
         ("/agents", "Dispatch concurrent agents"),
         ("/agents_show", "Show agent outputs"),
         ("/agents_summary", "Summarize agent outputs"),
         ("/subagent", "Dispatch a subagent"),
-
         # Media
         ("/image", "Attach image to message"),
         ("/listen", "Voice recording input"),
         ("/say", "Text-to-speech output"),
-
         # Feedback & tools
         ("/rate", "Rate last response"),
         ("/refactor", "Refactoring tools"),

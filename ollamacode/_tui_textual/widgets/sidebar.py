@@ -191,9 +191,7 @@ class Sidebar(VerticalScroll):
 
     def watch_plugin_count(self, value: int) -> None:
         try:
-            self.query_one("#sidebar-plugins-value", Static).update(
-                f"{value} loaded"
-            )
+            self.query_one("#sidebar-plugins-value", Static).update(f"{value} loaded")
         except Exception:
             pass
 

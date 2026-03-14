@@ -29,6 +29,7 @@ def test_control_plane_publish_subscribe(tmp_path, monkeypatch):
     finally:
         unsubscribe(queue)
 
+
 def test_control_plane_recent_events(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "ollamacode.control_plane._EVENTS_PATH", tmp_path / "events.jsonl"

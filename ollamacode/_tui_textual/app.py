@@ -107,7 +107,9 @@ class OllamaCodeApp(App):
         try:
             from ollamacode.permissions import PermissionManager
 
-            self.app_state.permissions_manager = PermissionManager.from_config(cfg or None)
+            self.app_state.permissions_manager = PermissionManager.from_config(
+                cfg or None
+            )
         except Exception:
             logger.debug("Failed to init PermissionManager", exc_info=True)
 
@@ -180,9 +182,24 @@ class OllamaCodeApp(App):
         try:
             from ollamacode.file_watcher import watch_directory
 
-            patterns = ["*.py", "*.js", "*.ts", "*.jsx", "*.tsx", "*.go",
-                        "*.rs", "*.java", "*.c", "*.cpp", "*.h", "*.md",
-                        "*.yaml", "*.yml", "*.json", "*.toml"]
+            patterns = [
+                "*.py",
+                "*.js",
+                "*.ts",
+                "*.jsx",
+                "*.tsx",
+                "*.go",
+                "*.rs",
+                "*.java",
+                "*.c",
+                "*.cpp",
+                "*.h",
+                "*.md",
+                "*.yaml",
+                "*.yml",
+                "*.json",
+                "*.toml",
+            ]
 
             def on_file_change(event_type: str, file_path: str) -> None:
                 try:

@@ -48,8 +48,12 @@ def test_save_and_load_session(tmp_path, monkeypatch):
 
 def test_update_session(tmp_path, monkeypatch):
     monkeypatch.setattr("ollamacode.sessions._DB_PATH", tmp_path / "sessions.db")
-    sid = create_session("Old title", workspace_root="/tmp/a", owner="alice", role="owner")
-    updated = update_session(sid, title="New title", workspace_root="/tmp/b", owner="bob", role="editor")
+    sid = create_session(
+        "Old title", workspace_root="/tmp/a", owner="alice", role="owner"
+    )
+    updated = update_session(
+        sid, title="New title", workspace_root="/tmp/b", owner="bob", role="editor"
+    )
     assert updated is not None
     assert updated["title"] == "New title"
     assert updated["workspace_root"] == "/tmp/b"

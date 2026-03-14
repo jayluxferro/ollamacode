@@ -339,7 +339,9 @@ def _principal_can_write(principal: dict[str, Any] | None) -> bool:
     return _principal_role(principal) in {"admin", "editor"}
 
 
-def _principal_has_workspace(principal: dict[str, Any] | None, workspace_id: str) -> bool:
+def _principal_has_workspace(
+    principal: dict[str, Any] | None, workspace_id: str
+) -> bool:
     if not principal or not workspace_id:
         return False
     return workspace_id in list(principal.get("workspace_ids") or [])
@@ -757,7 +759,10 @@ def create_app(
                 )
                 if permission is ToolPermission.DENY:
                     _serve_session_approvals.record_deny(session_key)
-                    return ("skip", f"Blocked by permission rule for tool: {normalized_name}")
+                    return (
+                        "skip",
+                        f"Blocked by permission rule for tool: {normalized_name}",
+                    )
                 if permission is ToolPermission.ALLOW:
                     _serve_session_approvals.record_grant(session_key)
                     return "run"
@@ -886,7 +891,10 @@ def create_app(
                 )
                 if permission is ToolPermission.DENY:
                     _serve_session_approvals.record_deny(session_key)
-                    return ("skip", f"Blocked by permission rule for tool: {normalized_name}")
+                    return (
+                        "skip",
+                        f"Blocked by permission rule for tool: {normalized_name}",
+                    )
                 if permission is ToolPermission.ALLOW:
                     _serve_session_approvals.record_grant(session_key)
                     return "run"
@@ -1052,7 +1060,10 @@ def create_app(
                 )
                 if permission is ToolPermission.DENY:
                     _serve_session_approvals.record_deny(session_key)
-                    return ("skip", f"Blocked by permission rule for tool: {normalized_name}")
+                    return (
+                        "skip",
+                        f"Blocked by permission rule for tool: {normalized_name}",
+                    )
                 if permission is ToolPermission.ALLOW:
                     _serve_session_approvals.record_grant(session_key)
                     return "run"
@@ -1196,7 +1207,10 @@ def create_app(
                 )
                 if permission is ToolPermission.DENY:
                     _serve_session_approvals.record_deny(session_key)
-                    return ("skip", f"Blocked by permission rule for tool: {normalized_name}")
+                    return (
+                        "skip",
+                        f"Blocked by permission rule for tool: {normalized_name}",
+                    )
                 if permission is ToolPermission.ALLOW:
                     _serve_session_approvals.record_grant(session_key)
                     return "run"
@@ -1346,7 +1360,9 @@ def create_app(
             answers = [str(item or "") for item in answers_raw]
             decision_value: Any = (
                 "skip",
-                format_question_answers(entry.get("pending", {}).get("questions") or [], answers),
+                format_question_answers(
+                    entry.get("pending", {}).get("questions") or [], answers
+                ),
             )
         else:
             decision = body.get("decision", "run")
@@ -1510,7 +1526,10 @@ def create_app(
                                 pending["future"] = loop.create_future()
                                 event.set()
                                 return await pending["future"]
-                            return ("skip", "Question tool called without valid questions.")
+                            return (
+                                "skip",
+                                "Question tool called without valid questions.",
+                            )
                         if name.endswith("task") or name == "task":
                             result = await run_task_delegation(
                                 session=session,
@@ -1534,7 +1553,10 @@ def create_app(
                         )
                         if permission is ToolPermission.DENY:
                             _serve_session_approvals.record_deny(session_key)
-                            return ("skip", f"Blocked by permission rule for tool: {normalized_name}")
+                            return (
+                                "skip",
+                                f"Blocked by permission rule for tool: {normalized_name}",
+                            )
                         if permission is ToolPermission.ALLOW:
                             _serve_session_approvals.record_grant(session_key)
                             return "run"
@@ -1619,7 +1641,9 @@ def create_app(
                             payload = (
                                 {
                                     "type": "question",
-                                    "questionRequired": {"questions": pending["questions"]},
+                                    "questionRequired": {
+                                        "questions": pending["questions"]
+                                    },
                                     "approvalToken": token,
                                     "continuationToken": token,
                                 }
@@ -1853,7 +1877,9 @@ def create_app(
         principal = _principal(request)
         if principal is not None and not _principal_is_admin(principal):
             name = _principal_name(principal)
-            rows = [row for row in rows if not row.get("owner") or row.get("owner") == name]
+            rows = [
+                row for row in rows if not row.get("owner") or row.get("owner") == name
+            ]
         return JSONResponse({"sessions": rows})
 
     async def session_get_handler(request: Request):
@@ -1873,7 +1899,9 @@ def create_app(
         denied = _authorize_session_access(request, info)
         if denied is not None:
             return denied
-        return JSONResponse({"session": info, "messages": load_session(session_id) or []})
+        return JSONResponse(
+            {"session": info, "messages": load_session(session_id) or []}
+        )
 
     async def session_messages_handler(request: Request):
         """GET /sessions/{id}/messages: return just session messages."""
@@ -1988,7 +2016,10 @@ def create_app(
 
         session_id = request.path_params.get("session_id", "")
         from .sessions import get_session_info
-        denied = _authorize_session_access(request, get_session_info(session_id), write=True)
+
+        denied = _authorize_session_access(
+            request, get_session_info(session_id), write=True
+        )
         if denied is not None:
             return denied
         session = update_session(
@@ -2014,6 +2045,7 @@ def create_app(
 
         session_id = request.path_params.get("session_id", "")
         from .sessions import get_session_info
+
         denied = _authorize_session_access(request, get_session_info(session_id))
         if denied is not None:
             return denied
@@ -2057,6 +2089,7 @@ def create_app(
 
         session_id = request.path_params.get("session_id", "")
         from .sessions import get_session_info
+
         denied = _authorize_session_access(request, get_session_info(session_id))
         if denied is not None:
             return denied
@@ -2077,7 +2110,10 @@ def create_app(
 
         session_id = request.path_params.get("session_id", "")
         from .sessions import get_session_info
-        denied = _authorize_session_access(request, get_session_info(session_id), write=True)
+
+        denied = _authorize_session_access(
+            request, get_session_info(session_id), write=True
+        )
         if denied is not None:
             return denied
         deleted = delete_session(session_id)
@@ -2100,7 +2136,9 @@ def create_app(
         from .sessions import branch_session, get_session_info
 
         session_id = request.path_params.get("session_id", "")
-        denied = _authorize_session_access(request, get_session_info(session_id), write=True)
+        denied = _authorize_session_access(
+            request, get_session_info(session_id), write=True
+        )
         if denied is not None:
             return denied
         new_id = branch_session(session_id, title=body.get("title"))
@@ -2123,7 +2161,9 @@ def create_app(
         from .sessions import fork_session, get_session_info
 
         session_id = request.path_params.get("session_id", "")
-        denied = _authorize_session_access(request, get_session_info(session_id), write=True)
+        denied = _authorize_session_access(
+            request, get_session_info(session_id), write=True
+        )
         if denied is not None:
             return denied
         message_index = body.get("messageIndex")
@@ -2193,7 +2233,9 @@ def create_app(
         from .workspaces import get_workspace
 
         workspace_id = request.path_params.get("workspace_id", "")
-        denied = _authorize_workspace_access(request, get_workspace(workspace_id), write=True)
+        denied = _authorize_workspace_access(
+            request, get_workspace(workspace_id), write=True
+        )
         if denied is not None:
             return denied
         workspace = update_workspace(
@@ -2250,7 +2292,9 @@ def create_app(
         from .workspaces import get_workspace
 
         workspace_id = request.path_params.get("workspace_id", "")
-        denied = _authorize_workspace_access(request, get_workspace(workspace_id), write=True)
+        denied = _authorize_workspace_access(
+            request, get_workspace(workspace_id), write=True
+        )
         if denied is not None:
             return denied
         deleted = delete_workspace(workspace_id)
@@ -2283,20 +2327,38 @@ def create_app(
             if workspace.get("api_key"):
                 headers["Authorization"] = f"Bearer {workspace['api_key']}"
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(str(workspace["base_url"]).rstrip("/") + "/health", headers=headers)
-            workspace = update_workspace(
-                workspace_id,
-                last_status="ok" if resp.status_code == 200 else "error",
-                last_error="" if resp.status_code == 200 else f"HTTP {resp.status_code}",
-            ) or workspace
-            return JSONResponse({"ok": resp.status_code == 200, "statusCode": resp.status_code, "workspace": workspace})
+                resp = await client.get(
+                    str(workspace["base_url"]).rstrip("/") + "/health", headers=headers
+                )
+            workspace = (
+                update_workspace(
+                    workspace_id,
+                    last_status="ok" if resp.status_code == 200 else "error",
+                    last_error=""
+                    if resp.status_code == 200
+                    else f"HTTP {resp.status_code}",
+                )
+                or workspace
+            )
+            return JSONResponse(
+                {
+                    "ok": resp.status_code == 200,
+                    "statusCode": resp.status_code,
+                    "workspace": workspace,
+                }
+            )
         except Exception as e:
-            workspace = update_workspace(
-                workspace_id,
-                last_status="error",
-                last_error=str(e),
-            ) or workspace
-            return JSONResponse({"ok": False, "error": str(e), "workspace": workspace}, status_code=502)
+            workspace = (
+                update_workspace(
+                    workspace_id,
+                    last_status="error",
+                    last_error=str(e),
+                )
+                or workspace
+            )
+            return JSONResponse(
+                {"ok": False, "error": str(e), "workspace": workspace}, status_code=502
+            )
 
     async def workspace_proxy_handler(request: Request):
         """Proxy selected routes to a remote registered workspace."""
@@ -2448,7 +2510,8 @@ def create_app(
             {
                 "workspaceRoot": root,
                 "sessionCount": len(rows),
-                "hasMcpSession": getattr(request.app.state, "session", None) is not None,
+                "hasMcpSession": getattr(request.app.state, "session", None)
+                is not None,
                 "subagents": [
                     item.get("name")
                     for item in ((merged_config or {}).get("subagents") or [])
@@ -2515,7 +2578,9 @@ def create_app(
             name=name,
             role=str(body.get("role") or "admin"),
             api_key=str(body.get("apiKey") or ""),
-            workspace_ids=body.get("workspaceIDs") if isinstance(body.get("workspaceIDs"), list) else None,
+            workspace_ids=body.get("workspaceIDs")
+            if isinstance(body.get("workspaceIDs"), list)
+            else None,
         )
         return JSONResponse({"principal": principal})
 
@@ -2542,7 +2607,9 @@ def create_app(
             name=body.get("name"),
             role=body.get("role"),
             api_key=body.get("apiKey"),
-            workspace_ids=body.get("workspaceIDs") if isinstance(body.get("workspaceIDs"), list) else None,
+            workspace_ids=body.get("workspaceIDs")
+            if isinstance(body.get("workspaceIDs"), list)
+            else None,
         )
         if principal is None:
             return JSONResponse({"error": "principal not found"}, status_code=404)
@@ -2596,35 +2663,119 @@ def create_app(
             Route("/sessions", session_create_handler, methods=["POST"]),
             Route("/sessions/import", session_import_handler, methods=["POST"]),
             Route("/sessions/{session_id:str}", session_get_handler, methods=["GET"]),
-            Route("/sessions/{session_id:str}", session_update_handler, methods=["PATCH"]),
-            Route("/sessions/{session_id:str}/messages", session_messages_handler, methods=["GET"]),
-            Route("/sessions/{session_id:str}/children", session_children_handler, methods=["GET"]),
-            Route("/sessions/{session_id:str}/ancestors", session_ancestors_handler, methods=["GET"]),
-            Route("/sessions/{session_id:str}/timeline", session_timeline_handler, methods=["GET"]),
-            Route("/sessions/{session_id:str}", session_delete_handler, methods=["DELETE"]),
-            Route("/sessions/{session_id:str}/export", session_export_handler, methods=["GET"]),
-            Route("/sessions/{session_id:str}/todos", session_todo_handler, methods=["GET"]),
-            Route("/sessions/{session_id:str}/branch", session_branch_handler, methods=["POST"]),
-            Route("/sessions/{session_id:str}/fork", session_fork_handler, methods=["POST"]),
-            Route("/sessions/{session_id:str}/checkpoints", session_checkpoints_handler, methods=["GET"]),
-            Route("/sessions/{session_id:str}/rewind", session_restore_checkpoint_handler, methods=["POST"]),
-            Route("/checkpoints/{checkpoint_id:str}", checkpoint_get_handler, methods=["GET"]),
-            Route("/checkpoints/{checkpoint_id:str}/files", checkpoint_files_handler, methods=["GET"]),
-            Route("/checkpoints/{checkpoint_id:str}/diff", checkpoint_diff_handler, methods=["GET"]),
+            Route(
+                "/sessions/{session_id:str}", session_update_handler, methods=["PATCH"]
+            ),
+            Route(
+                "/sessions/{session_id:str}/messages",
+                session_messages_handler,
+                methods=["GET"],
+            ),
+            Route(
+                "/sessions/{session_id:str}/children",
+                session_children_handler,
+                methods=["GET"],
+            ),
+            Route(
+                "/sessions/{session_id:str}/ancestors",
+                session_ancestors_handler,
+                methods=["GET"],
+            ),
+            Route(
+                "/sessions/{session_id:str}/timeline",
+                session_timeline_handler,
+                methods=["GET"],
+            ),
+            Route(
+                "/sessions/{session_id:str}", session_delete_handler, methods=["DELETE"]
+            ),
+            Route(
+                "/sessions/{session_id:str}/export",
+                session_export_handler,
+                methods=["GET"],
+            ),
+            Route(
+                "/sessions/{session_id:str}/todos",
+                session_todo_handler,
+                methods=["GET"],
+            ),
+            Route(
+                "/sessions/{session_id:str}/branch",
+                session_branch_handler,
+                methods=["POST"],
+            ),
+            Route(
+                "/sessions/{session_id:str}/fork",
+                session_fork_handler,
+                methods=["POST"],
+            ),
+            Route(
+                "/sessions/{session_id:str}/checkpoints",
+                session_checkpoints_handler,
+                methods=["GET"],
+            ),
+            Route(
+                "/sessions/{session_id:str}/rewind",
+                session_restore_checkpoint_handler,
+                methods=["POST"],
+            ),
+            Route(
+                "/checkpoints/{checkpoint_id:str}",
+                checkpoint_get_handler,
+                methods=["GET"],
+            ),
+            Route(
+                "/checkpoints/{checkpoint_id:str}/files",
+                checkpoint_files_handler,
+                methods=["GET"],
+            ),
+            Route(
+                "/checkpoints/{checkpoint_id:str}/diff",
+                checkpoint_diff_handler,
+                methods=["GET"],
+            ),
             Route("/workspace", workspace_info_handler, methods=["GET"]),
             Route("/fleet", fleet_summary_handler, methods=["GET"]),
             Route("/principals", principals_list_handler, methods=["GET"]),
             Route("/principals", principal_create_handler, methods=["POST"]),
-            Route("/principals/{principal_id:str}", principal_get_handler, methods=["GET"]),
-            Route("/principals/{principal_id:str}", principal_update_handler, methods=["PATCH"]),
-            Route("/principals/{principal_id:str}", principal_delete_handler, methods=["DELETE"]),
+            Route(
+                "/principals/{principal_id:str}", principal_get_handler, methods=["GET"]
+            ),
+            Route(
+                "/principals/{principal_id:str}",
+                principal_update_handler,
+                methods=["PATCH"],
+            ),
+            Route(
+                "/principals/{principal_id:str}",
+                principal_delete_handler,
+                methods=["DELETE"],
+            ),
             Route("/workspaces", workspaces_list_handler, methods=["GET"]),
             Route("/workspaces", workspace_create_handler, methods=["POST"]),
-            Route("/workspaces/{workspace_id:str}", workspace_get_handler, methods=["GET"]),
-            Route("/workspaces/{workspace_id:str}", workspace_update_handler, methods=["PATCH"]),
-            Route("/workspaces/{workspace_id:str}", workspace_delete_handler, methods=["DELETE"]),
-            Route("/workspaces/{workspace_id:str}/health", workspace_health_handler, methods=["GET"]),
-            Route("/workspaces/{workspace_id:str}/proxy/{target:path}", workspace_proxy_handler, methods=["GET", "POST", "DELETE", "PATCH", "PUT"]),
+            Route(
+                "/workspaces/{workspace_id:str}", workspace_get_handler, methods=["GET"]
+            ),
+            Route(
+                "/workspaces/{workspace_id:str}",
+                workspace_update_handler,
+                methods=["PATCH"],
+            ),
+            Route(
+                "/workspaces/{workspace_id:str}",
+                workspace_delete_handler,
+                methods=["DELETE"],
+            ),
+            Route(
+                "/workspaces/{workspace_id:str}/health",
+                workspace_health_handler,
+                methods=["GET"],
+            ),
+            Route(
+                "/workspaces/{workspace_id:str}/proxy/{target:path}",
+                workspace_proxy_handler,
+                methods=["GET", "POST", "DELETE", "PATCH", "PUT"],
+            ),
             Route("/apply-edits", apply_edits_handler, methods=["POST"]),
             Route("/diagnostics", diagnostics_handler, methods=["POST"]),
             Route("/complete", complete_handler, methods=["POST"]),

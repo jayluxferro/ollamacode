@@ -1,6 +1,5 @@
 """Unit tests for serve HTTP API (Starlette)."""
 
-import asyncio
 import json
 
 import pytest
@@ -172,7 +171,11 @@ async def test_http_continue_always_persists_tool_approval(monkeypatch):
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         res = await client.post(
             "/chat",
-            json={"message": "first", "confirmToolCalls": True, "sessionID": "serve-session"},
+            json={
+                "message": "first",
+                "confirmToolCalls": True,
+                "sessionID": "serve-session",
+            },
         )
         token = res.json()["approvalToken"]
         res2 = await client.post(
@@ -183,7 +186,11 @@ async def test_http_continue_always_persists_tool_approval(monkeypatch):
 
         res3 = await client.post(
             "/chat",
-            json={"message": "second", "confirmToolCalls": True, "sessionID": "serve-session"},
+            json={
+                "message": "second",
+                "confirmToolCalls": True,
+                "sessionID": "serve-session",
+            },
         )
         assert res3.json()["content"] == "done run"
 
@@ -192,7 +199,9 @@ async def test_http_continue_always_persists_tool_approval(monkeypatch):
 async def test_http_session_routes(tmp_path, monkeypatch):
     """HTTP session/workspace routes should expose the local session store."""
     monkeypatch.setattr("ollamacode.sessions._DB_PATH", tmp_path / "sessions.db")
-    monkeypatch.setattr("ollamacode.workspaces._WORKSPACES_PATH", tmp_path / "workspaces.json")
+    monkeypatch.setattr(
+        "ollamacode.workspaces._WORKSPACES_PATH", tmp_path / "workspaces.json"
+    )
 
     app = serve.create_app(
         model="model",
@@ -205,7 +214,12 @@ async def test_http_session_routes(tmp_path, monkeypatch):
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         created = await client.post(
             "/sessions",
-            json={"title": "HTTP Session", "workspaceRoot": str(tmp_path), "owner": "alice", "role": "editor"},
+            json={
+                "title": "HTTP Session",
+                "workspaceRoot": str(tmp_path),
+                "owner": "alice",
+                "role": "editor",
+            },
         )
         session = created.json()["session"]
         session_id = session["id"]
@@ -224,7 +238,10 @@ async def test_http_session_routes(tmp_path, monkeypatch):
         assert isinstance(messages.json()["messages"], list)
 
         exported = await client.get(f"/sessions/{session_id}/export")
-        assert json.loads(exported.json()["data"])["session"]["title"] == "HTTP Session Renamed"
+        assert (
+            json.loads(exported.json()["data"])["session"]["title"]
+            == "HTTP Session Renamed"
+        )
 
         branched = await client.post(f"/sessions/{session_id}/branch", json={})
         assert branched.json()["session"]["id"] != session_id
@@ -240,7 +257,10 @@ async def test_http_session_routes(tmp_path, monkeypatch):
         timeline = await client.get(
             f"/sessions/{branched.json()['session']['id']}/timeline"
         )
-        assert timeline.json()["timeline"]["session"]["id"] == branched.json()["session"]["id"]
+        assert (
+            timeline.json()["timeline"]["session"]["id"]
+            == branched.json()["session"]["id"]
+        )
 
         from ollamacode.checkpoints import CheckpointRecorder
 
@@ -267,11 +287,17 @@ async def test_http_session_routes(tmp_path, monkeypatch):
 
         workspace_created = await client.post(
             "/workspaces",
-            json={"name": "Remote", "type": "remote", "baseUrl": "http://localhost:9000"},
+            json={
+                "name": "Remote",
+                "type": "remote",
+                "baseUrl": "http://localhost:9000",
+            },
         )
         workspace_id = workspace_created.json()["workspace"]["id"]
         workspace_list = await client.get("/workspaces")
-        assert any(item["id"] == workspace_id for item in workspace_list.json()["workspaces"])
+        assert any(
+            item["id"] == workspace_id for item in workspace_list.json()["workspaces"]
+        )
         workspace_update = await client.patch(
             f"/workspaces/{workspace_id}",
             json={"name": "Remote-2"},
@@ -312,7 +338,10 @@ async def test_http_question_continue_flow(monkeypatch):
         first = await client.post("/chat", json={"message": "ask first"})
         assert first.status_code == 200
         token = first.json()["approvalToken"]
-        assert first.json()["questionRequired"]["questions"][0]["question"] == "Which file should I edit?"
+        assert (
+            first.json()["questionRequired"]["questions"][0]["question"]
+            == "Which file should I edit?"
+        )
         second = await client.post(
             "/chat/continue",
             json={"approvalToken": token, "answers": ["cli.py"]},
@@ -337,7 +366,9 @@ async def test_http_task_delegation(monkeypatch):
         return f"done {result[1]}"
 
     async def fake_run_task_delegation(**kwargs):
-        return "task_id: child-http\n\n<task_result>\nhttp subagent output\n</task_result>"
+        return (
+            "task_id: child-http\n\n<task_result>\nhttp subagent output\n</task_result>"
+        )
 
     monkeypatch.setattr(serve, "run_agent_loop", fake_run_agent_loop)
     monkeypatch.setattr(serve, "run_task_delegation", fake_run_task_delegation)
@@ -357,7 +388,10 @@ async def test_http_task_delegation(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_workspace_proxy_route(tmp_path, monkeypatch):
-    monkeypatch.setattr("ollamacode.workspaces._WORKSPACES_PATH", tmp_path / "workspaces.json")
+    monkeypatch.setattr(
+        "ollamacode.workspaces._WORKSPACES_PATH", tmp_path / "workspaces.json"
+    )
+
     async def fake_proxy(method, url, *, body_bytes, api_key=""):
         assert method == "GET"
         assert url == "http://localhost:9000/workspace"
@@ -370,7 +404,11 @@ async def test_workspace_proxy_route(tmp_path, monkeypatch):
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         created = await client.post(
             "/workspaces",
-            json={"name": "Remote", "type": "remote", "baseUrl": "http://localhost:9000"},
+            json={
+                "name": "Remote",
+                "type": "remote",
+                "baseUrl": "http://localhost:9000",
+            },
         )
         workspace_id = created.json()["workspace"]["id"]
         proxied = await client.get(f"/workspaces/{workspace_id}/proxy/workspace")
@@ -413,15 +451,29 @@ async def test_http_chat_stream_endpoint(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_http_principals_and_fleet_routes(tmp_path, monkeypatch):
-    monkeypatch.setattr("ollamacode.auth_registry._AUTH_PATH", tmp_path / "principals.json")
-    monkeypatch.setattr("ollamacode.workspaces._WORKSPACES_PATH", tmp_path / "workspaces.json")
+    monkeypatch.setattr(
+        "ollamacode.auth_registry._AUTH_PATH", tmp_path / "principals.json"
+    )
+    monkeypatch.setattr(
+        "ollamacode.workspaces._WORKSPACES_PATH", tmp_path / "workspaces.json"
+    )
+
     async def fake_snapshot(workspaces):
-        return {"total": len(workspaces), "remote": 0, "healthy": len(workspaces), "unhealthy": 0, "workspaces": workspaces}
+        return {
+            "total": len(workspaces),
+            "remote": 0,
+            "healthy": len(workspaces),
+            "unhealthy": 0,
+            "workspaces": workspaces,
+        }
+
     monkeypatch.setattr("ollamacode.fleet.collect_fleet_snapshot", fake_snapshot)
     app = serve.create_app(model="model", mcp_servers=[], system_extra="")
     transport = ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        created = await client.post("/principals", json={"name": "Alice", "role": "admin"})
+        created = await client.post(
+            "/principals", json={"name": "Alice", "role": "admin"}
+        )
         assert created.json()["principal"]["name"] == "Alice"
         principal_id = created.json()["principal"]["id"]
         updated = await client.patch(
@@ -439,8 +491,12 @@ async def test_http_principals_and_fleet_routes(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_http_authz_principal_admin_and_scope(tmp_path, monkeypatch):
-    monkeypatch.setattr("ollamacode.auth_registry._AUTH_PATH", tmp_path / "principals.json")
-    monkeypatch.setattr("ollamacode.workspaces._WORKSPACES_PATH", tmp_path / "workspaces.json")
+    monkeypatch.setattr(
+        "ollamacode.auth_registry._AUTH_PATH", tmp_path / "principals.json"
+    )
+    monkeypatch.setattr(
+        "ollamacode.workspaces._WORKSPACES_PATH", tmp_path / "workspaces.json"
+    )
     monkeypatch.setattr("ollamacode.sessions._DB_PATH", tmp_path / "sessions.db")
 
     from ollamacode.auth_registry import create_principal
@@ -448,29 +504,61 @@ async def test_http_authz_principal_admin_and_scope(tmp_path, monkeypatch):
     from ollamacode.sessions import create_session
 
     admin = create_principal(name="Admin", role="admin", api_key="admin-token")
-    viewer = create_principal(name="Viewer", role="viewer", api_key="viewer-token", workspace_ids=["allowed-workspace"])
-    create_workspace(name="Owned", kind="remote", base_url="http://x", owner="Viewer", role="owner")
-    create_workspace(name="Other", kind="remote", base_url="http://y", owner="SomeoneElse", role="owner")
-    create_session("Owned Session", workspace_root=str(tmp_path), owner="Viewer", role="owner")
-    create_session("Other Session", workspace_root=str(tmp_path), owner="SomeoneElse", role="owner")
+    viewer = create_principal(
+        name="Viewer",
+        role="viewer",
+        api_key="viewer-token",
+        workspace_ids=["allowed-workspace"],
+    )
+    create_workspace(
+        name="Owned", kind="remote", base_url="http://x", owner="Viewer", role="owner"
+    )
+    create_workspace(
+        name="Other",
+        kind="remote",
+        base_url="http://y",
+        owner="SomeoneElse",
+        role="owner",
+    )
+    create_session(
+        "Owned Session", workspace_root=str(tmp_path), owner="Viewer", role="owner"
+    )
+    create_session(
+        "Other Session", workspace_root=str(tmp_path), owner="SomeoneElse", role="owner"
+    )
 
-    app = serve.create_app(model="model", mcp_servers=[], system_extra="", api_key="legacy")
+    app = serve.create_app(
+        model="model", mcp_servers=[], system_extra="", api_key="legacy"
+    )
     transport = ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        forbidden = await client.get("/principals", headers={"Authorization": "Bearer viewer-token"})
+        forbidden = await client.get(
+            "/principals", headers={"Authorization": "Bearer viewer-token"}
+        )
         assert forbidden.status_code == 403
 
-        allowed = await client.get("/principals", headers={"Authorization": "Bearer admin-token"})
+        allowed = await client.get(
+            "/principals", headers={"Authorization": "Bearer admin-token"}
+        )
         assert allowed.status_code == 200
         assert any(item["name"] == "Viewer" for item in allowed.json()["principals"])
 
-        workspaces = await client.get("/workspaces", headers={"Authorization": "Bearer viewer-token"})
+        workspaces = await client.get(
+            "/workspaces", headers={"Authorization": "Bearer viewer-token"}
+        )
         assert workspaces.status_code == 200
-        assert all(item["owner"] == "Viewer" for item in workspaces.json()["workspaces"])
+        assert all(
+            item["owner"] == "Viewer" for item in workspaces.json()["workspaces"]
+        )
 
-        sessions = await client.get("/sessions", headers={"Authorization": "Bearer viewer-token"})
+        sessions = await client.get(
+            "/sessions", headers={"Authorization": "Bearer viewer-token"}
+        )
         assert sessions.status_code == 200
-        assert all((item.get("owner") or "") in ("", "Viewer") for item in sessions.json()["sessions"])
+        assert all(
+            (item.get("owner") or "") in ("", "Viewer")
+            for item in sessions.json()["sessions"]
+        )
 
 
 @pytest.mark.asyncio

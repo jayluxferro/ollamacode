@@ -173,7 +173,9 @@ async def test_question_flow_uses_chat_continue(monkeypatch):
         )
         return f"done {answer_result[1]}"
 
-    monkeypatch.setattr("ollamacode.protocol_server.run_agent_loop", fake_run_agent_loop)
+    monkeypatch.setattr(
+        "ollamacode.protocol_server.run_agent_loop", fake_run_agent_loop
+    )
 
     req = {
         "jsonrpc": "2.0",
@@ -191,7 +193,10 @@ async def test_question_flow_uses_chat_continue(monkeypatch):
         "/tmp",
         confirm_tool_calls=False,
     )
-    assert res["result"]["questionRequired"]["questions"][0]["question"] == "Which file should I edit?"
+    assert (
+        res["result"]["questionRequired"]["questions"][0]["question"]
+        == "Which file should I edit?"
+    )
     token = res["result"]["approvalToken"]
 
     res2 = await _handle_request(
@@ -231,8 +236,12 @@ async def test_task_flow_delegates_to_subagent_runtime(monkeypatch):
     async def fake_run_task_delegation(**kwargs):
         return "task_id: child-1\n\n<task_result>\nsubagent output\n</task_result>"
 
-    monkeypatch.setattr("ollamacode.protocol_server.run_agent_loop", fake_run_agent_loop)
-    monkeypatch.setattr("ollamacode.protocol_server.run_task_delegation", fake_run_task_delegation)
+    monkeypatch.setattr(
+        "ollamacode.protocol_server.run_agent_loop", fake_run_agent_loop
+    )
+    monkeypatch.setattr(
+        "ollamacode.protocol_server.run_task_delegation", fake_run_task_delegation
+    )
 
     req = {
         "jsonrpc": "2.0",
@@ -264,7 +273,9 @@ async def test_protocol_continue_always_persists_tool_approval(monkeypatch):
         decision = await before_tool_call("run_command", {"command": "echo hi"})
         return f"done {decision}"
 
-    monkeypatch.setattr("ollamacode.protocol_server.run_agent_loop", fake_run_agent_loop)
+    monkeypatch.setattr(
+        "ollamacode.protocol_server.run_agent_loop", fake_run_agent_loop
+    )
 
     req = {
         "jsonrpc": "2.0",
@@ -402,7 +413,12 @@ async def test_protocol_session_methods(tmp_path, monkeypatch):
             "jsonrpc": "2.0",
             "id": 51,
             "method": "ollamacode/sessionCreate",
-            "params": {"title": "Protocol Session", "workspaceRoot": str(tmp_path), "owner": "alice", "role": "editor"},
+            "params": {
+                "title": "Protocol Session",
+                "workspaceRoot": str(tmp_path),
+                "owner": "alice",
+                "role": "editor",
+            },
         },
         None,
         "model",
@@ -420,7 +436,12 @@ async def test_protocol_session_methods(tmp_path, monkeypatch):
             "jsonrpc": "2.0",
             "id": 51_1,
             "method": "ollamacode/sessionUpdate",
-            "params": {"sessionID": session_id, "title": "Renamed Session", "owner": "alice", "role": "editor"},
+            "params": {
+                "sessionID": session_id,
+                "title": "Renamed Session",
+                "owner": "alice",
+                "role": "editor",
+            },
         },
         None,
         "model",
@@ -548,7 +569,10 @@ async def test_protocol_session_methods(tmp_path, monkeypatch):
         0,
         str(tmp_path),
     )
-    assert timeline_res["result"]["timeline"]["session"]["id"] == branch_res["result"]["session"]["id"]
+    assert (
+        timeline_res["result"]["timeline"]["session"]["id"]
+        == branch_res["result"]["session"]["id"]
+    )
 
     from ollamacode.checkpoints import CheckpointRecorder
 
@@ -647,13 +671,19 @@ async def test_protocol_session_methods(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_protocol_workspace_registry_methods(tmp_path, monkeypatch):
-    monkeypatch.setattr("ollamacode.workspaces._WORKSPACES_PATH", tmp_path / "workspaces.json")
+    monkeypatch.setattr(
+        "ollamacode.workspaces._WORKSPACES_PATH", tmp_path / "workspaces.json"
+    )
     created = await _handle_request(
         {
             "jsonrpc": "2.0",
             "id": 61,
             "method": "ollamacode/workspaceCreate",
-            "params": {"name": "Remote", "type": "remote", "baseUrl": "http://localhost:9000"},
+            "params": {
+                "name": "Remote",
+                "type": "remote",
+                "baseUrl": "http://localhost:9000",
+            },
         },
         None,
         "model",
@@ -664,7 +694,12 @@ async def test_protocol_workspace_registry_methods(tmp_path, monkeypatch):
     )
     workspace_id = created["result"]["workspace"]["id"]
     listed = await _handle_request(
-        {"jsonrpc": "2.0", "id": 62, "method": "ollamacode/workspaceList", "params": {}},
+        {
+            "jsonrpc": "2.0",
+            "id": 62,
+            "method": "ollamacode/workspaceList",
+            "params": {},
+        },
         None,
         "model",
         "",
@@ -674,7 +709,12 @@ async def test_protocol_workspace_registry_methods(tmp_path, monkeypatch):
     )
     assert any(item["id"] == workspace_id for item in listed["result"]["workspaces"])
     fetched = await _handle_request(
-        {"jsonrpc": "2.0", "id": 63, "method": "ollamacode/workspaceGet", "params": {"workspaceID": workspace_id}},
+        {
+            "jsonrpc": "2.0",
+            "id": 63,
+            "method": "ollamacode/workspaceGet",
+            "params": {"workspaceID": workspace_id},
+        },
         None,
         "model",
         "",
@@ -684,7 +724,12 @@ async def test_protocol_workspace_registry_methods(tmp_path, monkeypatch):
     )
     assert fetched["result"]["workspace"]["name"] == "Remote"
     updated = await _handle_request(
-        {"jsonrpc": "2.0", "id": 64, "method": "ollamacode/workspaceUpdate", "params": {"workspaceID": workspace_id, "name": "Remote-2"}},
+        {
+            "jsonrpc": "2.0",
+            "id": 64,
+            "method": "ollamacode/workspaceUpdate",
+            "params": {"workspaceID": workspace_id, "name": "Remote-2"},
+        },
         None,
         "model",
         "",
@@ -697,7 +742,9 @@ async def test_protocol_workspace_registry_methods(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_protocol_workspace_proxy_method(tmp_path, monkeypatch):
-    monkeypatch.setattr("ollamacode.workspaces._WORKSPACES_PATH", tmp_path / "workspaces.json")
+    monkeypatch.setattr(
+        "ollamacode.workspaces._WORKSPACES_PATH", tmp_path / "workspaces.json"
+    )
 
     class FakeResponse:
         status_code = 200
@@ -733,7 +780,11 @@ async def test_protocol_workspace_proxy_method(tmp_path, monkeypatch):
             "jsonrpc": "2.0",
             "id": 71,
             "method": "ollamacode/workspaceCreate",
-            "params": {"name": "Remote", "type": "remote", "baseUrl": "http://localhost:9000"},
+            "params": {
+                "name": "Remote",
+                "type": "remote",
+                "baseUrl": "http://localhost:9000",
+            },
         },
         None,
         "model",
@@ -782,17 +833,28 @@ async def test_protocol_control_plane_events():
         "/tmp",
     )
     assert any(
-        event["type"] == "session.created"
-        for event in result["result"]["events"]
+        event["type"] == "session.created" for event in result["result"]["events"]
     )
 
 
 @pytest.mark.asyncio
 async def test_protocol_principals_and_fleet(tmp_path, monkeypatch):
-    monkeypatch.setattr("ollamacode.auth_registry._AUTH_PATH", tmp_path / "principals.json")
-    monkeypatch.setattr("ollamacode.workspaces._WORKSPACES_PATH", tmp_path / "workspaces.json")
+    monkeypatch.setattr(
+        "ollamacode.auth_registry._AUTH_PATH", tmp_path / "principals.json"
+    )
+    monkeypatch.setattr(
+        "ollamacode.workspaces._WORKSPACES_PATH", tmp_path / "workspaces.json"
+    )
+
     async def fake_snapshot(workspaces):
-        return {"total": len(workspaces), "remote": 0, "healthy": len(workspaces), "unhealthy": 0, "workspaces": workspaces}
+        return {
+            "total": len(workspaces),
+            "remote": 0,
+            "healthy": len(workspaces),
+            "unhealthy": 0,
+            "workspaces": workspaces,
+        }
+
     monkeypatch.setattr("ollamacode.fleet.collect_fleet_snapshot", fake_snapshot)
     created = await _handle_request(
         {
@@ -810,7 +872,12 @@ async def test_protocol_principals_and_fleet(tmp_path, monkeypatch):
     )
     assert created["result"]["principal"]["name"] == "Alice"
     principals = await _handle_request(
-        {"jsonrpc": "2.0", "id": 75, "method": "ollamacode/principalList", "params": {}},
+        {
+            "jsonrpc": "2.0",
+            "id": 75,
+            "method": "ollamacode/principalList",
+            "params": {},
+        },
         None,
         "model",
         "",

@@ -533,7 +533,10 @@ async def _handle_request(
             )
             if permission is ToolPermission.DENY:
                 _protocol_session_approvals.record_deny(session_key)
-                return ("skip", f"Blocked by permission rule for tool: {normalized_name}")
+                return (
+                    "skip",
+                    f"Blocked by permission rule for tool: {normalized_name}",
+                )
             if permission is ToolPermission.ALLOW:
                 _protocol_session_approvals.record_grant(session_key)
                 return "run"
@@ -816,10 +819,18 @@ async def _handle_request(
 
         session_id = str(params.get("sessionID") or "").strip()
         if not session_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "sessionID required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "sessionID required"},
+            }
         info = get_session_info(session_id)
         if info is None:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "session not found"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "session not found"},
+            }
         return {
             "jsonrpc": "2.0",
             "id": req_id,
@@ -830,42 +841,72 @@ async def _handle_request(
 
         session_id = str(params.get("sessionID") or "").strip()
         if not session_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "sessionID required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "sessionID required"},
+            }
         messages = load_session(session_id)
         if messages is None:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "session not found"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "session not found"},
+            }
         return {"jsonrpc": "2.0", "id": req_id, "result": {"messages": messages}}
     if method == "ollamacode/sessionChildren":
         from .sessions import list_child_sessions
 
         session_id = str(params.get("sessionID") or "").strip()
         if not session_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "sessionID required"}}
-        return {"jsonrpc": "2.0", "id": req_id, "result": {"sessions": list_child_sessions(session_id)}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "sessionID required"},
+            }
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"sessions": list_child_sessions(session_id)},
+        }
     if method == "ollamacode/sessionAncestors":
         from .sessions import list_session_ancestors
 
         session_id = str(params.get("sessionID") or "").strip()
         if not session_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "sessionID required"}}
-        return {"jsonrpc": "2.0", "id": req_id, "result": {"sessions": list_session_ancestors(session_id)}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "sessionID required"},
+            }
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"sessions": list_session_ancestors(session_id)},
+        }
     if method == "ollamacode/sessionTimeline":
         from .sessions import get_session_timeline
 
         session_id = str(params.get("sessionID") or "").strip()
         if not session_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "sessionID required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "sessionID required"},
+            }
         timeline = get_session_timeline(session_id)
         if timeline is None:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "session not found"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "session not found"},
+            }
         return {"jsonrpc": "2.0", "id": req_id, "result": {"timeline": timeline}}
     if method == "ollamacode/sessionCreate":
         from .sessions import create_session, get_session_info
 
         title = str(params.get("title") or "").strip()
-        workspace = (
-            str(params.get("workspaceRoot") or "").strip() or workspace_root
-        )
+        workspace = str(params.get("workspaceRoot") or "").strip() or workspace_root
         try:
             session_id = create_session(
                 title=title,
@@ -885,7 +926,11 @@ async def _handle_request(
 
         session_id = str(params.get("sessionID") or "").strip()
         if not session_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "sessionID required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "sessionID required"},
+            }
         session = update_session(
             session_id,
             title=params.get("title"),
@@ -894,24 +939,40 @@ async def _handle_request(
             role=params.get("role"),
         )
         if session is None:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "session not found"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "session not found"},
+            }
         return {"jsonrpc": "2.0", "id": req_id, "result": {"session": session}}
     if method == "ollamacode/sessionExport":
         from .sessions import export_session
 
         session_id = str(params.get("sessionID") or "").strip()
         if not session_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "sessionID required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "sessionID required"},
+            }
         data = export_session(session_id)
         if data is None:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "session not found"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "session not found"},
+            }
         return {"jsonrpc": "2.0", "id": req_id, "result": {"data": data}}
     if method == "ollamacode/sessionImport":
         from .sessions import get_session_info, import_session
 
         data = params.get("data")
         if not isinstance(data, str) or not data.strip():
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "data required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "data required"},
+            }
         try:
             session_id = import_session(data, title=params.get("title"))
             return {
@@ -926,59 +987,115 @@ async def _handle_request(
 
         session_id = str(params.get("sessionID") or "").strip()
         if not session_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "sessionID required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "sessionID required"},
+            }
         todos = load_session_todos(session_id)
         if todos is None:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "session not found"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "session not found"},
+            }
         return {"jsonrpc": "2.0", "id": req_id, "result": {"todos": todos}}
     if method == "ollamacode/sessionDelete":
         from .sessions import delete_session
 
         session_id = str(params.get("sessionID") or "").strip()
         if not session_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "sessionID required"}}
-        return {"jsonrpc": "2.0", "id": req_id, "result": {"deleted": delete_session(session_id)}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "sessionID required"},
+            }
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"deleted": delete_session(session_id)},
+        }
     if method == "ollamacode/sessionBranch":
         from .sessions import branch_session, get_session_info
 
         session_id = str(params.get("sessionID") or "").strip()
         if not session_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "sessionID required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "sessionID required"},
+            }
         new_id = branch_session(session_id, title=params.get("title"))
         if new_id is None:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "session not found"}}
-        return {"jsonrpc": "2.0", "id": req_id, "result": {"session": get_session_info(new_id)}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "session not found"},
+            }
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"session": get_session_info(new_id)},
+        }
     if method == "ollamacode/sessionFork":
         from .sessions import fork_session, get_session_info
 
         session_id = str(params.get("sessionID") or "").strip()
         message_index = params.get("messageIndex")
         if not session_id or not isinstance(message_index, int):
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "sessionID and messageIndex required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "sessionID and messageIndex required"},
+            }
         new_id = fork_session(session_id, message_index, title=params.get("title"))
         if new_id is None:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "session not found or invalid messageIndex"}}
-        return {"jsonrpc": "2.0", "id": req_id, "result": {"session": get_session_info(new_id)}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "session not found or invalid messageIndex"},
+            }
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"session": get_session_info(new_id)},
+        }
     if method == "ollamacode/workspaceList":
         from .workspaces import list_workspaces
 
-        return {"jsonrpc": "2.0", "id": req_id, "result": {"workspaces": list_workspaces()}}
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"workspaces": list_workspaces()},
+        }
     if method == "ollamacode/workspaceGet":
         from .workspaces import get_workspace
 
         workspace_id = str(params.get("workspaceID") or "").strip()
         if not workspace_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "workspaceID required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "workspaceID required"},
+            }
         workspace = get_workspace(workspace_id)
         if workspace is None:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "workspace not found"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "workspace not found"},
+            }
         return {"jsonrpc": "2.0", "id": req_id, "result": {"workspace": workspace}}
     if method == "ollamacode/workspaceUpdate":
         from .workspaces import update_workspace
 
         workspace_id = str(params.get("workspaceID") or "").strip()
         if not workspace_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "workspaceID required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "workspaceID required"},
+            }
         workspace = update_workspace(
             workspace_id,
             name=params.get("name"),
@@ -990,14 +1107,22 @@ async def _handle_request(
             role=params.get("role"),
         )
         if workspace is None:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "workspace not found"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "workspace not found"},
+            }
         return {"jsonrpc": "2.0", "id": req_id, "result": {"workspace": workspace}}
     if method == "ollamacode/workspaceCreate":
         from .workspaces import create_workspace
 
         name = str(params.get("name") or "").strip()
         if not name:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "name required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "name required"},
+            }
         workspace = create_workspace(
             name=name,
             kind=str(params.get("type") or "local"),
@@ -1013,33 +1138,59 @@ async def _handle_request(
 
         workspace_id = str(params.get("workspaceID") or "").strip()
         if not workspace_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "workspaceID required"}}
-        return {"jsonrpc": "2.0", "id": req_id, "result": {"deleted": delete_workspace(workspace_id)}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "workspaceID required"},
+            }
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"deleted": delete_workspace(workspace_id)},
+        }
     if method == "ollamacode/principalList":
         from .auth_registry import list_principals
 
-        return {"jsonrpc": "2.0", "id": req_id, "result": {"principals": list_principals()}}
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"principals": list_principals()},
+        }
     if method == "ollamacode/principalGet":
         from .auth_registry import get_principal
 
         principal_id = str(params.get("principalID") or "").strip()
         if not principal_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "principalID required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "principalID required"},
+            }
         principal = get_principal(principal_id)
         if principal is None:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "principal not found"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "principal not found"},
+            }
         return {"jsonrpc": "2.0", "id": req_id, "result": {"principal": principal}}
     if method == "ollamacode/principalCreate":
         from .auth_registry import create_principal
 
         name = str(params.get("name") or "").strip()
         if not name:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "name required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "name required"},
+            }
         principal = create_principal(
             name=name,
             role=str(params.get("role") or "admin"),
             api_key=str(params.get("apiKey") or ""),
-            workspace_ids=params.get("workspaceIDs") if isinstance(params.get("workspaceIDs"), list) else None,
+            workspace_ids=params.get("workspaceIDs")
+            if isinstance(params.get("workspaceIDs"), list)
+            else None,
         )
         return {"jsonrpc": "2.0", "id": req_id, "result": {"principal": principal}}
     if method == "ollamacode/principalUpdate":
@@ -1047,24 +1198,42 @@ async def _handle_request(
 
         principal_id = str(params.get("principalID") or "").strip()
         if not principal_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "principalID required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "principalID required"},
+            }
         principal = update_principal(
             principal_id,
             name=params.get("name"),
             role=params.get("role"),
             api_key=params.get("apiKey"),
-            workspace_ids=params.get("workspaceIDs") if isinstance(params.get("workspaceIDs"), list) else None,
+            workspace_ids=params.get("workspaceIDs")
+            if isinstance(params.get("workspaceIDs"), list)
+            else None,
         )
         if principal is None:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "principal not found"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "principal not found"},
+            }
         return {"jsonrpc": "2.0", "id": req_id, "result": {"principal": principal}}
     if method == "ollamacode/principalDelete":
         from .auth_registry import delete_principal
 
         principal_id = str(params.get("principalID") or "").strip()
         if not principal_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "principalID required"}}
-        return {"jsonrpc": "2.0", "id": req_id, "result": {"deleted": delete_principal(principal_id)}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "principalID required"},
+            }
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"deleted": delete_principal(principal_id)},
+        }
     if method == "ollamacode/fleetSummary":
         from .workspaces import list_workspaces
         from .fleet import collect_fleet_snapshot
@@ -1077,31 +1246,65 @@ async def _handle_request(
 
         workspace_id = str(params.get("workspaceID") or "").strip()
         if not workspace_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "workspaceID required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "workspaceID required"},
+            }
         workspace = get_workspace(workspace_id)
         if workspace is None:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "workspace not found"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "workspace not found"},
+            }
         if workspace.get("type") != "remote" or not workspace.get("base_url"):
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"ok": True, "workspace": workspace}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"ok": True, "workspace": workspace},
+            }
         try:
             headers = {}
             if workspace.get("api_key"):
                 headers["Authorization"] = f"Bearer {workspace['api_key']}"
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(str(workspace["base_url"]).rstrip("/") + "/health", headers=headers)
-            workspace = update_workspace(
-                workspace_id,
-                last_status="ok" if resp.status_code == 200 else "error",
-                last_error="" if resp.status_code == 200 else f"HTTP {resp.status_code}",
-            ) or workspace
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"ok": resp.status_code == 200, "statusCode": resp.status_code, "workspace": workspace}}
+                resp = await client.get(
+                    str(workspace["base_url"]).rstrip("/") + "/health", headers=headers
+                )
+            workspace = (
+                update_workspace(
+                    workspace_id,
+                    last_status="ok" if resp.status_code == 200 else "error",
+                    last_error=""
+                    if resp.status_code == 200
+                    else f"HTTP {resp.status_code}",
+                )
+                or workspace
+            )
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "ok": resp.status_code == 200,
+                    "statusCode": resp.status_code,
+                    "workspace": workspace,
+                },
+            }
         except Exception as e:
-            workspace = update_workspace(
-                workspace_id,
-                last_status="error",
-                last_error=str(e),
-            ) or workspace
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"ok": False, "error": str(e), "workspace": workspace}}
+            workspace = (
+                update_workspace(
+                    workspace_id,
+                    last_status="error",
+                    last_error=str(e),
+                )
+                or workspace
+            )
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"ok": False, "error": str(e), "workspace": workspace},
+            }
     if method == "ollamacode/workspaceProxy":
         from .workspaces import get_workspace
         import httpx
@@ -1110,12 +1313,24 @@ async def _handle_request(
         target = str(params.get("target") or "").strip().lstrip("/")
         request_method = str(params.get("httpMethod") or "GET").upper()
         if not workspace_id or not target:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "workspaceID and target required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "workspaceID and target required"},
+            }
         workspace = get_workspace(workspace_id)
         if workspace is None:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "workspace not found"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "workspace not found"},
+            }
         if workspace.get("type") != "remote" or not workspace.get("base_url"):
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "workspace is not remote"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "workspace is not remote"},
+            }
         url = str(workspace["base_url"]).rstrip("/") + "/" + target
         query = params.get("query")
         if isinstance(query, dict) and query:
@@ -1150,19 +1365,37 @@ async def _handle_request(
 
         session_id = str(params.get("sessionID") or "").strip()
         if not session_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "sessionID required"}}
-        return {"jsonrpc": "2.0", "id": req_id, "result": {"checkpoints": list_checkpoints(session_id, limit=int(params.get("limit") or 20))}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "sessionID required"},
+            }
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "checkpoints": list_checkpoints(
+                    session_id, limit=int(params.get("limit") or 20)
+                )
+            },
+        }
     if method == "ollamacode/sessionRestoreCheckpoint":
         from .checkpoints import restore_checkpoint
 
         checkpoint_id = str(params.get("checkpointID") or "").strip()
         if not checkpoint_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "checkpointID required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "checkpointID required"},
+            }
         try:
             workspace = params.get("workspaceRoot")
             modified = restore_checkpoint(
                 checkpoint_id,
-                str(workspace).strip() if isinstance(workspace, str) and workspace.strip() else None,
+                str(workspace).strip()
+                if isinstance(workspace, str) and workspace.strip()
+                else None,
             )
             return {"jsonrpc": "2.0", "id": req_id, "result": {"modified": modified}}
         except Exception as e:
@@ -1172,25 +1405,49 @@ async def _handle_request(
 
         checkpoint_id = str(params.get("checkpointID") or "").strip()
         if not checkpoint_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "checkpointID required"}}
-        return {"jsonrpc": "2.0", "id": req_id, "result": {"files": get_checkpoint_files(checkpoint_id)}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "checkpointID required"},
+            }
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"files": get_checkpoint_files(checkpoint_id)},
+        }
     if method == "ollamacode/checkpointGet":
         from .checkpoints import get_checkpoint_info
 
         checkpoint_id = str(params.get("checkpointID") or "").strip()
         if not checkpoint_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "checkpointID required"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "checkpointID required"},
+            }
         info = get_checkpoint_info(checkpoint_id)
         if info is None:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "checkpoint not found"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "checkpoint not found"},
+            }
         return {"jsonrpc": "2.0", "id": req_id, "result": {"checkpoint": info}}
     if method == "ollamacode/checkpointDiff":
         from .checkpoints import get_checkpoint_diff
 
         checkpoint_id = str(params.get("checkpointID") or "").strip()
         if not checkpoint_id:
-            return {"jsonrpc": "2.0", "id": req_id, "result": {"error": "checkpointID required"}}
-        return {"jsonrpc": "2.0", "id": req_id, "result": {"diff": get_checkpoint_diff(checkpoint_id)}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"error": "checkpointID required"},
+            }
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"diff": get_checkpoint_diff(checkpoint_id)},
+        }
     if method == "ollamacode/workspaceInfo":
         from .sessions import list_sessions
 

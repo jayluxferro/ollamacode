@@ -9,7 +9,6 @@ Ported from OpenCode's theme system with additional themes.
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from typing import TypedDict
 
@@ -162,107 +161,209 @@ def _make_light_theme(
 THEMES: dict[str, Theme] = {
     # ── Dark Themes ──
     "opencode": _make_dark_theme(
-        primary="#fab283", secondary="#7dc4e4", accent="#a6da95",
-        bg="#1e1e2e", text="#cdd6f4", border="#313244",
+        primary="#fab283",
+        secondary="#7dc4e4",
+        accent="#a6da95",
+        bg="#1e1e2e",
+        text="#cdd6f4",
+        border="#313244",
     ),
     "dracula": _make_dark_theme(
-        primary="#bd93f9", secondary="#ff79c6", accent="#8be9fd",
-        bg="#282a36", text="#f8f8f2", border="#44475a",
+        primary="#bd93f9",
+        secondary="#ff79c6",
+        accent="#8be9fd",
+        bg="#282a36",
+        text="#f8f8f2",
+        border="#44475a",
     ),
     "catppuccin-mocha": _make_dark_theme(
-        primary="#cba6f7", secondary="#f5c2e7", accent="#94e2d5",
-        bg="#1e1e2e", text="#cdd6f4", border="#313244",
+        primary="#cba6f7",
+        secondary="#f5c2e7",
+        accent="#94e2d5",
+        bg="#1e1e2e",
+        text="#cdd6f4",
+        border="#313244",
     ),
     "tokyo-night": _make_dark_theme(
-        primary="#7aa2f7", secondary="#bb9af7", accent="#7dcfff",
-        bg="#1a1b26", text="#a9b1d6", border="#3b4261",
+        primary="#7aa2f7",
+        secondary="#bb9af7",
+        accent="#7dcfff",
+        bg="#1a1b26",
+        text="#a9b1d6",
+        border="#3b4261",
     ),
     "nord": _make_dark_theme(
-        primary="#88c0d0", secondary="#81a1c1", accent="#a3be8c",
-        bg="#2e3440", text="#d8dee9", border="#3b4252",
+        primary="#88c0d0",
+        secondary="#81a1c1",
+        accent="#a3be8c",
+        bg="#2e3440",
+        text="#d8dee9",
+        border="#3b4252",
     ),
     "gruvbox": _make_dark_theme(
-        primary="#d79921", secondary="#689d6a", accent="#458588",
-        bg="#282828", text="#ebdbb2", border="#3c3836",
+        primary="#d79921",
+        secondary="#689d6a",
+        accent="#458588",
+        bg="#282828",
+        text="#ebdbb2",
+        border="#3c3836",
     ),
     "solarized-dark": _make_dark_theme(
-        primary="#268bd2", secondary="#2aa198", accent="#859900",
-        bg="#002b36", text="#839496", border="#073642",
+        primary="#268bd2",
+        secondary="#2aa198",
+        accent="#859900",
+        bg="#002b36",
+        text="#839496",
+        border="#073642",
     ),
     "one-dark": _make_dark_theme(
-        primary="#61afef", secondary="#c678dd", accent="#98c379",
-        bg="#282c34", text="#abb2bf", border="#3e4452",
+        primary="#61afef",
+        secondary="#c678dd",
+        accent="#98c379",
+        bg="#282c34",
+        text="#abb2bf",
+        border="#3e4452",
     ),
     "rose-pine": _make_dark_theme(
-        primary="#c4a7e7", secondary="#ebbcba", accent="#9ccfd8",
-        bg="#191724", text="#e0def4", border="#26233a",
+        primary="#c4a7e7",
+        secondary="#ebbcba",
+        accent="#9ccfd8",
+        bg="#191724",
+        text="#e0def4",
+        border="#26233a",
     ),
     "monokai": _make_dark_theme(
-        primary="#f92672", secondary="#ae81ff", accent="#a6e22e",
-        bg="#272822", text="#f8f8f2", border="#3e3d32",
+        primary="#f92672",
+        secondary="#ae81ff",
+        accent="#a6e22e",
+        bg="#272822",
+        text="#f8f8f2",
+        border="#3e3d32",
     ),
     "aura": _make_dark_theme(
-        primary="#a277ff", secondary="#82e2ff", accent="#61ffca",
-        bg="#15141b", text="#edecee", border="#29263c",
+        primary="#a277ff",
+        secondary="#82e2ff",
+        accent="#61ffca",
+        bg="#15141b",
+        text="#edecee",
+        border="#29263c",
     ),
     "ayu": _make_dark_theme(
-        primary="#ffb454", secondary="#73d0ff", accent="#bae67e",
-        bg="#0b0e14", text="#bfbdb6", border="#1c1f26",
+        primary="#ffb454",
+        secondary="#73d0ff",
+        accent="#bae67e",
+        bg="#0b0e14",
+        text="#bfbdb6",
+        border="#1c1f26",
     ),
     "everforest": _make_dark_theme(
-        primary="#a7c080", secondary="#7fbbb3", accent="#d699b6",
-        bg="#2d353b", text="#d3c6aa", border="#3d484d",
+        primary="#a7c080",
+        secondary="#7fbbb3",
+        accent="#d699b6",
+        bg="#2d353b",
+        text="#d3c6aa",
+        border="#3d484d",
     ),
     "kanagawa": _make_dark_theme(
-        primary="#dca561", secondary="#7e9cd8", accent="#98bb6c",
-        bg="#1f1f28", text="#dcd7ba", border="#2a2a37",
+        primary="#dca561",
+        secondary="#7e9cd8",
+        accent="#98bb6c",
+        bg="#1f1f28",
+        text="#dcd7ba",
+        border="#2a2a37",
     ),
     "matrix": _make_dark_theme(
-        primary="#00ff41", secondary="#008f11", accent="#00ff41",
-        bg="#0d0208", text="#00ff41", border="#003b00",
-        success="#00ff41", info="#008f11", error="#ff0000", warning="#ffff00",
+        primary="#00ff41",
+        secondary="#008f11",
+        accent="#00ff41",
+        bg="#0d0208",
+        text="#00ff41",
+        border="#003b00",
+        success="#00ff41",
+        info="#008f11",
+        error="#ff0000",
+        warning="#ffff00",
     ),
     "flexoki": _make_dark_theme(
-        primary="#d0a215", secondary="#6f7bb6", accent="#879a39",
-        bg="#100f0f", text="#cecdc3", border="#282726",
+        primary="#d0a215",
+        secondary="#6f7bb6",
+        accent="#879a39",
+        bg="#100f0f",
+        text="#cecdc3",
+        border="#282726",
     ),
     "vercel": _make_dark_theme(
-        primary="#ffffff", secondary="#888888", accent="#0070f3",
-        bg="#000000", text="#ededed", border="#333333",
+        primary="#ffffff",
+        secondary="#888888",
+        accent="#0070f3",
+        bg="#000000",
+        text="#ededed",
+        border="#333333",
     ),
     "zenburn": _make_dark_theme(
-        primary="#f0dfaf", secondary="#8cd0d3", accent="#7f9f7f",
-        bg="#3f3f3f", text="#dcdccc", border="#4f4f4f",
+        primary="#f0dfaf",
+        secondary="#8cd0d3",
+        accent="#7f9f7f",
+        bg="#3f3f3f",
+        text="#dcdccc",
+        border="#4f4f4f",
     ),
     "carbonfox": _make_dark_theme(
-        primary="#78a9ff", secondary="#be95ff", accent="#42be65",
-        bg="#161616", text="#f2f4f8", border="#353535",
+        primary="#78a9ff",
+        secondary="#be95ff",
+        accent="#42be65",
+        bg="#161616",
+        text="#f2f4f8",
+        border="#353535",
     ),
     "github-dark": _make_dark_theme(
-        primary="#58a6ff", secondary="#bc8cff", accent="#3fb950",
-        bg="#0d1117", text="#c9d1d9", border="#21262d",
+        primary="#58a6ff",
+        secondary="#bc8cff",
+        accent="#3fb950",
+        bg="#0d1117",
+        text="#c9d1d9",
+        border="#21262d",
     ),
-
     # ── Light Themes ──
     "catppuccin-latte": _make_light_theme(
-        primary="#8839ef", secondary="#ea76cb", accent="#179299",
-        bg="#eff1f5", text="#4c4f69", border="#ccd0da",
+        primary="#8839ef",
+        secondary="#ea76cb",
+        accent="#179299",
+        bg="#eff1f5",
+        text="#4c4f69",
+        border="#ccd0da",
     ),
     "solarized-light": _make_light_theme(
-        primary="#268bd2", secondary="#2aa198", accent="#859900",
-        bg="#fdf6e3", text="#657b83", border="#eee8d5",
+        primary="#268bd2",
+        secondary="#2aa198",
+        accent="#859900",
+        bg="#fdf6e3",
+        text="#657b83",
+        border="#eee8d5",
     ),
     "one-light": _make_light_theme(
-        primary="#4078f2", secondary="#a626a4", accent="#50a14f",
-        bg="#fafafa", text="#383a42", border="#e5e5e6",
+        primary="#4078f2",
+        secondary="#a626a4",
+        accent="#50a14f",
+        bg="#fafafa",
+        text="#383a42",
+        border="#e5e5e6",
     ),
     "github-light": _make_light_theme(
-        primary="#0969da", secondary="#8250df", accent="#1a7f37",
-        bg="#ffffff", text="#24292f", border="#d0d7de",
+        primary="#0969da",
+        secondary="#8250df",
+        accent="#1a7f37",
+        bg="#ffffff",
+        text="#24292f",
+        border="#d0d7de",
     ),
     "rose-pine-dawn": _make_light_theme(
-        primary="#907aa9", secondary="#d7827e", accent="#56949f",
-        bg="#faf4ed", text="#575279", border="#dfdad9",
+        primary="#907aa9",
+        secondary="#d7827e",
+        accent="#56949f",
+        bg="#faf4ed",
+        text="#575279",
+        border="#dfdad9",
     ),
 }
 
@@ -347,15 +448,15 @@ def list_themes() -> list[str]:
 def get_dark_themes() -> list[str]:
     """Return sorted list of dark theme names."""
     return [
-        name for name in sorted(THEMES)
-        if _luminance(THEMES[name]["background"]) < 0.25
+        name for name in sorted(THEMES) if _luminance(THEMES[name]["background"]) < 0.25
     ]
 
 
 def get_light_themes() -> list[str]:
     """Return sorted list of light theme names."""
     return [
-        name for name in sorted(THEMES)
+        name
+        for name in sorted(THEMES)
         if _luminance(THEMES[name]["background"]) >= 0.25
     ]
 

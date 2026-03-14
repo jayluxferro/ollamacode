@@ -20,3 +20,6 @@ demo/
 editors/vscode/node_modules/
 editors/vscode/out/
 editors/vscode/*.vsix
+
+# misc
+/tmp/

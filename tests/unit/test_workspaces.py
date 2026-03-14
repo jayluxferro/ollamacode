@@ -9,7 +9,9 @@ from ollamacode.workspaces import (
 
 
 def test_workspace_registry_round_trip(tmp_path, monkeypatch):
-    monkeypatch.setattr("ollamacode.workspaces._WORKSPACES_PATH", tmp_path / "workspaces.json")
+    monkeypatch.setattr(
+        "ollamacode.workspaces._WORKSPACES_PATH", tmp_path / "workspaces.json"
+    )
     workspace = create_workspace(
         name="Remote Dev",
         kind="remote",

@@ -666,9 +666,7 @@ async def _run_list_tools(
         )
         return
     workspace_root = os.path.abspath(os.getcwd())
-    servers_with_env = _prepare_mcp_servers(
-        mcp_servers, workspace_root, subagents=None
-    )
+    servers_with_env = _prepare_mcp_servers(mcp_servers, workspace_root, subagents=None)
     try:
         if len(servers_with_env) == 1 and servers_with_env[0].get("type") == "stdio":
             cmd = servers_with_env[0].get("command", "python")

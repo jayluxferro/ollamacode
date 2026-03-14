@@ -9,10 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from rich.text import Text
 from textual.app import ComposeResult
-from textual.containers import Vertical
-from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
@@ -108,9 +105,7 @@ class ToastContainer(Widget):
         duration: float = 5.0,
     ) -> None:
         """Show a new toast notification."""
-        toast = ToastItem(
-            message, title=title, variant=variant, duration=duration
-        )
+        toast = ToastItem(message, title=title, variant=variant, duration=duration)
         self.mount(toast)
 
     def error(self, message: str, *, title: str = "Error") -> None:

@@ -17,7 +17,9 @@ import ollamacode.serve as serve  # noqa: E402
 async def test_http_control_plane_flow(tmp_path, monkeypatch):
     """Create workspace and session, branch/export, then run an interactive question flow."""
     monkeypatch.setattr("ollamacode.sessions._DB_PATH", tmp_path / "sessions.db")
-    monkeypatch.setattr("ollamacode.workspaces._WORKSPACES_PATH", tmp_path / "workspaces.json")
+    monkeypatch.setattr(
+        "ollamacode.workspaces._WORKSPACES_PATH", tmp_path / "workspaces.json"
+    )
 
     async def fake_run_agent_loop(*args, before_tool_call=None, **kwargs):
         assert before_tool_call is not None
@@ -50,7 +52,11 @@ async def test_http_control_plane_flow(tmp_path, monkeypatch):
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         workspace = await client.post(
             "/workspaces",
-            json={"name": "Remote Dev", "type": "remote", "baseUrl": "http://localhost:9000"},
+            json={
+                "name": "Remote Dev",
+                "type": "remote",
+                "baseUrl": "http://localhost:9000",
+            },
         )
         assert workspace.status_code == 200
         workspace_id = workspace.json()["workspace"]["id"]
@@ -71,10 +77,15 @@ async def test_http_control_plane_flow(tmp_path, monkeypatch):
         assert exported.status_code == 200
         assert json.loads(exported.json()["data"])["session"]["title"]
 
-        chat = await client.post("/chat", json={"message": "ask first", "sessionID": branched_id})
+        chat = await client.post(
+            "/chat", json={"message": "ask first", "sessionID": branched_id}
+        )
         assert chat.status_code == 200
         token = chat.json()["approvalToken"]
-        assert chat.json()["questionRequired"]["questions"][0]["question"] == "Which file should I edit?"
+        assert (
+            chat.json()["questionRequired"]["questions"][0]["question"]
+            == "Which file should I edit?"
+        )
 
         continued = await client.post(
             "/chat/continue",
@@ -88,4 +99,6 @@ async def test_http_control_plane_flow(tmp_path, monkeypatch):
         assert proxied.json()["workspaceRoot"] == str(tmp_path)
 
         workspaces = await client.get("/workspaces")
-        assert any(item["id"] == workspace_id for item in workspaces.json()["workspaces"])
+        assert any(
+            item["id"] == workspace_id for item in workspaces.json()["workspaces"]
+        )

@@ -79,7 +79,9 @@ def update_principal(
         if role is not None:
             row["role"] = role.strip() or row.get("role") or "admin"
         if api_key is not None:
-            row["api_key"] = api_key.strip() or row.get("api_key") or secrets.token_urlsafe(24)
+            row["api_key"] = (
+                api_key.strip() or row.get("api_key") or secrets.token_urlsafe(24)
+            )
         if workspace_ids is not None:
             row["workspace_ids"] = list(workspace_ids)
         _save(rows)

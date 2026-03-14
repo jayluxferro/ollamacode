@@ -88,9 +88,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             )
             conn.commit()
     except sqlite3.Error as exc:
-        logger.warning(
-            "Session DB migration failed (adding sessions columns): %s", exc
-        )
+        logger.warning("Session DB migration failed (adding sessions columns): %s", exc)
     # Restrict DB file to owner-only so session history isn't world-readable.
     try:
         _DB_PATH.chmod(0o600)
@@ -133,9 +131,11 @@ def _normalize_todo(todo: Any) -> dict[str, str] | None:
     content = str(todo.get("content") or todo.get("text") or "").strip()
     if not content:
         return None
-    status = str(
-        todo.get("status") or ("completed" if todo.get("done") else "pending")
-    ).strip().lower()
+    status = (
+        str(todo.get("status") or ("completed" if todo.get("done") else "pending"))
+        .strip()
+        .lower()
+    )
     if status not in _TODO_STATUS_VALUES:
         status = "pending"
     priority = str(todo.get("priority") or "medium").strip().lower()
@@ -208,7 +208,7 @@ def save_session(
             cur = conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,))
             if cur.fetchone():
                 conn.execute(
-                        "UPDATE sessions SET title = ?, workspace_root = ?, updated_at = ?, message_count = ? WHERE id = ?",
+                    "UPDATE sessions SET title = ?, workspace_root = ?, updated_at = ?, message_count = ? WHERE id = ?",
                     (
                         (title or "").strip()[:500],
                         workspace_root or "",
@@ -351,7 +351,9 @@ def save_session_todos(session_id: str, todos: list[dict[str, Any]]) -> None:
         conn.execute("BEGIN")
         try:
             _ensure_session_row(conn, session_id)
-            conn.execute("DELETE FROM session_todos WHERE session_id = ?", (session_id,))
+            conn.execute(
+                "DELETE FROM session_todos WHERE session_id = ?", (session_id,)
+            )
             for position, todo in enumerate(normalized):
                 conn.execute(
                     "INSERT INTO session_todos (session_id, position, content, status, priority) VALUES (?, ?, ?, ?, ?)",
@@ -500,7 +502,9 @@ def search_sessions(query: str, limit: int = 20) -> list[dict[str, Any]]:
     ]
 
 
-def list_child_sessions(parent_session_id: str, limit: int = 100) -> list[dict[str, Any]]:
+def list_child_sessions(
+    parent_session_id: str, limit: int = 100
+) -> list[dict[str, Any]]:
     """List sessions whose parent is *parent_session_id*."""
     with sqlite3.connect(_db_path()) as conn:
         _init_schema(conn)
@@ -649,7 +653,9 @@ def delete_session(session_id: str) -> bool:
             if exists is None:
                 conn.execute("ROLLBACK")
                 return False
-            conn.execute("DELETE FROM session_todos WHERE session_id = ?", (session_id,))
+            conn.execute(
+                "DELETE FROM session_todos WHERE session_id = ?", (session_id,)
+            )
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             conn.execute("COMMIT")

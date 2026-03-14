@@ -55,12 +55,18 @@ async def run_task_delegation(
     if match is None:
         available = ", ".join(
             sorted(
-                (str(item.get("name") or "").strip() for item in subagents or [] if isinstance(item, dict) and item.get("name"))
+                (
+                    str(item.get("name") or "").strip()
+                    for item in subagents or []
+                    if isinstance(item, dict) and item.get("name")
+                )
             )
         )
         if not available:
             return "No subagents are configured. Add `subagents` to the OllamaCode config first."
-        return f"Unknown subagent type: {subagent_type}. Available subagents: {available}."
+        return (
+            f"Unknown subagent type: {subagent_type}. Available subagents: {available}."
+        )
 
     tools = [str(item) for item in (match.get("tools") or []) if str(item).strip()]
     blocked_tools = ["task", "todoread", "todowrite"]
@@ -70,7 +76,12 @@ async def run_task_delegation(
     child_history: list[dict[str, Any]] = []
     title = f"{description} (@{subagent_type} subagent)"
     try:
-        from .sessions import create_session, get_session_info, load_session, save_session
+        from .sessions import (
+            create_session,
+            get_session_info,
+            load_session,
+            save_session,
+        )
 
         if child_session_id:
             loaded = load_session(child_session_id)

@@ -35,9 +35,17 @@ async def collect_fleet_snapshot(workspaces: list[dict[str, Any]]) -> dict[str, 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 health = await client.get(base_url + "/health", headers=headers)
-                workspace_info = await client.get(base_url + "/workspace", headers=headers)
+                workspace_info = await client.get(
+                    base_url + "/workspace", headers=headers
+                )
             ok = health.status_code == 200 and workspace_info.status_code == 200
-            info_payload = workspace_info.json() if workspace_info.headers.get("content-type", "").startswith("application/json") else {}
+            info_payload = (
+                workspace_info.json()
+                if workspace_info.headers.get("content-type", "").startswith(
+                    "application/json"
+                )
+                else {}
+            )
             row["live"] = {
                 "ok": ok,
                 "status_code": workspace_info.status_code,

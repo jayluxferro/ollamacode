@@ -158,7 +158,13 @@ def test_resolve_mcp_servers_returns_using_builtin(tmp_path):
 def test_prepare_mcp_servers_injects_session_env_and_todo_server():
     """Session-aware MCP prep should inject env and append the todo server."""
     servers = _prepare_mcp_servers(
-        [{"type": "stdio", "command": "python", "args": ["-m", "ollamacode.servers.fs_mcp"]}],
+        [
+            {
+                "type": "stdio",
+                "command": "python",
+                "args": ["-m", "ollamacode.servers.fs_mcp"],
+            }
+        ],
         "/tmp/workspace",
         session_id="session-123",
         python_executable="/usr/bin/python3",
@@ -185,7 +191,9 @@ def test_prepare_mcp_servers_without_session_does_not_append_todo_server():
     assert servers[1]["args"] == ["-m", "ollamacode.servers.question_mcp"]
 
 
-def test_ensure_interactive_session_bootstraps_when_query_missing(tmp_path, monkeypatch):
+def test_ensure_interactive_session_bootstraps_when_query_missing(
+    tmp_path, monkeypatch
+):
     """Interactive mode should auto-create a session so session-scoped tools can work."""
     monkeypatch.setattr("ollamacode.sessions._DB_PATH", tmp_path / "sessions.db")
     session_id, session_history = _ensure_interactive_session(
